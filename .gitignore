@@ -1,0 +1,10 @@
+**/__pycache__/
+**/*.pyc
+ai_slam_ws/build/
+ai_slam_ws/install/
+ai_slam_ws/log/
+out/*
+!.gitkeep
+.DS_Store
+.vscode/
+.venv/
