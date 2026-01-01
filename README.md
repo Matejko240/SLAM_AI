@@ -18,7 +18,7 @@ chmod +x ./scripts/install_deps.sh
 source /opt/ros/jazzy/setup.bash
 source ./.venv/bin/activate
 
-cd ai_slam_ws
+cd ~/SLAM/ai_slam_ws
 rosdep install --from-paths src --ignore-src -r -y --skip-keys ament_python
 colcon build --symlink-install
 source install/setup.bash
@@ -26,7 +26,7 @@ source install/setup.bash
 
 ## Uruchomienie baseline (Gazebo + robot + bridge + SLAM + automatyczny driver + ewaluacja)
 ```bash
-cd ai_slam_ws
+cd ~/SLAM/ai_slam_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch ai_slam_bringup demo.launch.py mode:=baseline seed:=123 duration_sec:=120
@@ -40,7 +40,7 @@ ros2 launch ai_slam_bringup demo.launch.py mode:=baseline seed:=123 duration_sec
 
 ## Uruchomienie baseline + AI (auto-trening jeśli brak modelu)
 ```bash
-cd ai_slam_ws
+cd ~/SLAM/ai_slam_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch ai_slam_bringup demo.launch.py mode:=ai seed:=123 duration_sec:=180 dataset_duration_sec:=45
@@ -54,7 +54,7 @@ ros2 launch ai_slam_bringup demo.launch.py mode:=ai seed:=123 duration_sec:=180 
 ## Ręczne uruchomienie modułu AI
 1. Zbieranie datasetu:
 ```bash
-cd ai_slam_ws
+cd ~/SLAM/ai_slam_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 run ai_slam_ai dataset_recorder --ros-args -p out_dir:=out -p duration_sec:=60 -p seed:=123

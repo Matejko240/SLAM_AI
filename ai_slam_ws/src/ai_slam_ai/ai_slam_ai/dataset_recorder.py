@@ -16,7 +16,7 @@ class DatasetRecorder(Node):
         super().__init__("dataset_recorder")
         self.declare_parameter("seed", 123)
         self.declare_parameter("out_dir", "out")
-        self.declare_parameter("duration_sec", 60.0)
+        self.declare_parameter("duration_sec", 60)
         self.declare_parameter("max_samples", 5000)
         self.declare_parameter("scan_topic", "/scan_slam")
         self.declare_parameter("odom_topic", "/odom")
