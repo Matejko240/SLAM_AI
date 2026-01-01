@@ -5,16 +5,20 @@ from rclpy.node import Node
 
 from lifecycle_msgs.srv import ChangeState, GetState
 from lifecycle_msgs.msg import Transition
-
+from rclpy.exceptions import ParameterAlreadyDeclaredException
 
 class LifecycleManager(Node):
     def __init__(self):
         super().__init__("lifecycle_manager")
-        self.declare_parameter("nodes", [""])
-        self.declare_parameter("nodes", [""])  # zostaw [""] żeby typ był STRING_ARRAY, a nie np. BYTE_ARRAY
+        try:
+            self.declare_parameter("nodes", [""])  # wymusza STRING_ARRAY
+        except ParameterAlreadyDeclaredException:
+            pass  # jeśli launch już „zadeklarował” parametr
+
         nodes = list(self.get_parameter("nodes").value)
         nodes = [n for n in nodes if n]  # usuń pusty string
         self.nodes = nodes
+
         self.timer = self.create_timer(1.0, self.tick)
         self.done = set()
 

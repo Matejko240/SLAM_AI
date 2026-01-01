@@ -51,29 +51,66 @@ def load_yaml_simple(path: str) -> dict:
             out[k.strip()] = v.strip()
     return out
 
+def _read_token(f):
+    """Czyta kolejny token z pliku PGM, pomija whitespace i komentarze #..."""
+    token = b""
+    while True:
+        c = f.read(1)
+        if not c:
+            return None
+        if c.isspace():
+            continue
+        if c == b"#":
+            f.readline()
+            continue
+        token = c
+        break
 
-def load_pgm_p2(path: str) -> np.ndarray:
-    with open(path, "r", encoding="utf-8") as f:
-        magic = f.readline().strip()
-        if magic != "P2":
-            raise ValueError("Only P2 ASCII PGM supported")
-        line = f.readline().strip()
-        while line.startswith("#") or line == "":
-            line = f.readline().strip()
-        w, h = map(int, line.split())
-        maxv = int(f.readline().strip())
-        vals = []
-        for line in f:
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            vals.extend([int(x) for x in s.split()])
-        arr = np.array(vals, dtype=np.int32)
-        if arr.size != w * h:
-            raise ValueError("PGM size mismatch")
-        img = arr.reshape((h, w))
-        img = img[::-1, :]
-        return img.astype(np.int32)
+    while True:
+        c = f.read(1)
+        if not c or c.isspace():
+            break
+        token += c
+    return token
+
+def load_pgm(path: str) -> np.ndarray:
+    with open(path, "rb") as f:
+        magic = _read_token(f)
+        if magic not in (b"P2", b"P5"):
+            raise ValueError(f"Unsupported PGM format: {magic!r}")
+
+        w = int(_read_token(f))
+        h = int(_read_token(f))
+        maxval = int(_read_token(f))
+
+        if magic == b"P2":
+            vals = []
+            while True:
+                t = _read_token(f)
+                if t is None:
+                    break
+                vals.append(int(t))
+            arr = np.array(vals, dtype=np.uint16 if maxval > 255 else np.uint8)
+
+            # mniej = błąd, więcej = utnij
+            if arr.size < w * h:
+                raise ValueError("PGM size mismatch")
+            arr = arr[: w * h]
+
+        else:  # P5
+            if maxval < 256:
+                raw = f.read(w * h)
+                if len(raw) < w * h:
+                    raise ValueError("PGM size mismatch")
+                arr = np.frombuffer(raw[: w * h], dtype=np.uint8)
+            else:
+                raw = f.read(w * h * 2)
+                if len(raw) < w * h * 2:
+                    raise ValueError("PGM size mismatch")
+                arr = np.frombuffer(raw[: w * h * 2], dtype=">u2")
+
+        return arr.reshape((h, w))
+
 
 
 def occgrid_to_array(msg: OccupancyGrid) -> np.ndarray:
@@ -185,7 +222,7 @@ class EvalNode(Node):
     def _load_ref_occ(self, yaml_path, info):
         base = os.path.dirname(yaml_path)
         img_path = os.path.join(base, info["image"])
-        pgm = load_pgm_p2(img_path)
+        pgm = load_pgm(img_path)
         occ = (pgm < 128).astype(np.bool_)
         return occ
 
