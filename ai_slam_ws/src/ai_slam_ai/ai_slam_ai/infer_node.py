@@ -49,7 +49,7 @@ class InferNode(Node):
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
 
-        self.out_dir = str(self.get_parameter("out_dir").value)
+        self.out_dir = os.path.abspath(str(self.get_parameter("out_dir").value))
         ensure_dir(self.out_dir)
         self.model_path = os.path.join(self.out_dir, str(self.get_parameter("model_name").value))
 

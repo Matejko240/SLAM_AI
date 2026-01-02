@@ -1,0 +1,9 @@
+source;share/ai_slam_ai/hook/pythonpath.ps1
+source;share/ai_slam_ai/hook/pythonpath.dsv
+source;share/ai_slam_ai/hook/pythonpath.sh
+source;share/ai_slam_ai/hook/ament_prefix_path.ps1
+source;share/ai_slam_ai/hook/ament_prefix_path.dsv
+source;share/ai_slam_ai/hook/ament_prefix_path.sh
+source;../../build/ai_slam_ai/share/ai_slam_ai/hook/pythonpath_develop.ps1
+source;../../build/ai_slam_ai/share/ai_slam_ai/hook/pythonpath_develop.dsv
+source;../../build/ai_slam_ai/share/ai_slam_ai/hook/pythonpath_develop.sh

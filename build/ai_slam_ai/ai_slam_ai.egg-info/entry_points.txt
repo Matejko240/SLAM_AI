@@ -1,0 +1,4 @@
+[console_scripts]
+dataset_recorder = ai_slam_ai.dataset_recorder:main
+infer_node = ai_slam_ai.infer_node:main
+train_model = ai_slam_ai.train_model:main

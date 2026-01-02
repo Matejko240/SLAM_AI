@@ -1,0 +1,13 @@
+package.xml
+setup.cfg
+setup.py
+../../../build/ai_slam_description/ai_slam_description.egg-info/PKG-INFO
+../../../build/ai_slam_description/ai_slam_description.egg-info/SOURCES.txt
+../../../build/ai_slam_description/ai_slam_description.egg-info/dependency_links.txt
+../../../build/ai_slam_description/ai_slam_description.egg-info/requires.txt
+../../../build/ai_slam_description/ai_slam_description.egg-info/top_level.txt
+../../../build/ai_slam_description/ai_slam_description.egg-info/zip-safe
+ai_slam_description/init.py
+models/diffbot.sdf
+resource/ai_slam_description
+urdf/diffbot.urdf

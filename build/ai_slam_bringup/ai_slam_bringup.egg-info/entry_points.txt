@@ -1,0 +1,6 @@
+[console_scripts]
+auto_driver = ai_slam_bringup.auto_driver:main
+gt_pose_publisher = ai_slam_bringup.gt_pose_publisher:main
+lifecycle_manager = ai_slam_bringup.lifecycle_manager:main
+odom_corruptor = ai_slam_bringup.odom_corruptor:main
+scan_fix = ai_slam_bringup.scan_fix:main

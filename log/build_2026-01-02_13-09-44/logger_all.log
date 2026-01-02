@@ -1,0 +1,258 @@
+[0.996s] [34mcolcon[0m [1;30mDEBUG[0m [32mCommand line arguments: ['C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\Scripts\\colcon', 'build', '--symlink-install'][0m
+[0.996s] [34mcolcon[0m [1;30mDEBUG[0m [32mParsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='build', build_base='build', install_base='install', merge_install=False, symlink_install=True, test_result_base=None, continue_on_error=False, executor='parallel', parallel_workers=20, event_handlers=None, ignore_user_meta=False, metas=['./colcon.meta'], base_paths=['.'], packages_ignore=None, packages_ignore_regex=None, paths=None, packages_up_to=None, packages_up_to_regex=None, packages_above=None, packages_above_and_dependencies=None, packages_above_depth=None, packages_select_by_dep=None, packages_skip_by_dep=None, packages_skip_up_to=None, packages_select_build_failed=False, packages_skip_build_finished=False, packages_select_test_failures=False, packages_skip_test_passed=False, packages_select=None, packages_skip=None, packages_select_regex=None, packages_skip_regex=None, packages_start=None, packages_end=None, cmake_args=None, cmake_target=None, cmake_target_skip_unavailable=False, cmake_clean_cache=False, cmake_clean_first=False, cmake_force_configure=False, ament_cmake_args=None, catkin_cmake_args=None, catkin_skip_building_tests=False, verb_parser=<colcon_defaults.argument_parser.defaults.DefaultArgumentsDecorator object at 0x00000232DBBD7D60>, verb_extension=<colcon_core.verb.build.BuildVerb object at 0x00000232DBA7BCA0>, main=<bound method BuildVerb.main of <colcon_core.verb.build.BuildVerb object at 0x00000232DBA7BCA0>>)[0m
+[1.382s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(colcon_meta) check parameters
+[1.383s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) check parameters
+[1.383s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) check parameters
+[1.384s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) check parameters
+[1.384s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(colcon_meta) discover
+[1.384s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) discover
+[1.385s] [34mcolcon.colcon_core.package_discovery[0m [1;30mINFO[0m Crawling recursively for packages in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI'
+[1.389s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['ignore', 'ignore_ament_install']
+[1.389s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ignore'
+[1.389s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ignore_ament_install'
+[1.391s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['colcon_pkg']
+[1.392s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'colcon_pkg'
+[1.392s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['colcon_meta']
+[1.393s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'colcon_meta'
+[1.397s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['ros']
+[1.397s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ros'
+[1.432s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['cmake', 'python']
+[1.433s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'cmake'
+[1.433s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'python'
+[1.434s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['python_setup_py']
+[1.434s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'python_setup_py'
+[1.440s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extensions ['ignore', 'ignore_ament_install']
+[1.440s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'ignore'
+[1.440s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'ignore_ament_install'
+[1.441s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extensions ['colcon_pkg']
+[1.441s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'colcon_pkg'
+[1.442s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extensions ['colcon_meta']
+[1.442s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'colcon_meta'
+[1.447s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extensions ['ros']
+[1.447s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'ros'
+[1.448s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extensions ['cmake', 'python']
+[1.448s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'cmake'
+[1.448s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'python'
+[1.448s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extensions ['python_setup_py']
+[1.450s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws) by extension 'python_setup_py'
+[1.456s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\build) by extensions ['ignore', 'ignore_ament_install']
+[1.457s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\build) by extension 'ignore'
+[1.457s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\build) ignored
+[1.465s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\install) by extensions ['ignore', 'ignore_ament_install']
+[1.465s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\install) by extension 'ignore'
+[1.465s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\install) ignored
+[1.471s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\log) by extensions ['ignore', 'ignore_ament_install']
+[1.471s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\log) by extension 'ignore'
+[1.473s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\log) ignored
+[1.480s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extensions ['ignore', 'ignore_ament_install']
+[1.480s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'ignore'
+[1.481s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'ignore_ament_install'
+[1.481s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extensions ['colcon_pkg']
+[1.481s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'colcon_pkg'
+[1.481s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extensions ['colcon_meta']
+[1.482s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'colcon_meta'
+[1.488s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extensions ['ros']
+[1.488s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'ros'
+[1.490s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extensions ['cmake', 'python']
+[1.490s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'cmake'
+[1.490s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'python'
+[1.491s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extensions ['python_setup_py']
+[1.491s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\out) by extension 'python_setup_py'
+[1.497s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extensions ['ignore', 'ignore_ament_install']
+[1.497s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'ignore'
+[1.499s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'ignore_ament_install'
+[1.499s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extensions ['colcon_pkg']
+[1.499s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'colcon_pkg'
+[1.500s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extensions ['colcon_meta']
+[1.500s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'colcon_meta'
+[1.505s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extensions ['ros']
+[1.505s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'ros'
+[1.507s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extensions ['cmake', 'python']
+[1.508s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'cmake'
+[1.508s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'python'
+[1.508s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extensions ['python_setup_py']
+[1.509s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src) by extension 'python_setup_py'
+[1.515s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extensions ['ignore', 'ignore_ament_install']
+[1.516s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extension 'ignore'
+[1.516s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extension 'ignore_ament_install'
+[1.516s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extensions ['colcon_pkg']
+[1.516s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extension 'colcon_pkg'
+[1.517s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extensions ['colcon_meta']
+[1.518s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extension 'colcon_meta'
+[1.523s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extensions ['ros']
+[1.523s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_ai) by extension 'ros'
+[1.541s] [34mcolcon.colcon_core.package_identification[0m [1;30mDEBUG[0m [32mPackage 'ai_slam_ws\src\ai_slam_ai' with type 'ros.ament_python' and name 'ai_slam_ai'[0m
+[1.548s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extensions ['ignore', 'ignore_ament_install']
+[1.548s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extension 'ignore'
+[1.548s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extension 'ignore_ament_install'
+[1.548s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extensions ['colcon_pkg']
+[1.549s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extension 'colcon_pkg'
+[1.550s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extensions ['colcon_meta']
+[1.550s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extension 'colcon_meta'
+[1.556s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extensions ['ros']
+[1.556s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_bringup) by extension 'ros'
+[1.569s] [34mcolcon.colcon_core.package_identification[0m [1;30mDEBUG[0m [32mPackage 'ai_slam_ws\src\ai_slam_bringup' with type 'ros.ament_python' and name 'ai_slam_bringup'[0m
+[1.576s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extensions ['ignore', 'ignore_ament_install']
+[1.576s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extension 'ignore'
+[1.577s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extension 'ignore_ament_install'
+[1.578s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extensions ['colcon_pkg']
+[1.578s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extension 'colcon_pkg'
+[1.578s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extensions ['colcon_meta']
+[1.578s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extension 'colcon_meta'
+[1.584s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extensions ['ros']
+[1.584s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_description) by extension 'ros'
+[1.596s] [34mcolcon.colcon_core.package_identification[0m [1;30mDEBUG[0m [32mPackage 'ai_slam_ws\src\ai_slam_description' with type 'ros.ament_python' and name 'ai_slam_description'[0m
+[1.602s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extensions ['ignore', 'ignore_ament_install']
+[1.602s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extension 'ignore'
+[1.604s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extension 'ignore_ament_install'
+[1.604s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extensions ['colcon_pkg']
+[1.604s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extension 'colcon_pkg'
+[1.605s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extensions ['colcon_meta']
+[1.605s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extension 'colcon_meta'
+[1.611s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extensions ['ros']
+[1.612s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_eval) by extension 'ros'
+[1.626s] [34mcolcon.colcon_core.package_identification[0m [1;30mDEBUG[0m [32mPackage 'ai_slam_ws\src\ai_slam_eval' with type 'ros.ament_python' and name 'ai_slam_eval'[0m
+[1.631s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extensions ['ignore', 'ignore_ament_install']
+[1.632s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extension 'ignore'
+[1.633s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extension 'ignore_ament_install'
+[1.633s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extensions ['colcon_pkg']
+[1.633s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extension 'colcon_pkg'
+[1.633s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extensions ['colcon_meta']
+[1.633s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extension 'colcon_meta'
+[1.639s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extensions ['ros']
+[1.639s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(ai_slam_ws\src\ai_slam_gazebo) by extension 'ros'
+[1.651s] [34mcolcon.colcon_core.package_identification[0m [1;30mDEBUG[0m [32mPackage 'ai_slam_ws\src\ai_slam_gazebo' with type 'ros.ament_python' and name 'ai_slam_gazebo'[0m
+[1.657s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(build) by extensions ['ignore', 'ignore_ament_install']
+[1.658s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(build) by extension 'ignore'
+[1.658s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(build) ignored
+[1.665s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(install) by extensions ['ignore', 'ignore_ament_install']
+[1.665s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(install) by extension 'ignore'
+[1.666s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(install) ignored
+[1.672s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(log) by extensions ['ignore', 'ignore_ament_install']
+[1.672s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(log) by extension 'ignore'
+[1.672s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(log) ignored
+[1.679s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extensions ['ignore', 'ignore_ament_install']
+[1.680s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'ignore'
+[1.680s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'ignore_ament_install'
+[1.681s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extensions ['colcon_pkg']
+[1.681s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'colcon_pkg'
+[1.681s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extensions ['colcon_meta']
+[1.681s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'colcon_meta'
+[1.686s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extensions ['ros']
+[1.687s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'ros'
+[1.687s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extensions ['cmake', 'python']
+[1.687s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'cmake'
+[1.689s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'python'
+[1.689s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extensions ['python_setup_py']
+[1.689s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(out) by extension 'python_setup_py'
+[1.696s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extensions ['ignore', 'ignore_ament_install']
+[1.696s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'ignore'
+[1.696s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'ignore_ament_install'
+[1.697s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extensions ['colcon_pkg']
+[1.697s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'colcon_pkg'
+[1.697s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extensions ['colcon_meta']
+[1.697s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'colcon_meta'
+[1.703s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extensions ['ros']
+[1.703s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'ros'
+[1.704s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extensions ['cmake', 'python']
+[1.704s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'cmake'
+[1.704s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'python'
+[1.704s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extensions ['python_setup_py']
+[1.706s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(scripts) by extension 'python_setup_py'
+[1.706s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) using defaults
+[1.706s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) discover
+[1.706s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) using defaults
+[1.706s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) discover
+[1.706s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) using defaults
+[1.781s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'cmake_args' from command line to 'None'
+[1.781s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'cmake_target' from command line to 'None'
+[1.781s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[1.781s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'cmake_clean_cache' from command line to 'False'
+[1.781s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'cmake_clean_first' from command line to 'False'
+[1.781s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'cmake_force_configure' from command line to 'False'
+[1.783s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'ament_cmake_args' from command line to 'None'
+[1.783s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'catkin_cmake_args' from command line to 'None'
+[1.783s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_ai' build argument 'catkin_skip_building_tests' from command line to 'False'
+[1.783s] [34mcolcon.colcon_core.verb[0m [1;30mDEBUG[0m [32mBuilding package 'ai_slam_ai' with the following arguments: {'ament_cmake_args': None, 'build_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\build\\ai_slam_ai', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_ai', 'merge_install': False, 'path': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\ai_slam_ws\\src\\ai_slam_ai', 'symlink_install': True, 'test_result_base': None}[0m
+[1.783s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'cmake_args' from command line to 'None'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'cmake_target' from command line to 'None'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'cmake_clean_cache' from command line to 'False'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'cmake_clean_first' from command line to 'False'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'cmake_force_configure' from command line to 'False'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'ament_cmake_args' from command line to 'None'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'catkin_cmake_args' from command line to 'None'
+[1.784s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_description' build argument 'catkin_skip_building_tests' from command line to 'False'
+[1.786s] [34mcolcon.colcon_core.verb[0m [1;30mDEBUG[0m [32mBuilding package 'ai_slam_description' with the following arguments: {'ament_cmake_args': None, 'build_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\build\\ai_slam_description', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_description', 'merge_install': False, 'path': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\ai_slam_ws\\src\\ai_slam_description', 'symlink_install': True, 'test_result_base': None}[0m
+[1.786s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'cmake_args' from command line to 'None'
+[1.786s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'cmake_target' from command line to 'None'
+[1.786s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[1.786s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'cmake_clean_cache' from command line to 'False'
+[1.786s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'cmake_clean_first' from command line to 'False'
+[1.787s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'cmake_force_configure' from command line to 'False'
+[1.787s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'ament_cmake_args' from command line to 'None'
+[1.787s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'catkin_cmake_args' from command line to 'None'
+[1.787s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_eval' build argument 'catkin_skip_building_tests' from command line to 'False'
+[1.787s] [34mcolcon.colcon_core.verb[0m [1;30mDEBUG[0m [32mBuilding package 'ai_slam_eval' with the following arguments: {'ament_cmake_args': None, 'build_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\build\\ai_slam_eval', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_eval', 'merge_install': False, 'path': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\ai_slam_ws\\src\\ai_slam_eval', 'symlink_install': True, 'test_result_base': None}[0m
+[1.787s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'cmake_args' from command line to 'None'
+[1.789s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'cmake_target' from command line to 'None'
+[1.789s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[1.789s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'cmake_clean_cache' from command line to 'False'
+[1.789s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'cmake_clean_first' from command line to 'False'
+[1.789s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'cmake_force_configure' from command line to 'False'
+[1.790s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'ament_cmake_args' from command line to 'None'
+[1.790s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'catkin_cmake_args' from command line to 'None'
+[1.790s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_gazebo' build argument 'catkin_skip_building_tests' from command line to 'False'
+[1.790s] [34mcolcon.colcon_core.verb[0m [1;30mDEBUG[0m [32mBuilding package 'ai_slam_gazebo' with the following arguments: {'ament_cmake_args': None, 'build_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\build\\ai_slam_gazebo', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_gazebo', 'merge_install': False, 'path': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\ai_slam_ws\\src\\ai_slam_gazebo', 'symlink_install': True, 'test_result_base': None}[0m
+[1.790s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'cmake_args' from command line to 'None'
+[1.790s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'cmake_target' from command line to 'None'
+[1.791s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[1.791s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'cmake_clean_cache' from command line to 'False'
+[1.791s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'cmake_clean_first' from command line to 'False'
+[1.791s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'cmake_force_configure' from command line to 'False'
+[1.791s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'ament_cmake_args' from command line to 'None'
+[1.791s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'catkin_cmake_args' from command line to 'None'
+[1.793s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'ai_slam_bringup' build argument 'catkin_skip_building_tests' from command line to 'False'
+[1.793s] [34mcolcon.colcon_core.verb[0m [1;30mDEBUG[0m [32mBuilding package 'ai_slam_bringup' with the following arguments: {'ament_cmake_args': None, 'build_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\build\\ai_slam_bringup', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_bringup', 'merge_install': False, 'path': '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\ai_slam_ws\\src\\ai_slam_bringup', 'symlink_install': True, 'test_result_base': None}[0m
+[1.793s] [34mcolcon.colcon_core.executor[0m [1;30mINFO[0m Executing jobs using 'parallel' executor
+[1.795s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mrun_until_complete[0m
+[1.796s] [34mcolcon.colcon_ros.task.ament_python.build[0m [1;30mINFO[0m Building ROS package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_ai' with build type 'ament_python'
+[1.796s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('ai_slam_ai', 'ament_prefix_path')
+[1.798s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_core.shell.sh': Not used on Windows systems
+[1.799s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_ai\share\ai_slam_ai\hook\ament_prefix_path.ps1'
+[1.816s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_ai\share\ai_slam_ai\hook\ament_prefix_path.bat'
+[1.838s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_ai\share\ai_slam_ai\hook\ament_prefix_path.dsv'
+[1.876s] [34mcolcon.colcon_ros.task.ament_python.build[0m [1;30mINFO[0m Building ROS package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_description' with build type 'ament_python'
+[1.876s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('ai_slam_description', 'ament_prefix_path')
+[1.876s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\share\ai_slam_description\hook\ament_prefix_path.ps1'
+[1.888s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\share\ai_slam_description\hook\ament_prefix_path.bat'
+[1.898s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\share\ai_slam_description\hook\ament_prefix_path.dsv'
+[1.923s] [34mcolcon.colcon_ros.task.ament_python.build[0m [1;30mINFO[0m Building ROS package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_eval' with build type 'ament_python'
+[1.925s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('ai_slam_eval', 'ament_prefix_path')
+[1.926s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_eval\share\ai_slam_eval\hook\ament_prefix_path.ps1'
+[1.940s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_eval\share\ai_slam_eval\hook\ament_prefix_path.bat'
+[1.953s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_eval\share\ai_slam_eval\hook\ament_prefix_path.dsv'
+[1.983s] [34mcolcon.colcon_ros.task.ament_python.build[0m [1;30mINFO[0m Building ROS package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_gazebo' with build type 'ament_python'
+[1.984s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('ai_slam_gazebo', 'ament_prefix_path')
+[1.984s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_gazebo\share\ai_slam_gazebo\hook\ament_prefix_path.ps1'
+[2.004s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_gazebo\share\ai_slam_gazebo\hook\ament_prefix_path.bat'
+[2.021s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_gazebo\share\ai_slam_gazebo\hook\ament_prefix_path.dsv'
+[2.691s] [34mcolcon.colcon_core.task.python.build[0m [1;30mINFO[0m Building Python package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_description'
+[3.172s] [34mcolcon.colcon_core.task.python.build[0m [1;30mINFO[0m Building Python package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_ai'
+[3.659s] [34mcolcon.colcon_core.task.python.build[0m [1;30mINFO[0m Building Python package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_eval'
+[4.157s] [34mcolcon.colcon_core.task.python.build[0m [1;30mINFO[0m Building Python package in '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\ai_slam_ws\src\ai_slam_gazebo'
+[7.648s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mclosing loop[0m
+[7.648s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mloop closed[0m
+[7.648s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mrun_until_complete finished with '[WinError 183] Nie mo¿na utworzyæ pliku, który ju¿ istnieje: '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\ai_slam_ws\\src\\ai_slam_gazebo\\setup.py' -> '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\build\\ai_slam_gazebo\\setup.py''[0m
+[7.649s] [34mcolcon.colcon_core.event_reactor[0m [1;30mDEBUG[0m [32mjoining thread[0m
+[7.653s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_notification.desktop_notification.notify2': 'notify2' not found
+[7.653s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_notification.desktop_notification.notify_send': Not used on non-Linux systems
+[7.653s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_notification.desktop_notification.terminal_notifier': Not used on non-Darwin systems
+[7.653s] [34mcolcon.colcon_notification.desktop_notification[0m [1;30mINFO[0m Sending desktop notification using 'win32'
+[12.703s] [34mcolcon.colcon_core.event_reactor[0m [1;30mDEBUG[0m [32mjoined thread[0m
+[12.704s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\local_setup.ps1'
+[12.727s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix util module '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\_local_setup_util_ps1.py'
+[12.742s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\setup.ps1'
+[12.757s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\local_setup.bat'
+[12.779s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix util module '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\_local_setup_util_bat.py'
+[12.785s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\setup.bat'

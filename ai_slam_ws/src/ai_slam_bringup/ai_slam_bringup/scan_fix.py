@@ -3,6 +3,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
 
@@ -20,7 +21,7 @@ class ScanFix(Node):
         self.target_samples = int(self.get_parameter("target_samples").value)
 
         self.pub = self.create_publisher(LaserScan, self.out_topic, 10)
-        self.sub = self.create_subscription(LaserScan, self.in_topic, self.on_scan, 10)
+        self.sub = self.create_subscription(LaserScan, self.in_topic, self.on_scan, qos_profile_sensor_data)
 
     def on_scan(self, msg: LaserScan):
         ranges = np.asarray(msg.ranges, dtype=np.float32)

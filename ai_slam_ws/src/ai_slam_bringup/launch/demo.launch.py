@@ -14,6 +14,7 @@ def generate_launch_description():
     seed = LaunchConfiguration("seed")
     duration_sec = LaunchConfiguration("duration_sec")
     dataset_duration_sec = LaunchConfiguration("dataset_duration_sec")
+    gui = LaunchConfiguration("gui")
 
     gazebo_share = get_package_share_directory("ai_slam_gazebo")
     desc_share = get_package_share_directory("ai_slam_description")
@@ -33,12 +34,24 @@ def generate_launch_description():
     ros_gz_sim_share = get_package_share_directory("ros_gz_sim")
     gz_sim_launch_py = os.path.join(ros_gz_sim_share, "launch", "gz_sim.launch.py")
 
-    gz_launch = IncludeLaunchDescription(
+    # Headless mode: -r -s --headless-rendering (server only, no GUI)
+    # GUI mode: -r (with GUI)
+    gz_launch_headless = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(gz_sim_launch_py),
+        launch_arguments={
+            "gz_args": [world_path, " -r -s --headless-rendering"],
+            "on_exit_shutdown": "True",
+        }.items(),
+        condition=IfCondition(PythonExpression(['"', gui, '" != "true"'])),
+    )
+    
+    gz_launch_gui = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(gz_sim_launch_py),
         launch_arguments={
             "gz_args": [world_path, " -r"],
             "on_exit_shutdown": "True",
         }.items(),
+        condition=IfCondition(PythonExpression(['"', gui, '" == "true"'])),
     )
 
 
@@ -47,6 +60,7 @@ def generate_launch_description():
         executable="parameter_bridge",
         parameters=[{"config_file": bridge_cfg}],
         output="screen",
+        ros_arguments=["--ros-args", "-p", "log_level:=warn"],
     )
 
     spawn = Node(
@@ -54,6 +68,7 @@ def generate_launch_description():
         executable="create",
         arguments=["-name", "diffbot", "-file", model_sdf, "-x", "0", "-y", "0", "-z", "0.10"],
         output="screen",
+        shell=True,
     )
 
     with open(urdf_path, "r", encoding="utf-8") as f:
@@ -64,6 +79,7 @@ def generate_launch_description():
         executable="robot_state_publisher",
         parameters=[{"use_sim_time": True, "robot_description": robot_description}],
         output="screen",
+        ros_arguments=["--ros-args", "-p", "log_level:=warn"],
     )
 
     scan_fix = Node(
@@ -171,6 +187,9 @@ def generate_launch_description():
 
     env = [
         SetEnvironmentVariable("GZ_SIM_RESOURCE_PATH", os.pathsep.join([gazebo_share, desc_share])),
+        SetEnvironmentVariable("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/50_mesa.json"),
+        SetEnvironmentVariable("MESA_GL_VERSION_OVERRIDE", "4.5"),
+        SetEnvironmentVariable("MESA_GLSL_VERSION_OVERRIDE", "450"),
     ]
 
     return LaunchDescription(
@@ -179,10 +198,12 @@ def generate_launch_description():
             DeclareLaunchArgument("seed", default_value="123", description="Deterministic seed"),
             DeclareLaunchArgument("duration_sec", default_value="120", description="Experiment duration"),
             DeclareLaunchArgument("dataset_duration_sec", default_value="45", description="Dataset recording duration (ai mode)"),
+            DeclareLaunchArgument("gui", default_value="false", description="Enable Gazebo GUI visualization"),
             *env,
-            gz_launch,
-            TimerAction(period=1.0, actions=[bridge]),
-            TimerAction(period=2.0, actions=[spawn]),
+            gz_launch_headless,
+            gz_launch_gui,
+            TimerAction(period=3.0, actions=[bridge]),
+            TimerAction(period=5.0, actions=[spawn]),
             robot_state_pub,
             scan_fix,
             gt_pose,

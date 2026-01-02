@@ -1,0 +1,13 @@
+running develop
+running egg_info
+writing ai_slam_gazebo.egg-info/PKG-INFO
+writing dependency_links to ai_slam_gazebo.egg-info/dependency_links.txt
+writing requirements to ai_slam_gazebo.egg-info/requires.txt
+writing top-level names to ai_slam_gazebo.egg-info/top_level.txt
+reading manifest file 'ai_slam_gazebo.egg-info/SOURCES.txt'
+writing manifest file 'ai_slam_gazebo.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/matejko/SLAM_AI/install/ai_slam_gazebo/lib/python3.12/site-packages/ai-slam-gazebo.egg-link (link to .)
+
+Installed /home/matejko/SLAM_AI/build/ai_slam_gazebo
+running symlink_data

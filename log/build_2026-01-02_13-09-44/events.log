@@ -1,0 +1,73 @@
+[0.000000] (-) TimerEvent: {}
+[0.000000] (ai_slam_ai) JobQueued: {'identifier': 'ai_slam_ai', 'dependencies': OrderedDict()}
+[0.000000] (ai_slam_description) JobQueued: {'identifier': 'ai_slam_description', 'dependencies': OrderedDict()}
+[0.000000] (ai_slam_eval) JobQueued: {'identifier': 'ai_slam_eval', 'dependencies': OrderedDict()}
+[0.000000] (ai_slam_gazebo) JobQueued: {'identifier': 'ai_slam_gazebo', 'dependencies': OrderedDict()}
+[0.000000] (ai_slam_bringup) JobQueued: {'identifier': 'ai_slam_bringup', 'dependencies': OrderedDict([('ai_slam_ai', '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_ai'), ('ai_slam_description', '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_description'), ('ai_slam_eval', '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_eval'), ('ai_slam_gazebo', '\\\\wsl.localhost\\Ubuntu\\home\\matejko\\SLAM_AI\\install\\ai_slam_gazebo')])}
+[0.000000] (ai_slam_ai) JobStarted: {'identifier': 'ai_slam_ai'}
+[0.078000] (ai_slam_description) JobStarted: {'identifier': 'ai_slam_description'}
+[0.110000] (-) TimerEvent: {}
+[0.125000] (ai_slam_eval) JobStarted: {'identifier': 'ai_slam_eval'}
+[0.188000] (ai_slam_gazebo) JobStarted: {'identifier': 'ai_slam_gazebo'}
+[0.219000] (-) TimerEvent: {}
+[0.328000] (-) TimerEvent: {}
+[0.438000] (-) TimerEvent: {}
+[0.547000] (-) TimerEvent: {}
+[0.657000] (-) TimerEvent: {}
+[0.766000] (-) TimerEvent: {}
+[0.875000] (-) TimerEvent: {}
+[0.985000] (-) TimerEvent: {}
+[1.094000] (-) TimerEvent: {}
+[1.203000] (-) TimerEvent: {}
+[1.313000] (-) TimerEvent: {}
+[1.422000] (-) TimerEvent: {}
+[1.532000] (-) TimerEvent: {}
+[1.641000] (-) TimerEvent: {}
+[1.750000] (-) TimerEvent: {}
+[1.860000] (-) TimerEvent: {}
+[1.969000] (-) TimerEvent: {}
+[2.078000] (-) TimerEvent: {}
+[2.188000] (-) TimerEvent: {}
+[2.297000] (-) TimerEvent: {}
+[2.407000] (-) TimerEvent: {}
+[2.516000] (-) TimerEvent: {}
+[2.625000] (-) TimerEvent: {}
+[2.735000] (-) TimerEvent: {}
+[2.844000] (-) TimerEvent: {}
+[2.953000] (-) TimerEvent: {}
+[3.063000] (-) TimerEvent: {}
+[3.172000] (-) TimerEvent: {}
+[3.282000] (-) TimerEvent: {}
+[3.391000] (-) TimerEvent: {}
+[3.500000] (-) TimerEvent: {}
+[3.610000] (-) TimerEvent: {}
+[3.719000] (-) TimerEvent: {}
+[3.828000] (-) TimerEvent: {}
+[3.938000] (-) TimerEvent: {}
+[4.047000] (-) TimerEvent: {}
+[4.157000] (-) TimerEvent: {}
+[4.266000] (-) TimerEvent: {}
+[4.375000] (-) TimerEvent: {}
+[4.485000] (-) TimerEvent: {}
+[4.594000] (-) TimerEvent: {}
+[4.703000] (-) TimerEvent: {}
+[4.813000] (-) TimerEvent: {}
+[4.922000] (-) TimerEvent: {}
+[5.032000] (-) TimerEvent: {}
+[5.141000] (-) TimerEvent: {}
+[5.250000] (-) TimerEvent: {}
+[5.360000] (-) TimerEvent: {}
+[5.469000] (-) TimerEvent: {}
+[5.578000] (-) TimerEvent: {}
+[5.688000] (-) TimerEvent: {}
+[5.750000] (ai_slam_description) StderrLine: {'line': b'Traceback (most recent call last):\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\executor\\__init__.py", line 91, in __call__\n    rc = await self.task(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\__init__.py", line 93, in __call__\n    return await task_method(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_ros\\task\\ament_python\\build.py", line 102, in build\n    return await extension.build(additional_hooks=additional_hooks)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 145, in build\n    temp_symlinks = self._symlinks_in_build(args, setup_py_data)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 360, in _symlinks_in_build\n    os.symlink(src, dst)\nFileExistsError: [WinError 183] Nie mo\xc5\xbcna utworzy\xc4\x87 pliku, kt\xc3\xb3ry ju\xc5\xbc istnieje: \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\ai_slam_ws\\\\src\\\\ai_slam_description\\\\setup.py\' -> \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\build\\\\ai_slam_description\\\\setup.py\'\n'}
+[5.766000] (ai_slam_description) JobEnded: {'identifier': 'ai_slam_description', 'rc': 1}
+[5.782000] (ai_slam_ai) StderrLine: {'line': b'Traceback (most recent call last):\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\executor\\__init__.py", line 91, in __call__\n    rc = await self.task(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\__init__.py", line 93, in __call__\n    return await task_method(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_ros\\task\\ament_python\\build.py", line 102, in build\n    return await extension.build(additional_hooks=additional_hooks)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 145, in build\n    temp_symlinks = self._symlinks_in_build(args, setup_py_data)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 360, in _symlinks_in_build\n    os.symlink(src, dst)\nFileExistsError: [WinError 183] Nie mo\xc5\xbcna utworzy\xc4\x87 pliku, kt\xc3\xb3ry ju\xc5\xbc istnieje: \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\ai_slam_ws\\\\src\\\\ai_slam_ai\\\\setup.py\' -> \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\build\\\\ai_slam_ai\\\\setup.py\'\n'}
+[5.797000] (-) TimerEvent: {}
+[5.797000] (ai_slam_ai) JobEnded: {'identifier': 'ai_slam_ai', 'rc': 1}
+[5.797000] (ai_slam_eval) StderrLine: {'line': b'Traceback (most recent call last):\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\executor\\__init__.py", line 91, in __call__\n    rc = await self.task(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\__init__.py", line 93, in __call__\n    return await task_method(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_ros\\task\\ament_python\\build.py", line 102, in build\n    return await extension.build(additional_hooks=additional_hooks)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 145, in build\n    temp_symlinks = self._symlinks_in_build(args, setup_py_data)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 360, in _symlinks_in_build\n    os.symlink(src, dst)\nFileExistsError: [WinError 183] Nie mo\xc5\xbcna utworzy\xc4\x87 pliku, kt\xc3\xb3ry ju\xc5\xbc istnieje: \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\ai_slam_ws\\\\src\\\\ai_slam_eval\\\\setup.py\' -> \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\build\\\\ai_slam_eval\\\\setup.py\'\n'}
+[5.813000] (ai_slam_eval) JobEnded: {'identifier': 'ai_slam_eval', 'rc': 1}
+[5.828000] (ai_slam_gazebo) StderrLine: {'line': b'Traceback (most recent call last):\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\executor\\__init__.py", line 91, in __call__\n    rc = await self.task(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\__init__.py", line 93, in __call__\n    return await task_method(*args, **kwargs)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_ros\\task\\ament_python\\build.py", line 102, in build\n    return await extension.build(additional_hooks=additional_hooks)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 145, in build\n    temp_symlinks = self._symlinks_in_build(args, setup_py_data)\n  File "C:\\Users\\rjane\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\colcon_core\\task\\python\\build.py", line 360, in _symlinks_in_build\n    os.symlink(src, dst)\nFileExistsError: [WinError 183] Nie mo\xc5\xbcna utworzy\xc4\x87 pliku, kt\xc3\xb3ry ju\xc5\xbc istnieje: \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\ai_slam_ws\\\\src\\\\ai_slam_gazebo\\\\setup.py\' -> \'\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\matejko\\\\SLAM_AI\\\\build\\\\ai_slam_gazebo\\\\setup.py\'\n'}
+[5.844000] (ai_slam_gazebo) JobEnded: {'identifier': 'ai_slam_gazebo', 'rc': 1}
+[5.860000] (ai_slam_bringup) JobSkipped: {'identifier': 'ai_slam_bringup'}
+[5.860000] (-) EventReactorShutdown: {}

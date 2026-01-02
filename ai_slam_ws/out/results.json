@@ -1,12 +1,12 @@
 {
-  "mode": "baseline",
+  "mode": "ai",
   "seed": 123,
-  "duration_sec": 120.0,
+  "duration_sec": 180.0,
   "metrics": {
-    "rmse_xy_baseline": 0.44779905676841736,
-    "rmse_theta_baseline": 0.3630335330963135,
-    "rmse_xy_ai": null,
-    "rmse_theta_ai": null,
+    "rmse_xy_baseline": 0.3734000027179718,
+    "rmse_theta_baseline": 0.08941863477230072,
+    "rmse_xy_ai": 0.5289567112922668,
+    "rmse_theta_ai": 0.19366824626922607,
     "iou_map_baseline": null,
     "iou_map_ai": null
   },
@@ -14,7 +14,7 @@
     "trajectory_png": "out/trajectory.png",
     "errors_png": "out/errors.png",
     "maps_png": "out/maps.png",
-    "reference_map_yaml": "/home/matejko/SLAM/ai_slam_ws/install/ai_slam_eval/share/ai_slam_eval/maps/reference_map.yaml",
+    "reference_map_yaml": "/home/matejko/SLAM_AI/ai_slam_ws/install/ai_slam_eval/share/ai_slam_eval/maps/reference_map.yaml",
     "map_topic_baseline": "/map",
     "map_topic_ai": "/map_ai",
     "dataset_npz": "out/dataset.npz",

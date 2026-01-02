@@ -3,7 +3,7 @@
   <name>ai_slam_ai</name>
   <version>0.1.0</version>
   <description>Dataset, training and inference nodes (PyTorch) for drift correction.</description>
-  <maintainer email="noreply@example.com">Kałamarnica</maintainer>
+  <maintainer email="r.janek2002@gmail.com">Matejko240</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>

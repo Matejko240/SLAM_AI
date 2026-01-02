@@ -1,0 +1,21 @@
+running egg_info
+writing ..\..\..\build\ai_slam_description\ai_slam_description.egg-info\PKG-INFO
+writing dependency_links to ..\..\..\build\ai_slam_description\ai_slam_description.egg-info\dependency_links.txt
+writing requirements to ..\..\..\build\ai_slam_description\ai_slam_description.egg-info\requires.txt
+writing top-level names to ..\..\..\build\ai_slam_description\ai_slam_description.egg-info\top_level.txt
+reading manifest file '..\..\..\build\ai_slam_description\ai_slam_description.egg-info\SOURCES.txt'
+writing manifest file '..\..\..\build\ai_slam_description\ai_slam_description.egg-info\SOURCES.txt'
+running build
+running build_py
+creating \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\build\ai_slam_description\build
+creating \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\build\ai_slam_description\build\lib
+creating \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\build\ai_slam_description\build\lib\ai_slam_description
+copying ai_slam_description\init.py -> \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\build\ai_slam_description\build\lib\ai_slam_description
+running install
+running install_lib
+creating \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\Lib\site-packages\ai_slam_description
+copying \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\build\ai_slam_description\build\lib\ai_slam_description\init.py -> \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\Lib\site-packages\ai_slam_description
+byte-compiling \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\Lib\site-packages\ai_slam_description\init.py to init.cpython-310.pyc
+running install_data
+copying resource\ai_slam_description -> \\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\share\ament_index\resource_index\packages
+error: could not create '\\wsl.localhost\Ubuntu\home\matejko\SLAM_AI\install\ai_slam_description\share\ament_index\resource_index\packages\ai_slam_description': No such file or directory

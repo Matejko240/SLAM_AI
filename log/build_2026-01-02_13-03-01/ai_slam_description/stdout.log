@@ -1,0 +1,24 @@
+running develop
+running egg_info
+creating ai_slam_description.egg-info
+writing ai_slam_description.egg-info/PKG-INFO
+writing dependency_links to ai_slam_description.egg-info/dependency_links.txt
+writing requirements to ai_slam_description.egg-info/requires.txt
+writing top-level names to ai_slam_description.egg-info/top_level.txt
+writing manifest file 'ai_slam_description.egg-info/SOURCES.txt'
+reading manifest file 'ai_slam_description.egg-info/SOURCES.txt'
+writing manifest file 'ai_slam_description.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/matejko/SLAM_AI/install/ai_slam_description/lib/python3.12/site-packages/ai-slam-description.egg-link (link to .)
+
+Installed /home/matejko/SLAM_AI/build/ai_slam_description
+running symlink_data
+creating /home/matejko/SLAM_AI/install/ai_slam_description/share/ament_index
+creating /home/matejko/SLAM_AI/install/ai_slam_description/share/ament_index/resource_index
+creating /home/matejko/SLAM_AI/install/ai_slam_description/share/ament_index/resource_index/packages
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_description/resource/ai_slam_description -> /home/matejko/SLAM_AI/install/ai_slam_description/share/ament_index/resource_index/packages
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_description/package.xml -> /home/matejko/SLAM_AI/install/ai_slam_description/share/ai_slam_description
+creating /home/matejko/SLAM_AI/install/ai_slam_description/share/ai_slam_description/urdf
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_description/urdf/diffbot.urdf -> /home/matejko/SLAM_AI/install/ai_slam_description/share/ai_slam_description/urdf
+creating /home/matejko/SLAM_AI/install/ai_slam_description/share/ai_slam_description/models
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_description/models/diffbot.sdf -> /home/matejko/SLAM_AI/install/ai_slam_description/share/ai_slam_description/models

@@ -1,0 +1,15 @@
+package.xml
+setup.cfg
+setup.py
+ai_slam_eval/eval_node.py
+ai_slam_eval/init.py
+ai_slam_eval.egg-info/PKG-INFO
+ai_slam_eval.egg-info/SOURCES.txt
+ai_slam_eval.egg-info/dependency_links.txt
+ai_slam_eval.egg-info/entry_points.txt
+ai_slam_eval.egg-info/requires.txt
+ai_slam_eval.egg-info/top_level.txt
+ai_slam_eval.egg-info/zip-safe
+maps/reference_map.pgm
+maps/reference_map.yaml
+resource/ai_slam_eval
