@@ -30,7 +30,7 @@
     </link>
 
     <link name="left_wheel_link">
-      <pose>0 0.11 0.05 0 0 0</pose>
+      <pose>0 0.13 0.05 1.5708 0 0</pose>
       <inertial>
         <mass>0.3</mass>
         <inertia>
@@ -41,18 +41,22 @@
       </inertial>
       <collision name="left_wheel_collision">
         <geometry>
-          <cylinder><radius>0.05</radius><length>0.02</length></cylinder>
+          <cylinder><radius>0.05</radius><length>0.04</length></cylinder>
         </geometry>
       </collision>
       <visual name="left_wheel_visual">
         <geometry>
-          <cylinder><radius>0.05</radius><length>0.02</length></cylinder>
+          <cylinder><radius>0.05</radius><length>0.04</length></cylinder>
         </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
       </visual>
     </link>
 
     <link name="right_wheel_link">
-      <pose>0 -0.11 0.05 0 0 0</pose>
+      <pose>0 -0.13 0.05 1.5708 0 0</pose>
       <inertial>
         <mass>0.3</mass>
         <inertia>
@@ -63,13 +67,17 @@
       </inertial>
       <collision name="right_wheel_collision">
         <geometry>
-          <cylinder><radius>0.05</radius><length>0.02</length></cylinder>
+          <cylinder><radius>0.05</radius><length>0.04</length></cylinder>
         </geometry>
       </collision>
       <visual name="right_wheel_visual">
         <geometry>
-          <cylinder><radius>0.05</radius><length>0.02</length></cylinder>
+          <cylinder><radius>0.05</radius><length>0.04</length></cylinder>
         </geometry>
+        <material>
+          <ambient>0.2 0.2 0.2 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+        </material>
       </visual>
     </link>
 
@@ -77,7 +85,7 @@
       <parent>base_link</parent>
       <child>left_wheel_link</child>
       <axis>
-        <xyz>0 1 0</xyz>
+        <xyz expressed_in="__model__">0 1 0</xyz>
         <limit><lower>-1e16</lower><upper>1e16</upper></limit>
       </axis>
     </joint>
@@ -86,7 +94,7 @@
       <parent>base_link</parent>
       <child>right_wheel_link</child>
       <axis>
-        <xyz>0 1 0</xyz>
+        <xyz expressed_in="__model__">0 1 0</xyz>
         <limit><lower>-1e16</lower><upper>1e16</upper></limit>
       </axis>
     </joint>

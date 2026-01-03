@@ -11,6 +11,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 
 from .common import seed_all, ensure_dir, wrap, xytheta_from_odom, xytheta_from_pose_stamped
+from .experiment_logger import ExperimentLogger
 
 
 class DatasetRecorder(Node):
@@ -18,7 +19,8 @@ class DatasetRecorder(Node):
         super().__init__("dataset_recorder")
         self.declare_parameter("seed", 123)
         self.declare_parameter("out_dir", "out")
-        self.declare_parameter("duration_sec", 60)
+        self.declare_parameter("experiment_id", "")
+        self.declare_parameter("duration_sec", 60.0)
         self.declare_parameter("max_samples", 5000)
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("odom_topic", "/odom")
@@ -28,13 +30,20 @@ class DatasetRecorder(Node):
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
 
-        self.out_dir = os.path.abspath(str(self.get_parameter("out_dir").value))
+        base_out_dir = os.path.abspath(str(self.get_parameter("out_dir").value))
+        experiment_id = str(self.get_parameter("experiment_id").value) or None
+        
+        # Inicjalizacja loggera eksperymentu (tworzy podfolder)
+        self.exp_logger = ExperimentLogger(base_out_dir, experiment_id)
+        self.out_dir = self.exp_logger.get_output_dir()
+        
         self.duration_sec = float(self.get_parameter("duration_sec").value)
         self.max_samples = int(self.get_parameter("max_samples").value)
         self.dataset_path = os.path.join(self.out_dir, str(self.get_parameter("dataset_name").value))
 
         ensure_dir(self.out_dir)
         self.get_logger().info(f"Output directory: {self.out_dir}")
+        self.get_logger().info(f"Experiment ID: {self.exp_logger.experiment_id}")
 
         self.latest_odom = None
         self.latest_gt = None
@@ -62,12 +71,27 @@ class DatasetRecorder(Node):
         self.topics_ready = False
         self.odom_count = 0
         self.gt_count = 0
+        self.experiment_start = time.time()  # Global experiment start time
+        
+        # Logowanie startu zbierania datasetu
+        self.exp_logger.start_dataset_collection(
+            seed=self.seed,
+            duration_sec=self.duration_sec,
+            max_samples=self.max_samples,
+            scan_topic=str(self.get_parameter('scan_topic').value),
+            odom_topic=str(self.get_parameter('odom_topic').value),
+            gt_topic=str(self.get_parameter('gt_topic').value)
+        )
 
     def wait_for_topics(self):
         if self.topics_ready:
             return
         if self.latest_odom is not None and self.latest_gt is not None:
-            self.get_logger().info(f"Topics ready! Odom msgs: {self.odom_count}, GT msgs: {self.gt_count}, starting data collection...")
+            elapsed_exp = time.time() - self.experiment_start
+            self.get_logger().info("="*60)
+            self.get_logger().info(f"[FAZA 1] ZBIERANIE DANYCH - START (t={elapsed_exp:.0f}s)")
+            self.get_logger().info(f"Planowany czas: {self.duration_sec}s | Zakończenie: ~t={elapsed_exp + self.duration_sec:.0f}s")
+            self.get_logger().info("="*60)
             self.topics_ready = True
             # Reset t0 when topics are ready to start timing from now
             self.t0 = self.get_clock().now()
@@ -138,7 +162,11 @@ class DatasetRecorder(Node):
             rclpy.shutdown()
             return
 
-        self.get_logger().info(f"Saving dataset with {len(self.y)} samples...")
+        elapsed_exp = time.time() - self.experiment_start
+        self.get_logger().info("="*60)
+        self.get_logger().info(f"[FAZA 1] ZBIERANIE DANYCH - KONIEC (t={elapsed_exp:.0f}s)")
+        self.get_logger().info(f"Zebrano {len(self.y)} próbek w {elapsed_str}")
+        self.get_logger().info("="*60)
         
         X_scan = np.stack(self.x_scan).astype(np.float32)
         X_odom = np.asarray(self.x_odom, dtype=np.float32)
@@ -179,8 +207,18 @@ class DatasetRecorder(Node):
             self.get_logger().error(f"Dataset file was not created: {self.dataset_path}")
             rclpy.shutdown()
             return
+        
+        # Logowanie zakończenia zbierania datasetu
+        actual_duration = (self.get_clock().now() - self.t0).nanoseconds * 1e-9 if self.t0 else 0
+        self.exp_logger.end_dataset_collection(
+            n_samples=len(Y),
+            scan_dim=int(X_scan.shape[1]),
+            actual_duration_sec=actual_duration,
+            file_path=self.dataset_path
+        )
             
         self.get_logger().info(f"Saved dataset: {self.dataset_path} (n={len(Y)})")
+        self.get_logger().info(f"Metadata saved: {os.path.join(self.out_dir, 'experiment_metadata.json')}")
         rclpy.shutdown()
 
 
@@ -189,7 +227,15 @@ def main():
     node = DatasetRecorder()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
-        if rclpy.ok():
-            rclpy.shutdown()
-        node.destroy_node()
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass

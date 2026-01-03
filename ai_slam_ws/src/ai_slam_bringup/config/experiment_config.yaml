@@ -1,0 +1,115 @@
+# ============================================================================
+# AI SLAM - Centralna Konfiguracja Eksperymentu
+# ============================================================================
+# Ten plik zawiera wszystkie parametry eksperymentu w jednym miejscu.
+# Używaj tego pliku do konfiguracji czasów, trenowania, ewaluacji itp.
+#
+# Użycie:
+#   ros2 launch ai_slam_bringup demo.launch.py config:=experiment_config.yaml
+#   ros2 launch ai_slam_bringup demo.launch.py config:=fast_test.yaml
+# ============================================================================
+
+# --- OGÓLNE USTAWIENIA EKSPERYMENTU ---
+experiment:
+  mode: "ai"                    # "baseline" - tylko SLAM, "ai" - pełny pipeline z AI
+  seed: 123                     # Seed dla powtarzalności (odom_corruptor, driver, trening)
+  gui: true                   # true = włącz GUI Gazebo, false = headless (szybsze)
+
+# --- CZASY EKSPERYMENTU (w sekundach) ---
+timing:
+  # Faza 1: Zbieranie danych
+  dataset_duration: 120.0        # Czas zbierania datasetu (faza 1)
+  dataset_start_delay: 5.0      # Opóźnienie startu zbierania (po spawnie robota)
+  
+  # Faza 2: Trening modelu  
+  dataset_wait_timeout: 240.0   # Max czas oczekiwania na dataset przed treningiem
+  
+  # Faza 3-4: Inferencja i ewaluacja
+  experiment_duration: 240.0    # Całkowity czas eksperymentu (od startu do końca)
+  
+  # Wewnętrzne opóźnienia (zaawansowane)
+  bridge_delay: 3.0             # Opóźnienie startu bridge'a Gazebo
+  spawn_delay: 5.0              # Opóźnienie spawnowania robota
+  slam_configure_delay: 2.0     # Opóźnienie konfiguracji SLAM toolbox
+
+# --- PARAMETRY ZBIERANIA DANYCH (dataset_recorder) ---
+dataset:
+  max_samples: 5000             # Maksymalna liczba próbek w datasecie
+  sample_rate: 10.0             # Próbki na sekundę (Hz)
+  scan_topic: "/scan"           # Topic skanów LiDAR
+  odom_topic: "/odom"           # Topic odometrii (corrupted)
+  gt_topic: "/ground_truth_pose" # Topic ground truth
+
+# --- PARAMETRY TRENOWANIA (train_model) ---
+training:
+  # Architektura sieci
+  architecture: "mlp"           # "mlp" (obecnie jedyna opcja)
+  hidden_layers: [256, 128, 64] # Rozmiary warstw ukrytych
+  
+  # Hiperparametry trenowania
+  max_epochs: 200               # Maksymalna liczba epok
+  patience: 20                  # Early stopping - liczba epok bez poprawy
+  min_delta: 0.00001            # Minimalna poprawa dla early stopping
+  learning_rate: 0.001          # Learning rate (Adam optimizer)
+  batch_size: 128               # Rozmiar batcha
+  validation_ratio: 0.2         # Proporcja danych walidacyjnych (0.0-1.0)
+  
+  # Opcje
+  skip_if_model_exists: true    # Pomiń trening jeśli model już istnieje
+
+# --- PARAMETRY INFERENCJI (infer_node) ---
+inference:
+  scan_topic: "/scan_slam"      # Topic skanów do inferencji (po scan_fix)
+  odom_topic: "/odom"           # Topic odometrii wejściowej
+  output_pose_topic: "/pose_ai" # Topic publikowania poprawionej pozycji
+  output_odom_topic: "/odom_ai" # Topic publikowania poprawionej odometrii
+  tf_parent_frame: "odom_ai"    # Parent frame dla TF
+  tf_child_frame: "base_link"   # Child frame dla TF
+  model_wait_timeout: 300.0     # Max czas oczekiwania na model (sekundy)
+
+# --- PARAMETRY EWALUACJI (eval_node) ---
+evaluation:
+  # Mapy
+  reference_map_yaml: ""        # Ścieżka do mapy referencyjnej (puste = domyślna)
+  map_topic_baseline: "/map"    # Topic mapy baseline
+  map_topic_ai: "/map_ai"       # Topic mapy AI
+  
+  # Metryki
+  compute_rmse: true            # Oblicz RMSE (xy, theta)
+  compute_iou: true             # Oblicz IOU map
+  
+  # Wizualizacje
+  save_trajectory_plot: true    # Zapisz wykres trajektorii
+  save_error_plot: true         # Zapisz wykres błędów
+  save_map_comparison: true     # Zapisz porównanie map
+
+# --- PARAMETRY ODOMETRII (odom_corruptor) ---
+odometry:
+  # Parametry szumu (random walk)
+  rw_sigma_xy: 0.005            # Sigma szumu pozycyjnego (m/sqrt(s))
+  rw_sigma_theta: 0.003         # Sigma szumu kątowego (rad/sqrt(s))
+  
+  # Frames
+  input_topic: "/odom_raw"      # Topic wejściowej odometrii (z Gazebo)
+  output_topic: "/odom"         # Topic wyjściowej odometrii (corrupted)
+  frame_id: "odom"              # Frame ID odometrii
+  child_frame_id: "base_link"   # Child frame ID
+
+# --- PARAMETRY ROBOTA (auto_driver) ---
+driver:
+  linear_velocity: 0.3          # Prędkość liniowa (m/s)
+  angular_velocity: 0.5         # Prędkość kątowa (rad/s)
+  turn_probability: 0.02        # Prawdopodobieństwo skrętu (per tick)
+  obstacle_threshold: 0.5       # Próg detekcji przeszkody (m)
+  
+# --- WYJŚCIE ---
+output:
+  base_dir: "out"               # Katalog bazowy na eksperymenty
+  # Automatycznie generowane:
+  # - out/exp_YYYYMMDD_HHMMSS/dataset.npz
+  # - out/exp_YYYYMMDD_HHMMSS/model.pt
+  # - out/exp_YYYYMMDD_HHMMSS/train_history.json
+  # - out/exp_YYYYMMDD_HHMMSS/experiment_metadata.json
+  # - out/exp_YYYYMMDD_HHMMSS/trajectory.png
+  # - out/exp_YYYYMMDD_HHMMSS/errors.png
+  # - out/exp_YYYYMMDD_HHMMSS/maps.png

@@ -1,15 +1,11 @@
 <?xml version="1.0"?>
 <robot name="diffbot">
-  <link name="world"/>
+  <!-- 
+  TF tree: odom -> base_link -> laser_link
+  odom -> base_link is published by odom_corruptor
+  base_link -> laser_link is published by robot_state_publisher
+  -->
   
-  <link name="base_footprint"/>
-  
-  <joint name="base_joint" type="fixed">
-    <parent link="world"/>
-    <child link="base_footprint"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </joint>
-
   <link name="base_link">
     <visual>
       <origin xyz="0 0 0.05" rpy="0 0 0"/>
@@ -18,12 +14,6 @@
       </geometry>
     </visual>
   </link>
-
-  <joint name="base_footprint_joint" type="fixed">
-    <parent link="base_footprint"/>
-    <child link="base_link"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </joint>
 
   <link name="base_inertia">
     <inertial>

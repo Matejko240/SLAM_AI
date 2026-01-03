@@ -30,8 +30,8 @@ class OdomCorruptor(Node):
     def __init__(self):
         super().__init__("odom_corruptor")
         self.declare_parameter("seed", 123)
-        self.declare_parameter("rw_sigma_xy", 0.02)
-        self.declare_parameter("rw_sigma_theta", 0.01)
+        self.declare_parameter("rw_sigma_xy", 0.005)
+        self.declare_parameter("rw_sigma_theta", 0.003)
         self.declare_parameter("frame_id", "odom")
         self.declare_parameter("child_frame_id", "base_link")
         self.declare_parameter("in_topic", "/odom_raw")
@@ -112,6 +112,15 @@ def main():
     node = OdomCorruptor()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass

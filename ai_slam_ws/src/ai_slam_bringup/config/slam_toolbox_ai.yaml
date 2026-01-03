@@ -1,6 +1,7 @@
-slam_toolbox:
+slam_toolbox_ai:
   ros__parameters:
     use_sim_time: true
+    use_lifecycle_manager: false
     mode: mapping
     scan_topic: /scan_slam
     base_frame: base_link
