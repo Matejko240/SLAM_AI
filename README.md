@@ -25,8 +25,8 @@ source install/setup.bash
 
 **Domyślny eksperyment (pełna konfiguracja):**
 ```bash
-./scripts/cleanup.sh
 cd ~/SLAM_AI
+./scripts/cleanup.sh
 ./scripts/run_experiment.sh
 ```
 
@@ -236,24 +236,6 @@ Każdy eksperyment tworzy folder `out/exp_YYYYMMDD_HHMMSS/` zawierający:
 
 ## Troubleshooting
 
-### Robot nie widoczny w Gazebo
-```bash
-./scripts/cleanup.sh
-sleep 2
-ros2 launch ai_slam_bringup demo.launch.py gui:=true
-```
-
-### Brak wyników
-```bash
-# Sprawdź czy jesteś w ai_slam_ws
-pwd  # Powinno być: ~/SLAM_AI/ai_slam_ws
-
-# Lista eksperymentów
-ls -lt out/
-
-# Najnowsze wyniki
-cat out/exp_*/results.json | tail -20
-```
 
 ### AI nie poprawia wyników
 - Zwiększ `dataset_duration` w config (więcej danych)
@@ -309,8 +291,7 @@ Po zebraniu danych (FAZA 1) można przeanalizować dataset za pomocą skryptu:
 ```bash
 cd ~/SLAM_AI
 source .venv/bin/activate
-cd ai_slam_ws
-python ../scripts/inspect_dataset.py
+python3 scripts/inspect_dataset.py out/exp_20260103_151922
 ```
 
 Skrypt generuje:

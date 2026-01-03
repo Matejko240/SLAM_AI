@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import yaml
-
+import argparse
 # Ścieżki
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE_DIR = os.path.join(SCRIPT_DIR, '..', 'ai_slam_ws')
@@ -73,27 +73,47 @@ def scan_to_points(scan, pose, max_range=5.0):
     return global_x, global_y
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Inspekcja datasetu i porównanie do mapy referencyjnej."
+    )
+    parser.add_argument(
+        "dataset_dir",
+        nargs="?",
+        default=os.path.join(WORKSPACE_DIR, "out"),
+        help="Ścieżka do folderu eksperymentu (np. out/exp_20260103_151922). "
+             "Domyślnie: ai_slam_ws/out"
+    )
+    args = parser.parse_args()
+
+    dataset_dir = os.path.abspath(args.dataset_dir)
+    dataset_path = os.path.join(dataset_dir, "dataset.npz")
+    output_path = os.path.join(dataset_dir, "dataset_analysis.png")
+
+    if not os.path.isdir(dataset_dir):
+        raise FileNotFoundError(f"Nie istnieje folder datasetu: {dataset_dir}")
+    if not os.path.isfile(dataset_path):
+        raise FileNotFoundError(f"Nie znaleziono pliku datasetu: {dataset_path}")
+
     # Wczytaj dataset
-    print(f'Wczytywanie datasetu: {DATASET_PATH}')
-    data = np.load(DATASET_PATH, allow_pickle=True)
+    print(f"Wczytywanie datasetu: {dataset_path}")
+    data = np.load(dataset_path, allow_pickle=True)
 
     # Pokaż dostępne klucze
-    print('Klucze w datasecie:', list(data.keys()))
+    print("Klucze w datasecie:", list(data.keys()))
     print()
 
     # Wczytaj dane
-    X_scan = data['X_scan']  # Skany LiDAR
-    X_odom = data['X_odom']  # Odometria (x, y, theta)
-    Y = data['Y']            # Ground truth korekty (dx, dy, dtheta)
-    meta = data['meta'].item()  # Metadane
+    X_scan = data["X_scan"]
+    X_odom = data["X_odom"]
+    Y = data["Y"]
+    meta = data["meta"].item()
 
-    print('X_scan shape:', X_scan.shape, '- skany LiDAR (n_samples x 360 promieni)')
-    print('X_odom shape:', X_odom.shape, '- odometria (n_samples x 3: x,y,theta)')
-    print('Y shape:', Y.shape, '- korekty GT (n_samples x 3: dx,dy,dtheta)')
+    print("X_scan shape:", X_scan.shape, "- skany LiDAR (n_samples x 360 promieni)")
+    print("X_odom shape:", X_odom.shape, "- odometria (n_samples x 3: x,y,theta)")
+    print("Y shape:", Y.shape, "- korekty GT (n_samples x 3: dx,dy,dtheta)")
     print()
-    print('Metadane:', meta)
+    print("Metadane:", meta)
     print()
-
     # Statystyki korekt
     print('=== Statystyki korekt Y ===')
     print(f'dx:     mean={Y[:,0].mean():.6f}, std={Y[:,0].std():.6f}, min={Y[:,0].min():.6f}, max={Y[:,0].max():.6f}')
@@ -214,13 +234,13 @@ def main():
     cbar.set_label('Numer próbki')
 
     plt.tight_layout()
-    plt.savefig(OUTPUT_PATH, dpi=150)
-    print(f'\nZapisano wizualizację: {OUTPUT_PATH}')
+    plt.savefig(output_path, dpi=150)
+    print(f"\nZapisano wizualizację: {output_path}")
     plt.show()
 
-    print('\nPrzykładowy skan (pierwsze 10 wartości):', X_scan[0][:10])
-    print('Przykładowa odometria (x,y,theta):', X_odom[0])
-    print('Przykładowa korekta (dx,dy,dtheta):', Y[0])
+    print("\nPrzykładowy skan (pierwsze 10 wartości):", X_scan[0][:10])
+    print("Przykładowa odometria (x,y,theta):", X_odom[0])
+    print("Przykładowa korekta (dx,dy,dtheta):", Y[0])
 
 if __name__ == '__main__':
     main()
