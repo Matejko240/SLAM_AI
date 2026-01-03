@@ -510,14 +510,14 @@ class EvalNode(Node):
                 n_samples=len(self.ts),
                 artifacts=results["artifacts"]
             )
-            self.exp_logger.finalize()
+
             
             # Poczekaj, aby infer_node zdążył zapisać swoje dane do metadata.json
             # Infer_node zazwyczaj kończy się kilka sekund po evaluation,
             # więc czekamy, aby CSV miał wszystkie dane
             self.get_logger().info("Waiting 15s for infer_node to save metadata...")
             time.sleep(15.0)
-            
+            self.exp_logger.finalize()
             # Dodaj do pliku podsumowania wszystkich eksperymentów
             # Wczytuje najnowsze dane z metadata.json, więc inference data też będą uwzględnione
             summary_path = self.exp_logger.append_to_summary()
@@ -652,6 +652,11 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            if getattr(node, "exp_logger", None) is not None:
+                node.exp_logger.finalize()
+        except Exception as e:
+            node.get_logger().error(f"Finalize failed: {e}")
         try:
             node.destroy_node()
         except Exception:

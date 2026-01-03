@@ -344,7 +344,10 @@ class ExperimentLogger:
         else:
             self.log = ExperimentLog(experiment_id=self.experiment_id)
         
-        self._experiment_start = time.time()
+        try:
+            self._experiment_start = datetime.fromisoformat(self.log.created_at).timestamp()
+        except Exception:
+            self._experiment_start = time.time()
     
     def _find_or_create_experiment_id(self) -> str:
         """
@@ -614,9 +617,12 @@ class ExperimentLogger:
     
     def finalize(self):
         """Finalizuje eksperyment i zapisuje całkowity czas."""
+        if self.log.total_experiment_time_sec is not None:
+            return
         self.log.total_experiment_time_sec = time.time() - self._experiment_start
         self.log.add_note(f"Experiment finalized. Total time: {self.log.total_experiment_time_sec:.1f}s")
         self.save()
+
     
     def _merge_timing(self, current: dict, saved: dict) -> dict:
         """Scala timing - zachowuje istniejące wartości, dodaje brakujące."""
@@ -681,6 +687,15 @@ class ExperimentLogger:
                 # Zachowaj wcześniejszy created_at
                 if saved_data.get("created_at"):
                     current_data["created_at"] = saved_data["created_at"]
+                    
+                # Zachowaj total_experiment_time_sec, jeśli już było policzone wcześniej
+                if (saved_data.get("total_experiment_time_sec") is not None
+                        and current_data.get("total_experiment_time_sec") is None):
+                    current_data["total_experiment_time_sec"] = saved_data["total_experiment_time_sec"]
+
+                # Zachowaj total_experiment_time_sec jeśli została ustawiona (nie nadpisuj None wartością)
+                if current_data.get("total_experiment_time_sec") is None and saved_data.get("total_experiment_time_sec") is not None:
+                    current_data["total_experiment_time_sec"] = saved_data["total_experiment_time_sec"]
                     
             except (json.JSONDecodeError, IOError):
                 pass  # Jeśli nie można wczytać, użyj bieżących danych
