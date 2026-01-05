@@ -1,2 +1,0 @@
-[console_scripts]
-eval_node = ai_slam_eval.eval_node:main

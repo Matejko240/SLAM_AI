@@ -9,3 +9,5 @@ out/*
 .vscode/
 .venv/
 build/
+.zencoder/
+.zenflow/
