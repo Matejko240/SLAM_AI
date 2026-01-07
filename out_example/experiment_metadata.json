@@ -1,0 +1,180 @@
+{
+  "experiment_id": "exp_20260103_151922",
+  "created_at": "2026-01-03T15:19:24.696433",
+  "system_info": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python_version": "3.12.3",
+    "processor": "x86_64",
+    "machine": "x86_64",
+    "torch_version": "2.9.1+cu128",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA GeForce GTX 1050 Ti",
+    "total_memory_gb": 31.23,
+    "available_memory_gb": 28.28,
+    "cpu_count": 20
+  },
+  "dataset": {
+    "timing": {
+      "start_time": "2026-01-03T15:19:24.834985",
+      "end_time": "2026-01-03T15:21:43.619539",
+      "duration_seconds": 138.78455567359924
+    },
+    "parameters": {
+      "seed": 123,
+      "target_duration_sec": 120.0,
+      "max_samples": 5000,
+      "scan_topic": "/scan",
+      "odom_topic": "/odom",
+      "gt_topic": "/ground_truth_pose"
+    },
+    "statistics": {
+      "n_samples": 1200,
+      "scan_dimension": 360,
+      "actual_duration_sec": 120.00000000000001,
+      "samples_per_second": 9.999999999999998
+    },
+    "file_path": "/home/matejko/SLAM_AI/out/exp_20260103_151922/dataset.npz",
+    "file_size_mb": 1.448
+  },
+  "training": {
+    "timing": {
+      "start_time": "2026-01-03T15:21:43.664438",
+      "end_time": "2026-01-03T15:21:48.955911",
+      "duration_seconds": 5.291473627090454
+    },
+    "parameters": {
+      "seed": 123,
+      "max_epochs": 200,
+      "patience": 20,
+      "min_delta": 1e-05,
+      "learning_rate": 0.001,
+      "validation_ratio": 0.2,
+      "batch_size": 128
+    },
+    "dataset_info": {
+      "n_total_samples": 1200,
+      "n_train_samples": 960,
+      "n_validation_samples": 240,
+      "input_dimension": 363,
+      "output_dimension": 3
+    },
+    "model_info": {
+      "architecture": "MLP(in->256->128->64->3)",
+      "total_parameters": 134531,
+      "trainable_parameters": 134531
+    },
+    "training_results": {
+      "epochs_run": 104,
+      "best_epoch": 84,
+      "best_validation_loss": 0.04159921407699585,
+      "final_training_loss": 0.0023065706773195416,
+      "early_stopped": true
+    },
+    "model_path": "/home/matejko/SLAM_AI/out/exp_20260103_151922/model.pt",
+    "history_path": "/home/matejko/SLAM_AI/out/exp_20260103_151922/train_history.json"
+  },
+  "inference": {
+    "timing": {
+      "start_time": "2026-01-03T15:21:49.084761",
+      "end_time": "2026-01-03T15:21:53.408113",
+      "duration_seconds": 4.323350667953491
+    },
+    "parameters": {
+      "seed": 123,
+      "scan_topic": "/scan_slam",
+      "odom_topic": "/odom",
+      "pose_topic": "/pose_ai",
+      "tf_parent_frame": "odom_ai",
+      "tf_child_frame": "base_link"
+    },
+    "statistics": {
+      "n_predictions": 3078,
+      "total_duration_sec": 348.9600784778595,
+      "avg_inference_time_ms": 2.0695504035384733,
+      "predictions_per_second": 8.820493202047723
+    },
+    "model_path": "/home/matejko/SLAM_AI/out/exp_20260103_151922/model.pt"
+  },
+  "evaluation": {
+    "timing": {
+      "start_time": "2026-01-03T15:19:24.847465",
+      "end_time": "2026-01-03T15:23:58.039567",
+      "duration_seconds": 273.19210290908813
+    },
+    "parameters": {
+      "seed": 123,
+      "mode": "ai",
+      "duration_sec": 240.0,
+      "reference_map_yaml": "/home/matejko/SLAM_AI/ai_slam_ws/install/ai_slam_eval/share/ai_slam_eval/maps/reference_map.yaml"
+    },
+    "metrics": {
+      "rmse_xy_baseline": 0.11087008565664291,
+      "rmse_theta_baseline": 0.024899980053305626,
+      "rmse_xy_ai": 0.0882868692278862,
+      "rmse_theta_ai": 0.05695683881640434,
+      "iou_map_baseline": 0.0417702635504724,
+      "iou_map_ai": 0.2617848970251716,
+      "n_evaluation_samples": 2370,
+      "rmse_xy_improvement_percent": 20.37,
+      "rmse_theta_improvement_percent": -128.74,
+      "iou_improvement_percent": 526.73
+    },
+    "artifacts": {
+      "trajectory_png": "/home/matejko/SLAM_AI/out/exp_20260103_151922/trajectory.png",
+      "errors_png": "/home/matejko/SLAM_AI/out/exp_20260103_151922/errors.png",
+      "maps_png": "/home/matejko/SLAM_AI/out/exp_20260103_151922/maps.png",
+      "reference_map_yaml": "/home/matejko/SLAM_AI/ai_slam_ws/install/ai_slam_eval/share/ai_slam_eval/maps/reference_map.yaml",
+      "map_topic_baseline": "/map",
+      "map_topic_ai": "/map_ai",
+      "dataset_npz": "/home/matejko/SLAM_AI/out/exp_20260103_151922/dataset.npz",
+      "model_pt": "/home/matejko/SLAM_AI/out/exp_20260103_151922/model.pt",
+      "train_history_json": "/home/matejko/SLAM_AI/out/exp_20260103_151922/train_history.json",
+      "experiment_metadata": "/home/matejko/SLAM_AI/out/exp_20260103_151922/experiment_metadata.json"
+    }
+  },
+  "total_experiment_time_sec": 291.53631138801575,
+  "notes": [
+    "[2026-01-03T15:19:24.834995] Dataset collection started",
+    "[2026-01-03T15:19:24.847478] Evaluation started",
+    "[2026-01-03T15:21:43.619598] Dataset collection completed: 1200 samples",
+    "[2026-01-03T15:21:43.664452] Training started",
+    "[2026-01-03T15:21:48.955927] Training completed: 104 epochs, best_val_loss=0.041599",
+    "[2026-01-03T15:21:49.084777] Inference started",
+    "[2026-01-03T15:21:53.408128] Inference completed: 40 predictions",
+    "[2026-01-03T15:22:04.259644] Inference completed: 140 predictions",
+    "[2026-01-03T15:22:15.065094] Inference completed: 240 predictions",
+    "[2026-01-03T15:22:27.653357] Inference completed: 340 predictions",
+    "[2026-01-03T15:22:38.475516] Inference completed: 440 predictions",
+    "[2026-01-03T15:22:49.265136] Inference completed: 540 predictions",
+    "[2026-01-03T15:23:01.873906] Inference completed: 640 predictions",
+    "[2026-01-03T15:23:12.677293] Inference completed: 740 predictions",
+    "[2026-01-03T15:23:23.457037] Inference completed: 840 predictions",
+    "[2026-01-03T15:23:36.031916] Inference completed: 940 predictions",
+    "[2026-01-03T15:23:46.786278] Inference completed: 1040 predictions",
+    "[2026-01-03T15:23:57.521763] Inference completed: 1140 predictions",
+    "[2026-01-03T15:23:58.039590] Evaluation completed",
+    "[2026-01-03T15:24:10.061096] Inference completed: 1240 predictions",
+    "[2026-01-03T15:24:14.862761] Experiment finalized. Total time: 291.5s",
+    "[2026-01-03T15:24:20.749033] Inference completed: 1340 predictions",
+    "[2026-01-03T15:24:31.490565] Inference completed: 1440 predictions",
+    "[2026-01-03T15:24:44.000911] Inference completed: 1540 predictions",
+    "[2026-01-03T15:24:54.653133] Inference completed: 1640 predictions",
+    "[2026-01-03T15:25:05.352668] Inference completed: 1740 predictions",
+    "[2026-01-03T15:25:17.901837] Inference completed: 1840 predictions",
+    "[2026-01-03T15:25:28.586082] Inference completed: 1940 predictions",
+    "[2026-01-03T15:25:39.248200] Inference completed: 2040 predictions",
+    "[2026-01-03T15:25:51.826445] Inference completed: 2140 predictions",
+    "[2026-01-03T15:26:02.482574] Inference completed: 2240 predictions",
+    "[2026-01-03T15:26:13.142409] Inference completed: 2340 predictions",
+    "[2026-01-03T15:26:25.668375] Inference completed: 2440 predictions",
+    "[2026-01-03T15:26:36.336129] Inference completed: 2540 predictions",
+    "[2026-01-03T15:26:47.017716] Inference completed: 2640 predictions",
+    "[2026-01-03T15:26:59.587076] Inference completed: 2740 predictions",
+    "[2026-01-03T15:27:10.262883] Inference completed: 2840 predictions",
+    "[2026-01-03T15:27:21.009893] Inference completed: 2940 predictions",
+    "[2026-01-03T15:27:33.501012] Inference completed: 3040 predictions",
+    "[2026-01-03T15:27:38.044864] Inference completed: 3078 predictions"
+  ]
+}
