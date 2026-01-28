@@ -38,8 +38,31 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 
 **Rola w porównaniu:**
 - główny klasyczny punkt odniesienia (pełny SLAM, mapa + lokalizacja)
+<details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (Baseline Logic)</b></summary>
 
----
+    def run_baseline_slam(scan, odom_raw):
+      """
+      Klasyczne podejście: Odom służy jako 'priori', SLAM poprawia go grafem.
+      """
+      # 1. Pobierz zaszumioną odometrię (z dryfem)
+      estimated_pose = odom_raw.pose
+
+      # 2. Frontend: Scan Matching (Karto)
+      # Dopasuj aktualny skan do lokalnej mapy, używając odometrii jako punktu startowego
+      corrected_pose = scan_match(scan, map_local, initial_guess=estimated_pose)
+
+      # 3. Backend: Graph Optimization
+      # Dodaj węzeł do grafu i zoptymalizuj pętle (Loop Closure)
+      pose_graph.add_node(corrected_pose)
+      if detect_loop_closure(scan):
+          pose_graph.optimize()
+
+      # 4. Publikacja
+      # TF: map -> odom (korekta dryfu odometrii)
+      publish_tf(map_frame, odom_frame, transform=pose_graph.latest - odom_raw)
+      return pose_graph.latest
+</details>
+
 
 ## Tor 2: SLAM Toolbox + AI (SLAM z korygowaną odometrią)
 **Node:** `slam_toolbox_ai` (`slam_toolbox/sync_slam_toolbox_node`, lifecycle)
@@ -55,8 +78,35 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 
 **Rola w porównaniu:**
 - główny tor „AI-SLAM” oceniany względem baseline
+<details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (AI Pipeline Logic)</b></summary>
 
----
+
+    def run_ai_slam_pipeline(scan, odom_raw, model_mlp):
+        """
+        AI działa jako 'filtr' naprawiający odometrię ZANIM trafi ona do SLAM-a.
+        """
+        # --- FAZA 1: Inferencja AI (infer_node.py) ---
+        
+        # Przygotuj wektor cech (skan + zmiany w odom)
+        features = extract_features(scan, odom_raw) 
+        
+        # Sieć neuronowa przewiduje błąd odometrii (dx, dy, dtheta)
+        correction_vector = model_mlp.predict(features)
+        
+        # Napraw odometrię ("Odom AI")
+        clean_odom = odom_raw.pose + correction_vector
+        
+        publish_odom(topic="/odom_ai", pose=clean_odom)
+
+        # --- FAZA 2: SLAM (slam_toolbox) ---
+        
+        # SLAM otrzymuje już "czystą" odometrię, więc jego praca jest łatwiejsza
+        # Algorytm jest ten sam co w Baseline, ale input jest lepszej jakości
+        final_map = slam_toolbox.update(scan, odom_guess=clean_odom)
+        
+        return final_map, clean_odom
+</details>
+
 
 ## Tor 3: Scan Matcher – local (klasyczne dopasowanie skanów, szybkie)
 **Node:** `scan_matcher_local` (`ai_slam_bringup/scan_matcher.py`)
@@ -77,7 +127,35 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 - `grid_res`, `grid_extent`, `max_use_range`, `max_points`
 - okna i kroki local search: `local_lvl1_*`, `local_lvl2_*`, `local_lvl3_*`
 
----
+<details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (Local Search)</b></summary>
+
+    def run_local_scan_matcher(current_scan, previous_scan, current_pose):
+        """
+        Szybki 'Local Search'. Szuka dopasowania tylko w bliskim sąsiedztwie.
+        Działa szybko, ale może wpaść w minimum lokalne przy szybkim ruchu.
+        """
+        best_score = 0
+        best_pose = current_pose
+        
+        # Zakres poszukiwań jest bardzo mały (np. +/- 5cm, +/- 1 stopień)
+        search_window = generate_local_window(size="small")
+
+        # Iteracyjne sprawdzanie sąsiedztwa (Hill Climbing)
+        for dx, dy, dth in search_window:
+            test_pose = current_pose + (dx, dy, dth)
+            
+            # Rzutowanie punktów skanu na siatkę poprzedniego skanu
+            score = calculate_overlap(current_scan, previous_scan, test_pose)
+            
+            if score > best_score:
+                best_score = score
+                best_pose = test_pose
+
+        # Całkuj ruch (dodaj deltę do globalnej pozycji)
+        global_pose += (best_pose - current_pose)
+        return global_pose
+</details>
+
 
 ## Tor 4: Scan Matcher – bruteforce (klasyczne dopasowanie skanów, referencja)
 **Node:** `scan_matcher_bruteforce` (`ai_slam_bringup/scan_matcher.py`)
@@ -98,7 +176,35 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 - `bf_range_xy`, `bf_range_th`, `bf_step_xy`, `bf_step_th`
 - `publish_every_n`
 
----
+<details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (Bruteforce Grid Search)</b></summary>
+
+    def run_bruteforce_matcher(current_scan, previous_scan):
+        """
+        Pełne przeszukiwanie siatki (Grid Search).
+        Sprawdza KAŻDĄ kombinację w zadanym zakresie. Wolne, ale znajduje globalne optimum.
+        """
+        best_score = -1
+        best_delta = (0, 0, 0)
+
+        # Parametry z launch: bf_range_xy=0.15m, bf_step_xy=0.01m
+        range_x = range(-0.15, 0.15, step=0.01)
+        range_y = range(-0.15, 0.15, step=0.01)
+        range_th = range(-0.25, 0.25, step=0.01)
+
+        # Potrójna pętla po wszystkich możliwościach
+        for x in range_x:
+            for y in range_y:
+                for th in range_th:
+                    # Sprawdź jak pasują skany przy tym przesunięciu
+                    score = score_alignment(current_scan, previous_scan, offset=(x,y,th))
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_delta = (x, y, th)
+
+        # Zwróć najlepsze przesunięcie (niezależnie od poprzedniej prędkości)
+        return integrate_position(best_delta)
+</details>
 ### Tabela porównawcza 4 torów estymacji (wejścia/wyjścia + znaczenie)
 
 > Legenda: (x, y, θ) = pozycja i orientacja robota; (Δx, Δy, Δθ) = przyrost ruchu między kolejnymi skanami LiDAR.
@@ -107,7 +213,7 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 |---|---|---|---|---|---|
 | 1. Baseline SLAM | Klasyczny SLAM (mapowanie + lokalizacja) | `slam_toolbox_baseline` (`slam_toolbox/sync_slam_toolbox_node`) | `/scan_slam` + odometria/TF (dryf) | `/map` + TF `map -> odom` | **Mapa** otoczenia + **globalna trajektoria** robota w układzie mapy (pośrednio przez TF / wewn. estymator). |
 | 2. AI SLAM | SLAM Toolbox z odometrią korygowaną przez AI | `slam_toolbox_ai` + `infer_node` | `/scan_slam` + odometria „AI” (`odom_ai`/TF z inferencji) | `/map_ai` + `/pose_ai` + TF (dla toru AI) | `/pose_ai` to **korygowana pozycja (x,y,θ)**. W tle AI estymuje korekcję ruchu (w praktyce odpowiadającą (Δx,Δy,Δθ)), integruje ją do pozycji i publikuje „lepszą” odometrię dla SLAM. | To jest Twój **główny tor** do obrony. |
-| 3. Scan-to-scan (local) |`scan_matcher_local` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_scanmatch`, `twist_topic=/twist_scanmatch` | Algorytm liczy **ruch między skanami**: (Δx,Δy,Δθ), a następnie **integruje** to do pozycji (x,y,θ) publikowanej w `/pose_scanmatch`. Dodatkowo `/twist_scanmatch` to prędkości: **v i ω** wyliczone z tych przyrostów. | 
+| 3. Scan-to-scan (local) |Estymacja ruchu między skanami (szybka, lokalna)|`scan_matcher_local` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_scanmatch`, `twist_topic=/twist_scanmatch` | Algorytm liczy **ruch między skanami**: (Δx,Δy,Δθ), a następnie **integruje** to do pozycji (x,y,θ) publikowanej w `/pose_scanmatch`. Dodatkowo `/twist_scanmatch` to prędkości: **v i ω** wyliczone z tych przyrostów. | 
 | 4. Scan-to-scan (bruteforce) | Klasyczne dopasowanie skanów przez przeszukiwanie siatki (wolniejsze, referencyjne) | `scan_matcher_bruteforce` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_bruteforce`, `twist_topic=/twist_bruteforce` | Analogicznie: w środku powstaje (Δx,Δy,Δθ) z przeszukiwania, a `/pose_bruteforce` to **zintegrowana pozycja (x,y,θ)**. `/twist_bruteforce` = **v i ω** z przyrostów. | 
 
 ## Moduł AI (dataset → trening → inferencja)
