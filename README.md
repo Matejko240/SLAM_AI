@@ -103,12 +103,12 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 
 > Legenda: (x, y, θ) = pozycja i orientacja robota; (Δx, Δy, Δθ) = przyrost ruchu między kolejnymi skanami LiDAR.
 
-| Tor | Metoda (idea) | Node / implementacja | Wejścia (ROS) | Wyjścia (ROS) | Co oznaczają wyjścia (semantyka) | Uwagi |
-|---|---|---|---|---|---|---|
-| 1. Baseline SLAM | Klasyczny SLAM (mapowanie + lokalizacja) | `slam_toolbox_baseline` (`slam_toolbox/sync_slam_toolbox_node`) | `/scan_slam` + odometria/TF (dryf) | `/map` + TF `map -> odom` | **Mapa** otoczenia + **globalna trajektoria** robota w układzie mapy (pośrednio przez TF / wewn. estymator). | Punkt odniesienia „klasyka”. |
+| Tor | Metoda (idea) | Node / implementacja | Wejścia (ROS) | Wyjścia (ROS) | Co oznaczają wyjścia (semantyka) |
+|---|---|---|---|---|---|
+| 1. Baseline SLAM | Klasyczny SLAM (mapowanie + lokalizacja) | `slam_toolbox_baseline` (`slam_toolbox/sync_slam_toolbox_node`) | `/scan_slam` + odometria/TF (dryf) | `/map` + TF `map -> odom` | **Mapa** otoczenia + **globalna trajektoria** robota w układzie mapy (pośrednio przez TF / wewn. estymator). |
 | 2. AI SLAM | SLAM Toolbox z odometrią korygowaną przez AI | `slam_toolbox_ai` + `infer_node` | `/scan_slam` + odometria „AI” (`odom_ai`/TF z inferencji) | `/map_ai` + `/pose_ai` + TF (dla toru AI) | `/pose_ai` to **korygowana pozycja (x,y,θ)**. W tle AI estymuje korekcję ruchu (w praktyce odpowiadającą (Δx,Δy,Δθ)), integruje ją do pozycji i publikuje „lepszą” odometrię dla SLAM. | To jest Twój **główny tor** do obrony. |
-| 3. Scan-to-scan (local) | Klasyczne dopasowanie 2 kolejnych skanów (szybkie, lokalne przeszukiwanie) | `scan_matcher_local` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_scanmatch`, `twist_topic=/twist_scanmatch` | Algorytm liczy **ruch między skanami**: (Δx,Δy,Δθ), a następnie **integruje** to do pozycji (x,y,θ) publikowanej w `/pose_scanmatch`. Dodatkowo `/twist_scanmatch` to prędkości: **v i ω** wyliczone z tych przyrostów. | Lekki baseline „scan matching”; szybki, ale wrażliwy na słabe pokrycie skanów. |
-| 4. Scan-to-scan (bruteforce) | Klasyczne dopasowanie skanów przez przeszukiwanie siatki (wolniejsze, referencyjne) | `scan_matcher_bruteforce` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_bruteforce`, `twist_topic=/twist_bruteforce` | Analogicznie: w środku powstaje (Δx,Δy,Δθ) z przeszukiwania, a `/pose_bruteforce` to **zintegrowana pozycja (x,y,θ)**. `/twist_bruteforce` = **v i ω** z przyrostów. | Wolniejszy, ale dobry jako „sanity-check” porównawczy. |
+| 3. Scan-to-scan (local) |`scan_matcher_local` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_scanmatch`, `twist_topic=/twist_scanmatch` | Algorytm liczy **ruch między skanami**: (Δx,Δy,Δθ), a następnie **integruje** to do pozycji (x,y,θ) publikowanej w `/pose_scanmatch`. Dodatkowo `/twist_scanmatch` to prędkości: **v i ω** wyliczone z tych przyrostów. | 
+| 4. Scan-to-scan (bruteforce) | Klasyczne dopasowanie skanów przez przeszukiwanie siatki (wolniejsze, referencyjne) | `scan_matcher_bruteforce` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_bruteforce`, `twist_topic=/twist_bruteforce` | Analogicznie: w środku powstaje (Δx,Δy,Δθ) z przeszukiwania, a `/pose_bruteforce` to **zintegrowana pozycja (x,y,θ)**. `/twist_bruteforce` = **v i ω** z przyrostów. | 
 
 ## Moduł AI (dataset → trening → inferencja)
 ### FAZA 1: Dataset
