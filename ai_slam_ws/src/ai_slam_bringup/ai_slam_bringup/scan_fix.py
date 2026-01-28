@@ -25,7 +25,7 @@ class ScanFix(Node):
 
     def on_scan(self, msg: LaserScan):
         ranges = np.asarray(msg.ranges, dtype=np.float32)
-        rmax = float(msg.range_max) if msg.range_max > 0.0 else 6.0
+        rmax = float(msg.range_max) if msg.range_max > 0.0 else 10.0
         ranges = np.where(np.isfinite(ranges), ranges, rmax)
         ranges = np.clip(ranges, float(msg.range_min), rmax)
 
@@ -42,7 +42,7 @@ class ScanFix(Node):
         out.angle_increment = (2.0 * math.pi) / float(self.target_samples)
         out.time_increment = 0.0
         out.scan_time = msg.scan_time if msg.scan_time > 0.0 else 0.1
-        out.range_min = float(msg.range_min) if msg.range_min > 0.0 else 0.12
+        out.range_min = float(msg.range_min) if msg.range_min > 0.0 else 0.08
         out.range_max = rmax
         out.ranges = ranges.tolist()
         out.intensities = []

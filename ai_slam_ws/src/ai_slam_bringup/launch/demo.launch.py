@@ -64,6 +64,15 @@ def get_config_value(config: dict, *keys, default=None):
     return value
 
 
+def merge_params(*param_dicts):
+    """Łączy słowniki parametrów, ignorując wartości niebędące dict."""
+    merged = {}
+    for params in param_dicts:
+        if isinstance(params, dict):
+            merged.update(params)
+    return merged
+
+
 def launch_setup(context, *args, **kwargs):
     """Funkcja setup wywoływana w runtime z dostępem do kontekstu."""
     
@@ -122,6 +131,13 @@ def launch_setup(context, *args, **kwargs):
     driver_angular_vel = float(get_config_value(cfg, "driver", "angular_velocity", default=0.5))
     driver_turn_prob = float(get_config_value(cfg, "driver", "turn_probability", default=0.02))
     driver_obstacle_thresh = float(get_config_value(cfg, "driver", "obstacle_threshold", default=0.5))
+
+    # === SLAM TOOLBOX ===
+    slam_common_cfg = get_config_value(cfg, "slam", "common", default={})
+    slam_baseline_cfg = get_config_value(cfg, "slam", "baseline", default={})
+    slam_ai_cfg = get_config_value(cfg, "slam", "ai", default={})
+    slam_baseline_params = merge_params(slam_common_cfg, slam_baseline_cfg)
+    slam_ai_params = merge_params(slam_common_cfg, slam_ai_cfg)
     
     # === OUTPUT ===
     out_dir = str(get_param("out_dir", ["output", "base_dir"], "out"))
@@ -223,6 +239,48 @@ def launch_setup(context, *args, **kwargs):
         parameters=[{"use_sim_time": True}],
         output="screen",
     )
+    
+    scan_matcher_local = Node(
+        package="ai_slam_bringup",
+        executable="scan_matcher",
+        name="scan_matcher_local",
+        parameters=[{
+            "use_sim_time": True,
+            "method": "local",
+            "scan_topic": "/scan_slam",
+            "pose_topic": "/pose_scanmatch",
+            "twist_topic": "/twist_scanmatch",
+            "frame_id": "odom",
+            "tf_parent": "odom_scanmatch",
+            "tf_child": "base_link_scanmatch",
+            "publish_tf": True,
+            "publish_every_n": 1,
+        }],
+        output="screen",
+    )
+
+    scan_matcher_bruteforce = Node(
+        package="ai_slam_bringup",
+        executable="scan_matcher",
+        name="scan_matcher_bruteforce",
+        parameters=[{
+            "use_sim_time": True,
+            "method": "bruteforce",
+            "scan_topic": "/scan_slam",
+            "pose_topic": "/pose_bruteforce",
+            "twist_topic": "/twist_bruteforce",
+            "frame_id": "odom",
+            "tf_parent": "odom_bruteforce",
+            "tf_child": "base_link_bruteforce",
+            "publish_tf": True,
+            "publish_every_n": 5,   # <- żeby nie zabić CPU
+            "bf_range_xy": 0.15,
+            "bf_range_th": 0.25,
+            "bf_step_xy": 0.01,
+            "bf_step_th": 0.01,
+        }],
+        output="screen",
+    )
 
     gt_pose = Node(
         package="ai_slam_bringup",
@@ -263,7 +321,7 @@ def launch_setup(context, *args, **kwargs):
         executable="sync_slam_toolbox_node",
         name="slam_toolbox_baseline",
         namespace="",
-        parameters=[slam_params_baseline, {"use_sim_time": True}],
+        parameters=[slam_params_baseline, {"use_sim_time": True}, slam_baseline_params],
         output="log",  # Redirect to log file instead of screen
         arguments=["--ros-args", "--log-level", "warn"],
     )
@@ -273,7 +331,7 @@ def launch_setup(context, *args, **kwargs):
         executable="sync_slam_toolbox_node",
         name="slam_toolbox_ai",
         namespace="",
-        parameters=[slam_params_ai, {"use_sim_time": True}],
+        parameters=[slam_params_ai, {"use_sim_time": True}, slam_ai_params],
         arguments=["--ros-args", "--log-level", "warn"],
         remappings=[("/map", "/map_ai")],
         output="log",  # Redirect to log file instead of screen
@@ -434,6 +492,8 @@ def launch_setup(context, *args, **kwargs):
         TimerAction(period=spawn_delay, actions=[spawn]),
         robot_state_pub,
         scan_fix,
+        scan_matcher_local,
+        scan_matcher_bruteforce,
         gt_pose,
         odom_corruptor,
         driver,

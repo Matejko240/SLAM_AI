@@ -3,7 +3,7 @@
   <name>ai_slam_gazebo</name>
   <version>0.1.0</version>
   <description>Gazebo Harmonic world and ros_gz bridge configuration.</description>
-  <maintainer email="noreply@example.com">Kałamarnica</maintainer>
+  <maintainer email="r.janek2002@gmail.com">Jan Rybarz</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>

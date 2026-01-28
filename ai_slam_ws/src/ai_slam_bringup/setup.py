@@ -22,6 +22,7 @@ setup(
             "gt_pose_publisher=ai_slam_bringup.gt_pose_publisher:main",
             "auto_driver=ai_slam_bringup.auto_driver:main",
             "lifecycle_manager=ai_slam_bringup.lifecycle_manager:main",
+            "scan_matcher = ai_slam_bringup.scan_matcher:main",
         ],
     },
 )

@@ -175,9 +175,9 @@ class InferNode(Node):
         ranges = np.asarray(msg.ranges, dtype=np.float32)
         if ranges.size != 360:
             return
-        rmax = float(msg.range_max) if msg.range_max > 0.0 else 6.0
+        rmax = float(msg.range_max) if msg.range_max > 0.0 else 10.0
         ranges = np.where(np.isfinite(ranges), ranges, rmax).astype(np.float32)
-        ranges = np.clip(ranges, float(msg.range_min) if msg.range_min > 0 else 0.12, rmax)
+        ranges = np.clip(ranges, float(msg.range_min) if msg.range_min > 0 else 0.08, rmax)
 
         ox, oy, oth = xytheta_from_odom(self.latest_odom)
 

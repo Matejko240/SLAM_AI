@@ -203,6 +203,16 @@ class EvalNode(Node):
         self.gt = None
         self.odom = None
         self.pose_ai = None
+        self.pose_sm = None
+        self.pose_bf = None
+
+        self.sm_xy = []
+        self.bf_xy = []
+
+        self.err_xy_sm = []
+        self.err_th_sm = []
+        self.err_xy_bf = []
+        self.err_th_bf = []
 
         self.map_baseline = None
         self.map_ai = None
@@ -226,7 +236,9 @@ class EvalNode(Node):
         self.create_subscription(PoseStamped, "/ground_truth_pose", self.on_gt, 50)
         self.create_subscription(Odometry, "/odom", self.on_odom, 50)
         self.create_subscription(PoseStamped, "/pose_ai", self.on_ai, 50)
-        
+        self.create_subscription(PoseStamped, "/pose_scanmatch", self.on_sm, 50)
+        self.create_subscription(PoseStamped, "/pose_bruteforce", self.on_bf, 50)
+
         # QoS for map topics - slam_toolbox uses RELIABLE + TRANSIENT_LOCAL
         # Create both TRANSIENT_LOCAL and VOLATILE subscriptions for maximum compatibility
         map_qos = QoSProfile(
@@ -302,7 +314,11 @@ class EvalNode(Node):
             self.ai_start_time = t
             self.ai_start_idx = len(self.ts)
             self.get_logger().info(f"AI inference started at t={t:.1f}s (idx={self.ai_start_idx})")
+    def on_sm(self, msg: PoseStamped):
+        self.pose_sm = msg
 
+    def on_bf(self, msg: PoseStamped):
+        self.pose_bf = msg
     def on_map(self, msg: OccupancyGrid):
         self.map_baseline = msg
         if self.map_baseline is not None and not hasattr(self, '_map_logged'):
@@ -343,6 +359,24 @@ class EvalNode(Node):
             etha = wrap(gth - ath)
             self.err_xy_ai.append([exa, eya])
             self.err_th_ai.append(etha)
+            
+        if self.pose_sm is not None:
+            sx, sy, sth = xytheta_from_pose(self.pose_sm)
+            self.sm_xy.append([sx, sy, sth])
+            exs = gx - sx
+            eys = gy - sy
+            eths = wrap(gth - sth)
+            self.err_xy_sm.append([exs, eys])
+            self.err_th_sm.append(eths)
+
+        if self.pose_bf is not None:
+            bx, by, bth = xytheta_from_pose(self.pose_bf)
+            self.bf_xy.append([bx, by, bth])
+            exb = gx - bx
+            eyb = gy - by
+            ethb = wrap(gth - bth)
+            self.err_xy_bf.append([exb, eyb])
+            self.err_th_bf.append(ethb)
 
         if t >= self.duration_sec:
             # Poczekaj na mapy przed zakończeniem (max 10s dodatkowego czasu)
@@ -430,9 +464,25 @@ class EvalNode(Node):
             rmse_xy_ai = float(np.sqrt(np.mean(err_ai[:, 0] ** 2 + err_ai[:, 1] ** 2)))
             rmse_th_ai = float(np.sqrt(np.mean(err_th_ai ** 2)))
 
+        rmse_xy_sm = None
+        rmse_th_sm = None
+        if len(self.err_xy_sm) > 0:
+            err_sm = np.asarray(self.err_xy_sm, dtype=np.float32)
+            err_th_sm = np.asarray(self.err_th_sm, dtype=np.float32)
+            rmse_xy_sm = float(np.sqrt(np.mean(err_sm[:, 0] ** 2 + err_sm[:, 1] ** 2)))
+            rmse_th_sm = float(np.sqrt(np.mean(err_th_sm ** 2)))
+
+        rmse_xy_bf = None
+        rmse_th_bf = None
+        if len(self.err_xy_bf) > 0:
+            err_bf = np.asarray(self.err_xy_bf, dtype=np.float32)
+            err_th_bf = np.asarray(self.err_th_bf, dtype=np.float32)
+            rmse_xy_bf = float(np.sqrt(np.mean(err_bf[:, 0] ** 2 + err_bf[:, 1] ** 2)))
+            rmse_th_bf = float(np.sqrt(np.mean(err_th_bf ** 2)))
+
+
         iou_map = None
         iou_map_ai = None
-        
         # Debug: sprawdź czy mamy dane do obliczenia IOU
         self.get_logger().info(f"IOU calculation: ref_occ={self.ref_occ is not None}, map_baseline={self.map_baseline is not None}, map_ai={self.map_ai is not None}")
         
@@ -478,6 +528,10 @@ class EvalNode(Node):
                 "rmse_theta_ai": rmse_th_ai,
                 "iou_map_baseline": iou_map,
                 "iou_map_ai": iou_map_ai,
+                "rmse_xy_scanmatch": rmse_xy_sm,
+                "rmse_theta_scanmatch": rmse_th_sm,
+                "rmse_xy_bruteforce": rmse_xy_bf,
+                "rmse_theta_bruteforce": rmse_th_bf,                
             },
             "artifacts": {
                 "trajectory_png": traj_path,
@@ -540,6 +594,12 @@ class EvalNode(Node):
         if len(self.ai_xy) > 0:
             ai = np.asarray(self.ai_xy, dtype=np.float32)
             ax1.plot(ai[:, 0], ai[:, 1], color='tab:green', label="AI", linewidth=1.5)
+        if len(self.sm_xy) > 0:
+            sm = np.asarray(self.sm_xy, dtype=np.float32)
+            ax1.plot(sm[:, 0], sm[:, 1], label="scanmatch", linewidth=1.0, alpha=0.8)
+        if len(self.bf_xy) > 0:
+            bf = np.asarray(self.bf_xy, dtype=np.float32)
+            ax1.plot(bf[:, 0], bf[:, 1], label="bruteforce", linewidth=1.0, alpha=0.8)            
         ax1.axhline(y=-3, color='gray', linestyle='--', alpha=0.5, label='arena bounds')
         ax1.axhline(y=3, color='gray', linestyle='--', alpha=0.5)
         ax1.axvline(x=-3, color='gray', linestyle='--', alpha=0.5)
@@ -586,6 +646,19 @@ class EvalNode(Node):
         if len(self.err_xy_ai) > 0 and self.ai_start_time is not None:
             err_ai = np.asarray(self.err_xy_ai, dtype=np.float32)
             eth_ai = np.asarray(self.err_th_ai, dtype=np.float32)
+        if len(self.err_xy_sm) > 0:
+            err_sm = np.asarray(self.err_xy_sm, dtype=np.float32)
+            eth_sm = np.asarray(self.err_th_sm, dtype=np.float32)
+            n = min(len(t), err_sm.shape[0])
+            plt.plot(t[:n], np.sqrt(err_sm[:n,0]**2 + err_sm[:n,1]**2), label="pos err scanmatch")
+            plt.plot(t[:n], np.abs(eth_sm[:n]), label="|theta| scanmatch", alpha=0.7)
+
+        if len(self.err_xy_bf) > 0:
+            err_bf = np.asarray(self.err_xy_bf, dtype=np.float32)
+            eth_bf = np.asarray(self.err_th_bf, dtype=np.float32)
+            n = min(len(t), err_bf.shape[0])
+            plt.plot(t[:n], np.sqrt(err_bf[:n,0]**2 + err_bf[:n,1]**2), label="pos err bruteforce")
+            plt.plot(t[:n], np.abs(eth_bf[:n]), label="|theta| bruteforce", alpha=0.7)
             
             # Tworzymy wektor czasu dla danych AI (startując od ai_start_time)
             n_ai = len(self.err_xy_ai)

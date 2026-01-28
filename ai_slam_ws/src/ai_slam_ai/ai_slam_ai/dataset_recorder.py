@@ -114,7 +114,7 @@ class DatasetRecorder(Node):
         
         # Resample to 360 if needed
         ranges = np.asarray(msg.ranges, dtype=np.float32)
-        rmax = float(msg.range_max) if msg.range_max > 0 else 6.0
+        rmax = float(msg.range_max) if msg.range_max > 0 else 10.0
         ranges = np.where(np.isfinite(ranges), ranges, rmax).astype(np.float32)
         
         if ranges.size != 360:
@@ -126,7 +126,7 @@ class DatasetRecorder(Node):
             x_new = np.linspace(-math.pi, math.pi, 360, endpoint=False)
             ranges = np.interp(x_new, x_old, ranges).astype(np.float32)
         if not np.all(np.isfinite(ranges)):
-            rmax = float(msg.range_max) if msg.range_max > 0 else 6.0
+            rmax = float(msg.range_max) if msg.range_max > 0 else 10.0
             ranges = np.where(np.isfinite(ranges), ranges, rmax).astype(np.float32)
 
         ox, oy, oth = xytheta_from_odom(self.latest_odom)

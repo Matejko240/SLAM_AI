@@ -21,19 +21,25 @@ class AutoDriver(Node):
         self.declare_parameter("front_threshold", 0.45)   # react when < 45cm
         self.declare_parameter("side_threshold", 0.35)    # react when < 35cm
         self.declare_parameter("emergency_threshold", 0.25)  # very close = emergency < 25cm
-
+        self.declare_parameter("linear_velocity", 0.25)
+        self.declare_parameter("angular_velocity", 1.0)
+        self.declare_parameter("obstacle_threshold", 0.45)
+        self.declare_parameter("turn_probability", 0.02)
+        
         seed = int(self.get_parameter("seed").value)
         self.rng = np.random.default_rng(seed)
 
         self.cmd_topic = str(self.get_parameter("cmd_topic").value)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.rate_hz = float(self.get_parameter("rate_hz").value)
-        self.v_forward = float(self.get_parameter("v_forward").value)
-        self.w_turn = float(self.get_parameter("w_turn").value)
-        self.front_threshold = float(self.get_parameter("front_threshold").value)
+        self.v_forward = float(self.get_parameter("linear_velocity").value)
+        self.w_turn = float(self.get_parameter("angular_velocity").value)
+        self.turn_probability = float(self.get_parameter("turn_probability").value)
+        self.front_threshold = float(self.get_parameter("obstacle_threshold").value)
         self.side_threshold = float(self.get_parameter("side_threshold").value)
         self.emergency_threshold = float(self.get_parameter("emergency_threshold").value)
 
+        
         self.min_front = None
         self.min_left = None
         self.min_right = None
@@ -184,7 +190,7 @@ class AutoDriver(Node):
         # Check if stuck - emergency maneuver (VERY IMPORTANT)
         if self.stuck_counter > self.stuck_threshold:
             self.backup_ticks = int(1.5 * self.rate_hz)  # 1.5 seconds backup
-            self.turn_ticks = int(self.rng.uniform(2.0, 4.0) * self.rate_hz)  # big random turn
+            self.turn_ticks = int(self.rng.uniform(1.5, 3) * self.rate_hz)  # big random turn
             # Random direction with bias away from closest obstacle
             if self.avg_left is not None and self.avg_right is not None:
                 if abs(self.avg_left - self.avg_right) < 0.2:
@@ -233,7 +239,7 @@ class AutoDriver(Node):
         # If LIDAR shows we're very close AND we were trying to go forward = we hit something!
         if (emergency_front or emergency_fl or emergency_fr) and self.last_cmd_forward:
             self.backup_ticks = int(1.5 * self.rate_hz)
-            self.turn_ticks = int(self.rng.uniform(2.0, 3.5) * self.rate_hz)
+            self.turn_ticks = int(self.rng.uniform(1.5, 3) * self.rate_hz)
             # Turn AWAY from the closest obstacle
             if self.min_front_left is not None and self.min_front_right is not None:
                 if self.min_front_left < self.min_front_right:
@@ -280,13 +286,13 @@ class AutoDriver(Node):
             # Obstacle ahead or both sides blocked
             if self.avg_left is not None and self.avg_right is not None:
                 # Add randomness to avoid getting stuck in patterns
-                if self.rng.random() < 0.2:
+                if self.rng.random() < self.turn_probability:
                     self.turn_dir = int(self.rng.choice([-1, 1]))
                 else:
                     self.turn_dir = 1 if self.avg_left > self.avg_right else -1
             else:
                 self.turn_dir = int(self.rng.choice([-1, 1]))
-            self.turn_ticks = int(self.rng.uniform(1.5, 2.5) * self.rate_hz)  # 1.5-2.5s (~90-150°)
+            self.turn_ticks = int(self.rng.uniform(0.7, 1.2) * self.rate_hz)  # 0.7-1.2s (~40-70°)
             self.turn_cooldown = int(1.0 * self.rate_hz)  # 1s cooldown
             twist.linear.x = 0.0
             twist.angular.z = float(self.turn_dir) * self.w_turn
@@ -297,7 +303,7 @@ class AutoDriver(Node):
         # Front-diagonal obstacles - steer away (skip if in cooldown)
         if self.turn_cooldown == 0 and front_left_obstacle and not front_right_obstacle:
             self.turn_dir = -1
-            self.turn_ticks = int(1.5 * self.rate_hz)  # 1.5s (~90°)
+            self.turn_ticks = int(0.9 * self.rate_hz)  # 1.5s (~90°)
             self.turn_cooldown = int(1.0 * self.rate_hz)
             twist.linear.x = 0.0
             twist.angular.z = -self.w_turn
@@ -306,7 +312,7 @@ class AutoDriver(Node):
             return
         elif self.turn_cooldown == 0 and front_right_obstacle and not front_left_obstacle:
             self.turn_dir = 1
-            self.turn_ticks = int(1.5 * self.rate_hz)  # 1.5s (~90°)
+            self.turn_ticks = int(0.9 * self.rate_hz)  # 1.5s (~90°)
             self.turn_cooldown = int(1.0 * self.rate_hz)
             twist.linear.x = 0.0
             twist.angular.z = self.w_turn
@@ -325,7 +331,7 @@ class AutoDriver(Node):
         self.explore_timer += 1
         if self.explore_timer >= self.explore_interval:
             self.explore_timer = 0
-            if self.rng.random() < 0.20:  # 20% chance (was 25%)
+            if self.rng.random() < self.turn_probability:  # 20% chance (was 25%)
                 self.turn_dir = int(self.rng.choice([-1, 1]))
                 self.turn_ticks = int(self.rng.uniform(0.8, 1.5) * self.rate_hz)  # longer turns
                 twist.linear.x = 0.0

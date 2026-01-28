@@ -1,6 +1,148 @@
-# AI SLAM - Simultaneous Localization and Mapping z Sztuczną Inteligencją
+# AI SLAM – Simultaneous Localization and Mapping z Sztuczną Inteligencją
 
-Kompletna implementacja systemu SLAM wspomaganego AI. System mapuje otoczenie robota za pomocą czujnika LIDAR 2D (360 próbek/obrót) i jednocześnie estymuje jego położenie (x, y, θ). Moduł AI uczy się korygować błędy odometrii, poprawiając dokładność lokalizacji.
+Kompletna implementacja systemu SLAM wspomaganego AI. System mapuje otoczenie robota za pomocą czujnika LIDAR 2D (360 próbek/obrót) i jednocześnie estymuje jego położenie (x, y, θ). Moduł AI uczy się korygować błędy odometrii, poprawiając stabilność klasycznego SLAM.
+
+## Co jest porównywane (mini-benchmarker)
+
+Projekt porównuje kilka torów estymacji (x, y, θ) uruchamianych na tych samych danych wejściowych:
+
+1. **Baseline SLAM** – `slam_toolbox` na odometrii z dryfem → `/map` + trajektoria.
+2. **AI SLAM** – `slam_toolbox` + korekcja (AI) → `/map_ai` + trajektoria AI.
+3. **Scan-to-scan (local)** – lekki estymator ruchu z porównania dwóch kolejnych skanów → `/pose_scanmatch`.
+4. **Scan-to-scan (bruteforce)** – referencyjny wariant przeszukiwania siatki → `/pose_bruteforce`.
+
+> Uwaga: skan-matching (3–4) jest na ten moment „eksperymentalny” i służy głównie jako punkt odniesienia / sanity-check w badaniach. W obecnej wersji potrafi wypadać słabo w porównaniu do `slam_toolbox`.
+
+## Metody SLAM / Estymatory (porównanie)
+
+W projekcie działają równolegle cztery tory estymacji pozycji robota (trajektorii) oraz moduł ewaluacji.
+Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danych wejściowych i w tym samym przejeździe.
+
+### Wspólne wejścia (dla wszystkich torów)
+- LiDAR 2D: `sensor_msgs/LaserScan` (używane 360 próbek na skan)
+- Odometria: `nav_msgs/Odometry` (w trybie AI dodatkowo „zaszumiona” i/lub „korygowana”)
+
+---
+
+## Tor 1: SLAM Toolbox – baseline (klasyczny SLAM)
+**Node:** `slam_toolbox_baseline` (`slam_toolbox/sync_slam_toolbox_node`, lifecycle)
+
+**Wejścia:**
+- `/scan_slam` (LaserScan)
+- odometria/TF zgodnie z konfiguracją `slam_toolbox_baseline.yaml`
+
+**Wyjścia:**
+- `/map` (OccupancyGrid)
+- TF `map -> odom` (typowe dla slam_toolbox)
+- pozycja robota (pośrednio przez TF / internal pose)
+
+**Rola w porównaniu:**
+- główny klasyczny punkt odniesienia (pełny SLAM, mapa + lokalizacja)
+
+---
+
+## Tor 2: SLAM Toolbox + AI (SLAM z korygowaną odometrią)
+**Node:** `slam_toolbox_ai` (`slam_toolbox/sync_slam_toolbox_node`, lifecycle)
+
+**Wejścia:**
+- `/scan_slam`
+- odometria „AI”: TF / `odom_ai` publikowane przez `infer_node`
+
+**Wyjścia:**
+- `/map_ai` (OccupancyGrid)  ← (remap z `/map`)
+- TF `map_ai -> odom_ai` (zgodnie z konfiguracją slam_toolbox_ai)
+- `/pose_ai` (PoseStamped) z modułu AI (patrz poniżej)
+
+**Rola w porównaniu:**
+- główny tor „AI-SLAM” oceniany względem baseline
+
+---
+
+## Tor 3: Scan Matcher – local (klasyczne dopasowanie skanów, szybkie)
+**Node:** `scan_matcher_local` (`ai_slam_bringup/scan_matcher.py`)
+
+**Wejście:**
+- `scan_topic=/scan_slam`
+
+**Wyjścia:**
+- `pose_topic=/pose_scanmatch` (PoseStamped, frame_id="odom" – kompatybilne z ewaluacją)
+- `twist_topic=/twist_scanmatch` (TwistStamped: v, omega)
+- TF (opcjonalnie): `odom_scanmatch -> base_link_scanmatch`
+
+**Opis działania:**
+- estymacja ruchu między kolejnymi skanami (dx, dy, dθ)
+- metoda „local”: wielopoziomowe przeszukiwanie małego okna (szybka)
+
+**Najważniejsze parametry:**
+- `grid_res`, `grid_extent`, `max_use_range`, `max_points`
+- okna i kroki local search: `local_lvl1_*`, `local_lvl2_*`, `local_lvl3_*`
+
+---
+
+## Tor 4: Scan Matcher – bruteforce (klasyczne dopasowanie skanów, referencja)
+**Node:** `scan_matcher_bruteforce` (`ai_slam_bringup/scan_matcher.py`)
+
+**Wejście:**
+- `scan_topic=/scan_slam`
+
+**Wyjścia:**
+- `pose_topic=/pose_bruteforce`
+- `twist_topic=/twist_bruteforce`
+- TF (opcjonalnie): `odom_bruteforce -> base_link_bruteforce`
+
+**Opis działania:**
+- pełne przeszukiwanie zakresów (dx,dy,dθ); wolniejsze, ale stabilne jako referencja
+- zwykle publikowane rzadziej parametrem `publish_every_n`
+
+**Najważniejsze parametry:**
+- `bf_range_xy`, `bf_range_th`, `bf_step_xy`, `bf_step_th`
+- `publish_every_n`
+
+---
+### Tabela porównawcza 4 torów estymacji (wejścia/wyjścia + znaczenie)
+
+> Legenda: (x, y, θ) = pozycja i orientacja robota; (Δx, Δy, Δθ) = przyrost ruchu między kolejnymi skanami LiDAR.
+
+| Tor | Metoda (idea) | Node / implementacja | Wejścia (ROS) | Wyjścia (ROS) | Co oznaczają wyjścia (semantyka) | Uwagi |
+|---|---|---|---|---|---|---|
+| 1. Baseline SLAM | Klasyczny SLAM (mapowanie + lokalizacja) | `slam_toolbox_baseline` (`slam_toolbox/sync_slam_toolbox_node`) | `/scan_slam` + odometria/TF (dryf) | `/map` + TF `map -> odom` | **Mapa** otoczenia + **globalna trajektoria** robota w układzie mapy (pośrednio przez TF / wewn. estymator). | Punkt odniesienia „klasyka”. |
+| 2. AI SLAM | SLAM Toolbox z odometrią korygowaną przez AI | `slam_toolbox_ai` + `infer_node` | `/scan_slam` + odometria „AI” (`odom_ai`/TF z inferencji) | `/map_ai` + `/pose_ai` + TF (dla toru AI) | `/pose_ai` to **korygowana pozycja (x,y,θ)**. W tle AI estymuje korekcję ruchu (w praktyce odpowiadającą (Δx,Δy,Δθ)), integruje ją do pozycji i publikuje „lepszą” odometrię dla SLAM. | To jest Twój **główny tor** do obrony. |
+| 3. Scan-to-scan (local) | Klasyczne dopasowanie 2 kolejnych skanów (szybkie, lokalne przeszukiwanie) | `scan_matcher_local` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_scanmatch`, `twist_topic=/twist_scanmatch` | Algorytm liczy **ruch między skanami**: (Δx,Δy,Δθ), a następnie **integruje** to do pozycji (x,y,θ) publikowanej w `/pose_scanmatch`. Dodatkowo `/twist_scanmatch` to prędkości: **v i ω** wyliczone z tych przyrostów. | Lekki baseline „scan matching”; szybki, ale wrażliwy na słabe pokrycie skanów. |
+| 4. Scan-to-scan (bruteforce) | Klasyczne dopasowanie skanów przez przeszukiwanie siatki (wolniejsze, referencyjne) | `scan_matcher_bruteforce` (`scan_matcher.py`) | `/scan_slam` | `pose_topic=/pose_bruteforce`, `twist_topic=/twist_bruteforce` | Analogicznie: w środku powstaje (Δx,Δy,Δθ) z przeszukiwania, a `/pose_bruteforce` to **zintegrowana pozycja (x,y,θ)**. `/twist_bruteforce` = **v i ω** z przyrostów. | Wolniejszy, ale dobry jako „sanity-check” porównawczy. |
+
+## Moduł AI (dataset → trening → inferencja)
+### FAZA 1: Dataset
+**Node:** `dataset_recorder` (`ai_slam_ai/dataset_recorder.py`)
+Zapisuje `dataset.npz` zawierający:
+- `X_scan` – skan LiDAR (360 wartości)
+- `X_odom` – odometria (np. x, y, θ)
+- `Y` – wektor korekcji (3 wartości)
+
+### FAZA 2: Trening
+**Node:** `train_model` (`ai_slam_ai/train_model.py`)
+- MLP: `363 → 256 → 128 → 64 → 3`
+- zapis: `model.pt` + logi treningu
+
+### FAZA 3: Inferencja
+**Node:** `infer_node` (`ai_slam_ai/infer_node.py`)
+- subskrybuje LiDAR + odometrię
+- publikuje:
+  - `/pose_ai` (PoseStamped – korekcja/tor AI)
+  - odometrię AI (`odom_ai`) + TF `odom_ai -> base_link` (dla SLAM Toolbox AI)
+
+---
+
+## Ewaluacja i wyniki
+**Node:** `eval_node` (`ai_slam_eval/eval_node.py`)
+
+**Metryki:**
+- RMSE trajektorii (x, y, θ) dla wszystkich torów
+- IoU mapy dla `/map` i `/map_ai`
+
+**Artefakty:**
+- `results.json`
+- wykresy: `trajectory.png`, `errors.png`, `maps.png`
+
 
 ## Szybki Start (5 minut)
 
@@ -55,9 +197,14 @@ cat out/exp_*/results.json | python -m json.tool
 ```
 
 Kluczowe metryki w `results.json`:
-- `iou_map_baseline` - IoU mapy baseline (0-1, wyżej = lepiej)
-- `iou_map_ai` - IoU mapy AI
-- `rmse_xy_baseline/ai` - błąd pozycji (m)
+- `rmse_xy_*` – RMSE pozycji (m) względem GT
+- `rmse_theta_*` – RMSE orientacji (rad) względem GT
+- `iou_map_baseline`, `iou_map_ai` – IoU mapy (0–1, wyżej = lepiej)
+
+Dostępne sufiksy (w zależności od trybu):
+- `baseline`, `ai`, `scanmatch`, `bruteforce`
+
+---
 
 ## Architektura Systemu
 
@@ -66,23 +213,29 @@ Kluczowe metryki w `results.json`:
 ```
 FAZA 1: Zbieranie danych (dataset_duration)
    Robot jeździ → LiDAR + Odometria + GT → dataset.npz
-   
+
 FAZA 2: Trening modelu
    dataset.npz → MLP (363→256→128→64→3) → model.pt
-   
+
 FAZA 3: Inferencja AI
    LiDAR + Odom → model.pt → /pose_ai (korekcja)
-   
-FAZA 4: Ewaluacja
-   Porównanie: baseline vs AI → results.json + wykresy
+
+FAZA 4: Estymatory porównawcze (równolegle)
+   slam_toolbox baseline → /map, /pose_baseline
+   slam_toolbox + AI      → /map_ai, /pose_ai
+   scan matcher (local)   → /pose_scanmatch
+   scan matcher (BF)      → /pose_bruteforce
+
+FAZA 5: Ewaluacja
+   Porównanie wszystkich torów do GT → results.json + wykresy
 ```
 
-### 4 Moduły
+### Moduły
 
 **1. Moduł SLAM** (`ai_slam_bringup`)
-- Algorytm: slam_toolbox (synchroniczny)
+- Algorytm: `slam_toolbox` (synchroniczny)
 - Input: LaserScan (360 próbek) z `/scan_slam`
-- Output: Mapa (`/map`) + Pozycja robota (x, y, θ)
+- Output: Mapa (`/map`) + pozycja robota (x, y, θ)
 
 **2. Moduł AI** (`ai_slam_ai`)
 - Zbieranie datasetu: `dataset_recorder.py`
@@ -93,20 +246,44 @@ FAZA 4: Ewaluacja
 - Ground truth: `/odom_raw` z Gazebo
 - Z dryfem: `/odom` (symuluje błędy rzeczywiste)
 
-**4. Moduł Ewaluacji** (`ai_slam_eval`)
-- Metryki: RMSE (x, y, θ), IoU mapy
-- Output: `results.json`, wykresy PNG
+**4. Moduł Scan Matching (porównawczy)** (`ai_slam_bringup/scan_matcher.py`)
+- Input: `/scan_slam`
+- Output: 
+  - `local` → `/pose_scanmatch`, `/twist_scanmatch`
+  - `bruteforce` → `/pose_bruteforce`, `/twist_bruteforce`
+
+**5. Moduł Ewaluacji** (`ai_slam_eval`)
+- Metryki: RMSE (x, y, θ) dla wszystkich torów + IoU map (`/map`, `/map_ai`)
+- Output: `results.json`, wykresy PNG (`trajectory.png`, `errors.png`, `maps.png`)
+
+---
+
+## Model robota (SDF jako źródło prawdy)
+
+Opis robota jest utrzymywany w SDF, a URDF jest generowany automatycznie, aby oba pliki były zawsze spójne.
+
+- Źródło prawdy: `ai_slam_ws/src/ai_slam_description/models/diffbot.sdf`
+- Plik wynikowy: `ai_slam_ws/src/ai_slam_description/urdf/diffbot.urdf`
+- Generator: `scripts/generate_urdf_from_sdf.py`
+
+Regeneracja URDF po zmianach w SDF:
+```bash
+cd ~/SLAM_AI
+python3 scripts/generate_urdf_from_sdf.py
+```
+
+---
 
 ## Centralna Konfiguracja (YAML)
 
-Wszystkie parametry eksperymentu znajdują się w jednym pliku YAML:
+Wszystkie parametry eksperymentu znajdują się w jednym pliku YAML.
 
-### Pliki Konfiguracyjne
+### Pliki konfiguracyjne
 
 | Plik | Opis | Czas |
 |------|------|------|
-| `experiment_config.yaml` | Pełny eksperyment | ~2-3 min |
-| `fast_test.yaml` | Szybki test | ~40 sek |
+| `experiment_config.yaml` | Pełny eksperyment | ~2–3 min |
+| `fast_test.yaml` | Szybki test | ~40 s |
 
 ### Użycie
 
@@ -124,71 +301,9 @@ ros2 launch ai_slam_bringup demo.launch.py config:=/path/to/my_config.yaml
 ros2 launch ai_slam_bringup demo.launch.py config:=fast_test.yaml seed:=999 duration_sec:=60
 ```
 
-### Struktura experiment_config.yaml
+---
 
-```yaml
-experiment:
-  mode: "ai"              # "baseline" lub "ai"
-  seed: 123               # Dla powtarzalności
-  gui: false              # GUI Gazebo
-
-timing:
-  dataset_duration: 45.0  # Czas zbierania danych (s)
-  experiment_duration: 120.0  # Całkowity czas (s)
-  dataset_wait_timeout: 120.0 # Max czekanie na dataset
-
-dataset:
-  max_samples: 5000       # Max próbek w datasecie
-  scan_topic: "/scan"
-  odom_topic: "/odom"
-  gt_topic: "/ground_truth_pose"
-
-training:
-  max_epochs: 200
-  patience: 20            # Early stopping
-  learning_rate: 0.001
-  batch_size: 128
-  validation_ratio: 0.2
-
-inference:
-  model_wait_timeout: 300.0
-
-odometry:
-  rw_sigma_xy: 0.005      # Szum pozycyjny
-  rw_sigma_theta: 0.003   # Szum kątowy
-
-driver:
-  linear_velocity: 0.3    # Prędkość robota (m/s)
-  angular_velocity: 0.5   # Prędkość kątowa (rad/s)
-  turn_probability: 0.02
-
-output:
-  base_dir: "out"         # Folder wyjściowy
-```
-
-## Instrukcja Użytkownika
-
-### Tryb 1: Szybki Test
-```bash
-ros2 launch ai_slam_bringup demo.launch.py config:=fast_test.yaml
-```
-- ~40 sekund, szybka weryfikacja że wszystko działa
-
-### Tryb 2: Pełny Eksperyment AI
-```bash
-ros2 launch ai_slam_bringup demo.launch.py
-```
-- Używa `experiment_config.yaml`
-- ~2-3 minuty pełnego pipeline'u
-
-### Tryb 3: Baseline (bez AI)
-```bash
-ros2 launch ai_slam_bringup demo.launch.py mode:=baseline duration_sec:=120
-```
-- Tylko SLAM bez korekcji AI
-- Do porównań i testowania
-
-### Wyniki Eksperymentu
+## Wyniki eksperymentu
 
 Każdy eksperyment tworzy folder `out/exp_YYYYMMDD_HHMMSS/` zawierający:
 
@@ -205,59 +320,84 @@ Każdy eksperyment tworzy folder `out/exp_YYYYMMDD_HHMMSS/` zawierający:
 
 ### Interpretacja results.json
 
+Przykład (format skrócony):
+
 ```json
 {
   "mode": "ai",
   "metrics": {
-    "iou_map_baseline": 0.037,    // IoU mapy baseline (0-1)
-    "iou_map_ai": 0.181,          // IoU mapy AI
-    "rmse_xy_baseline": 0.0054,   // Błąd pozycji baseline (m)
-    "rmse_xy_ai": 0.0038          // Błąd pozycji AI (m)
+    "rmse_xy_baseline": 0.1108,
+    "rmse_theta_baseline": 0.0249,
+    "rmse_xy_ai": 0.1214,
+    "rmse_theta_ai": 0.0519,
+    "rmse_xy_scanmatch": 3.5454,
+    "rmse_theta_scanmatch": 1.2896,
+    "rmse_xy_bruteforce": 3.1027,
+    "rmse_theta_bruteforce": 1.9744,
+    "iou_map_baseline": 0.0310,
+    "iou_map_ai": 0.2192
   }
 }
 ```
 
 **Interpretacja IoU:**
-- 0.0-0.1: Słaba jakość mapy
-- 0.1-0.3: Średnia jakość
-- 0.3+: Dobra jakość
+- 0.0–0.1: słaba jakość mapy
+- 0.1–0.3: średnia jakość
+- 0.3+: dobra jakość
 
-### Parametry Launch (override)
+---
 
-| Parametr | Opis | Przykład |
-|----------|------|----------|
-| `config` | Plik konfiguracyjny | `config:=fast_test.yaml` |
-| `mode` | baseline/ai | `mode:=baseline` |
-| `seed` | Random seed | `seed:=42` |
-| `duration_sec` | Czas eksperymentu | `duration_sec:=180` |
-| `dataset_duration_sec` | Czas zbierania | `dataset_duration_sec:=60` |
-| `gui` | GUI Gazebo | `gui:=true` |
-| `out_dir` | Folder wyjściowy | `out_dir:=my_output` |
+## Ważne topiki ROS
+
+- `/scan` – LaserScan z Gazebo
+- `/scan_slam` – LaserScan po normalizacji do 360 próbek
+- `/odom_raw` – ground truth odometria
+- `/odom` – odometria z dryfem
+
+**SLAM:**
+- `/map` – mapa baseline
+- `/map_ai` – mapa AI
+
+**Pozycje (porównywane w ewaluacji):**
+- `/pose_baseline` – tor baseline
+- `/pose_ai` – tor AI
+- `/pose_scanmatch` – scan-to-scan (local)
+- `/pose_bruteforce` – scan-to-scan (bruteforce)
+
+**Dodatkowo:**
+- `/twist_scanmatch`, `/twist_bruteforce` – estymowane (v, ω)
+- `/cmd_vel` – komendy prędkości
+
+---
 
 ## Troubleshooting
 
-
-### AI nie poprawia wyników
-- Zwiększ `dataset_duration` w config (więcej danych)
-- Zwiększ `max_epochs` (dłuższy trening)
+### „AI nie poprawia wyników”
+- Zwiększ `dataset_duration` (więcej danych)
+- Zwiększ `max_epochs` albo `patience` (dłuższy trening)
 - Zmniejsz `learning_rate` (wolniejsze uczenie)
 - Sprawdź czy model się wytrenował: `cat out/exp_*/train_history.json`
 
-### Błędy typu "parameter type mismatch"
-```bash
-# Przebuduj pakiety
-cd ~/SLAM_AI/ai_slam_ws
-colcon build --packages-select ai_slam_ai ai_slam_eval ai_slam_bringup
-source install/setup.bash
-```
+### „Scan matching daje duże błędy”
+Warianty `/pose_scanmatch` i `/pose_bruteforce` są w tej chwili algorytmem porównawczym (prosta funkcja dopasowania na siatce). Jeśli wyniki są niestabilne:
+- zmniejsz prędkości w `driver` (żeby kolejne skany bardziej się pokrywały),
+- dla `bruteforce` zwiększ `publish_every_n` (np. 5–10),
+- zawęź zakresy: `bf_range_xy`, `bf_range_th` i zwiększ rozdzielczości kroków,
+- zwiększ `max_points` (albo zmniejsz, jeśli CPU nie wyrabia) oraz zmniejsz `max_use_range` (żeby odsiać dalekie, mniej informacyjne pomiary).
 
-## Wymagania Systemu
+
+---
+
+## Wymagania systemu
 - Ubuntu 24.04
 - ROS 2 Jazzy
 - Gazebo Harmonic
 - GPU opcjonalny
 
-## Struktura Projektu
+---
+
+## Struktura projektu
+
 ```
 SLAM_AI/
 ├── README.md                    # Ta dokumentacja
@@ -274,7 +414,6 @@ SLAM_AI/
 │       ├── ai_slam_bringup/    # Launch files + config YAML
 │       │   ├── config/
 │       │   │   ├── experiment_config.yaml  # Główna konfiguracja
-│       │   │   └── fast_test.yaml          # Szybki test
 │       │   └── launch/
 │       │       └── demo.launch.py
 │       ├── ai_slam_description/# Model robota (URDF/SDF)
@@ -283,15 +422,17 @@ SLAM_AI/
 └── .venv/                      # Python virtual environment
 ```
 
-## Narzędzia Analizy
+---
 
-### Inspekcja Datasetu
+## Narzędzia analizy
+
+### Inspekcja datasetu
 Po zebraniu danych (FAZA 1) można przeanalizować dataset za pomocą skryptu:
 
 ```bash
 cd ~/SLAM_AI
 source .venv/bin/activate
-python3 scripts/inspect_dataset.py out/exp_20260103_151922
+python3 scripts/inspect_dataset.py out/exp_YYYYMMDD_HHMMSS
 ```
 
 Skrypt generuje:
@@ -301,9 +442,7 @@ Skrypt generuje:
 - **Histogram** - rozkład odległości z LiDAR
 - **Wykres korekt** - rozrzut błędów pozycji
 
-Wynik zapisywany do `out/dataset_analysis.png`.
-
-### Generowanie Mapy Referencyjnej
+### Generowanie mapy referencyjnej
 Mapa referencyjna (ground truth) jest generowana na podstawie pliku świata Gazebo:
 
 ```bash
@@ -312,49 +451,4 @@ python scripts/generate_reference_map.py
 ```
 
 Generuje `reference_map.pgm` i `reference_map.yaml` w `ai_slam_ws/src/ai_slam_eval/maps/`.
-
-## Ważne Topiki ROS
-- `/scan` - LaserScan z Gazebo
-- `/scan_slam` - LaserScan 360 próbek
-- `/odom_raw` - Ground truth odometria
-- `/odom` - Odometria z dryfem
-- `/map` - Mapa SLAM baseline
-- `/pose_ai` - Korekcja AI
-- `/cmd_vel` - Komendy prędkości
-
-## FAQ
-
-**Q: Ile czasu trwa eksperyment?**  
-A: `fast_test.yaml` ~40s, `experiment_config.yaml` ~2-3 min
-
-**Q: Czy potrzebny GPU?**  
-A: Nie, CPU wystarczy. GPU przyspiesza trening ale nie jest wymagany.
-
-**Q: Gdzie są wyniki?**  
-A: W `ai_slam_ws/out/exp_YYYYMMDD_HHMMSS/`
-
-**Q: Jak zmienić parametry bez edycji plików?**  
-A: Użyj override: `ros2 launch ... seed:=42 duration_sec:=60`
-
-**Q: Jak stworzyć własną konfigurację?**  
-A: Skopiuj `experiment_config.yaml`, zmodyfikuj, użyj `config:=/path/to/file.yaml`
-
-**Q: Dlaczego IoU jest niskie?**  
-A: To normalne dla krótkiego eksperymentu. IoU ~0.05-0.20 jest typowe.
-
-## Ręczne Uruchomienie Modułów
-
-```bash
-# Zbieranie datasetu
-ros2 run ai_slam_ai dataset_recorder --ros-args \
-  -p out_dir:=out -p duration_sec:=60 -p max_samples:=1000
-
-# Trening
-ros2 run ai_slam_ai train_model --ros-args \
-  -p out_dir:=out -p max_epochs:=100 -p patience:=15
-
-# Inferencja
-ros2 run ai_slam_ai infer_node --ros-args \
-  -p out_dir:=out
-```
 
