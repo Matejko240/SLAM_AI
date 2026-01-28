@@ -40,27 +40,33 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 - główny klasyczny punkt odniesienia (pełny SLAM, mapa + lokalizacja)
 <details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (Baseline Logic)</b></summary>
 
-    def run_baseline_slam(scan, odom_raw):
-      """
-      Klasyczne podejście: Odom służy jako 'priori', SLAM poprawia go grafem.
-      """
-      # 1. Pobierz zaszumioną odometrię (z dryfem)
-      estimated_pose = odom_raw.pose
+```python
+def run_baseline_slam():
+    """
+    Konfiguracja: slam_toolbox_baseline.yaml
+    Node: slam_toolbox_baseline (lifecycle)
+    """
+    # 1. Wejście: Skaner i TF (z dryfem)
+    scan = subscribe("/scan_slam")          # Znormalizowany LiDAR
+    base_pose = lookup_tf("odom", "base_link") # Pozycja zaszumiona (odometria)
 
-      # 2. Frontend: Scan Matching (Karto)
-      # Dopasuj aktualny skan do lokalnej mapy, używając odometrii jako punktu startowego
-      corrected_pose = scan_match(scan, map_local, initial_guess=estimated_pose)
+    # 2. Parametry (slam_toolbox_baseline.yaml)
+    resolution = 0.05        # [m/pixel]
+    max_laser_range = 10.0   # [m]
+    
+    # 3. Karto Scan Matcher (Graph SLAM)
+    # SLAM próbuje dopasować skan do mapy, startując z pozycji 'odom'
+    corrected_pose = karto_match(
+        scan, 
+        initial_guess=base_pose, 
+        search_window=0.5 # domyślny
+    )
 
-      # 3. Backend: Graph Optimization
-      # Dodaj węzeł do grafu i zoptymalizuj pętle (Loop Closure)
-      pose_graph.add_node(corrected_pose)
-      if detect_loop_closure(scan):
-          pose_graph.optimize()
-
-      # 4. Publikacja
-      # TF: map -> odom (korekta dryfu odometrii)
-      publish_tf(map_frame, odom_frame, transform=pose_graph.latest - odom_raw)
-      return pose_graph.latest
+    # 4. Wyjście
+    # Publikacja mapy i korekty TF (niwelującej dryf 'odom')
+    publish_topic("/map", resolution=0.05)
+    publish_tf(parent="map", child="odom")
+```
 </details>
 
 
@@ -80,31 +86,44 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 - główny tor „AI-SLAM” oceniany względem baseline
 <details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (AI Pipeline Logic)</b></summary>
 
+```python
+def run_ai_slam_pipeline():
+    """
+    Pipeline: infer_node -> slam_toolbox_ai
+    Config: experiment_config.yaml (sekcja 'inference' i 'slam')
+    """
+    
+    # --- KROK 1: Inferencja (infer_node.py) ---
+    # Wejścia zdefiniowane w experiment_config.yaml
+    scan_in = subscribe("/scan_slam")
+    odom_in = subscribe("/odom")      # Zaszumiona odometria
 
-    def run_ai_slam_pipeline(scan, odom_raw, model_mlp):
-        """
-        AI działa jako 'filtr' naprawiający odometrię ZANIM trafi ona do SLAM-a.
-        """
-        # --- FAZA 1: Inferencja AI (infer_node.py) ---
-        
-        # Przygotuj wektor cech (skan + zmiany w odom)
-        features = extract_features(scan, odom_raw) 
-        
-        # Sieć neuronowa przewiduje błąd odometrii (dx, dy, dtheta)
-        correction_vector = model_mlp.predict(features)
-        
-        # Napraw odometrię ("Odom AI")
-        clean_odom = odom_raw.pose + correction_vector
-        
-        publish_odom(topic="/odom_ai", pose=clean_odom)
+    # Model MLP przewiduje błąd (dx, dy, dtheta)
+    correction = model.predict(scan_in, odom_in)
+    
+    # Obliczanie "czystej" odometrii
+    odom_ai_pose = odom_in.pose + correction
+    
+    # Wyjście inferencji: Nowa ramka TF
+    # Służy jako "lepszy start" dla SLAM-a
+    publish_tf(parent="odom_ai", child="base_link")
 
-        # --- FAZA 2: SLAM (slam_toolbox) ---
-        
-        # SLAM otrzymuje już "czystą" odometrię, więc jego praca jest łatwiejsza
-        # Algorytm jest ten sam co w Baseline, ale input jest lepszej jakości
-        final_map = slam_toolbox.update(scan, odom_guess=clean_odom)
-        
-        return final_map, clean_odom
+
+    # --- KROK 2: SLAM (slam_toolbox_ai) ---
+    # Konfiguracja: slam_toolbox_ai.yaml
+    
+    # SLAM używa poprawionej ramki 'odom_ai' zamiast zwykłego 'odom'
+    # odom_frame: "odom_ai"  
+    
+    current_scan = subscribe("/scan_slam")
+    guess_pose = lookup_tf("odom_ai", "base_link") 
+    
+    # Budowanie mapy z mniejszym błędem wejściowym
+    update_map(current_scan, guess_pose)
+    
+    # Wyjście: Mapa na osobnym topicu (z remapowania)
+    publish_topic("/map_ai")
+  ```
 </details>
 
 
@@ -129,31 +148,35 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 
 <details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (Local Search)</b></summary>
 
-    def run_local_scan_matcher(current_scan, previous_scan, current_pose):
-        """
-        Szybki 'Local Search'. Szuka dopasowania tylko w bliskim sąsiedztwie.
-        Działa szybko, ale może wpaść w minimum lokalne przy szybkim ruchu.
-        """
-        best_score = 0
-        best_pose = current_pose
+```python
+def run_scan_matcher_local():
+    """
+    Node: scan_matcher_local
+    Param: method="local"
+    """
+    prev_scan = None
+    global_pose = (0, 0, 0) # Start w (0,0,0)
+
+    while True:
+        curr_scan = subscribe("/scan_slam")
         
-        # Zakres poszukiwań jest bardzo mały (np. +/- 5cm, +/- 1 stopień)
-        search_window = generate_local_window(size="small")
-
-        # Iteracyjne sprawdzanie sąsiedztwa (Hill Climbing)
-        for dx, dy, dth in search_window:
-            test_pose = current_pose + (dx, dy, dth)
-            
-            # Rzutowanie punktów skanu na siatkę poprzedniego skanu
-            score = calculate_overlap(current_scan, previous_scan, test_pose)
-            
-            if score > best_score:
-                best_score = score
-                best_pose = test_pose
-
-        # Całkuj ruch (dodaj deltę do globalnej pozycji)
-        global_pose += (best_pose - current_pose)
-        return global_pose
+        # Algorytm Local Search (Gradient / Hill Climbing)
+        # Szuka tylko w bardzo małym otoczeniu poprzedniej pozycji
+        dx, dy, dth = find_match_local(
+            target=prev_scan, 
+            source=curr_scan,
+            search_step=0.01  # Precyzyjny, mały krok
+        )
+        
+        # Integracja wyniku (Dead Reckoning)
+        global_pose += (dx, dy, dth)
+        
+        # Wyjścia (zgodne z demo.launch.py)
+        publish("/pose_scanmatch", global_pose)  # frame_id="odom"
+        publish("/twist_scanmatch", (dx/dt, dth/dt))
+        
+        prev_scan = curr_scan
+```
 </details>
 
 
@@ -178,32 +201,36 @@ Celem jest porównanie podejścia AI z metodami klasycznymi na tych samych danyc
 
 <details> <summary><b>📄 Kliknij, aby zobaczyć Pseudokod (Bruteforce Grid Search)</b></summary>
 
-    def run_bruteforce_matcher(current_scan, previous_scan):
-        """
-        Pełne przeszukiwanie siatki (Grid Search).
-        Sprawdza KAŻDĄ kombinację w zadanym zakresie. Wolne, ale znajduje globalne optimum.
-        """
-        best_score = -1
-        best_delta = (0, 0, 0)
+```python
+def run_scan_matcher_bruteforce():
+    """
+    Node: scan_matcher_bruteforce
+    Param: method="bruteforce"
+    Parametry z demo.launch.py (konfigurowalne)
+    """
+    # Zakresy przeszukiwania siatki (Grid Search)
+    LIMIT_XY = 0.15   # parametr: bf_range_xy
+    STEP_XY  = 0.01   # parametr: bf_step_xy
+    LIMIT_TH = 0.25   # parametr: bf_range_th (rad)
+    
+    # Pętle po wszystkich możliwych kombinacjach przesunięcia
+    # (To obciąża CPU, dlatego publish_every_n=5)
+    best_score = -1
+    best_transform = (0,0,0)
 
-        # Parametry z launch: bf_range_xy=0.15m, bf_step_xy=0.01m
-        range_x = range(-0.15, 0.15, step=0.01)
-        range_y = range(-0.15, 0.15, step=0.01)
-        range_th = range(-0.25, 0.25, step=0.01)
-
-        # Potrójna pętla po wszystkich możliwościach
-        for x in range_x:
-            for y in range_y:
-                for th in range_th:
-                    # Sprawdź jak pasują skany przy tym przesunięciu
-                    score = score_alignment(current_scan, previous_scan, offset=(x,y,th))
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_delta = (x, y, th)
-
-        # Zwróć najlepsze przesunięcie (niezależnie od poprzedniej prędkości)
-        return integrate_position(best_delta)
+    for x in range(-LIMIT_XY, LIMIT_XY, STEP_XY):
+        for y in range(-LIMIT_XY, LIMIT_XY, STEP_XY):
+            for th in range(-LIMIT_TH, LIMIT_TH, 0.01):
+                
+                score = check_overlap(curr_scan, prev_scan, offset=(x,y,th))
+                
+                if score > best_score:
+                    best_score = score
+                    best_transform = (x, y, th)
+    
+    # Wyjście
+    publish("/pose_bruteforce", integrate(best_transform))
+```
 </details>
 ### Tabela porównawcza 4 torów estymacji (wejścia/wyjścia + znaczenie)
 
