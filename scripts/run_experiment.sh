@@ -23,6 +23,14 @@ case "$1" in
         CONFIG="config:=experiment_config.yaml"
         shift
         ;;
+    train)
+        CONFIG="config:=config_train_house.yaml"
+        shift
+        ;;
+    test)
+        CONFIG="config:=config_test_house.yaml"
+        shift
+        ;;
     *)
         # Pass through any other arguments
         ;;

@@ -1,0 +1,68 @@
+{
+  "experiment_id": "exp_house_04",
+  "created_at": "2026-02-09T21:28:08.613596",
+  "system_info": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python_version": "3.12.3",
+    "processor": "x86_64",
+    "machine": "x86_64",
+    "total_memory_gb": 31.23,
+    "available_memory_gb": 30.05,
+    "cpu_count": 20
+  },
+  "dataset": {
+    "timing": {
+      "start_time": "2026-02-09T21:28:08.657580",
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {
+      "seed": 123,
+      "target_duration_sec": 120.0,
+      "max_samples": 5000,
+      "scan_topic": "/scan",
+      "odom_topic": "/odom",
+      "gt_topic": "/ground_truth_pose"
+    },
+    "statistics": {},
+    "file_path": null,
+    "file_size_mb": null
+  },
+  "training": {
+    "timing": {
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {},
+    "dataset_info": {},
+    "model_info": {},
+    "training_results": {},
+    "model_path": null,
+    "history_path": null
+  },
+  "inference": {
+    "timing": {
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {},
+    "statistics": {},
+    "model_path": null
+  },
+  "evaluation": {
+    "timing": {
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {},
+    "metrics": {},
+    "artifacts": {}
+  },
+  "total_experiment_time_sec": null,
+  "notes": [
+    "[2026-02-09T21:28:08.657587] Dataset collection started"
+  ]
+}

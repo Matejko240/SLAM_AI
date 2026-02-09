@@ -1,0 +1,105 @@
+{
+  "experiment_id": "exp_20260208_200713",
+  "created_at": "2026-02-08T20:07:14.873566",
+  "system_info": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python_version": "3.12.3",
+    "processor": "x86_64",
+    "machine": "x86_64",
+    "torch_version": "2.9.1+cu128",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA GeForce GTX 1050 Ti",
+    "total_memory_gb": 31.23,
+    "available_memory_gb": 29.21,
+    "cpu_count": 20
+  },
+  "dataset": {
+    "timing": {
+      "start_time": "2026-02-08T20:07:14.952292",
+      "end_time": "2026-02-08T20:09:43.413379",
+      "duration_seconds": 148.461092710495
+    },
+    "parameters": {
+      "seed": 123,
+      "target_duration_sec": 120.0,
+      "max_samples": 5000,
+      "scan_topic": "/scan",
+      "odom_topic": "/odom",
+      "gt_topic": "/ground_truth_pose"
+    },
+    "statistics": {
+      "n_samples": 1824,
+      "scan_dimension": 360,
+      "actual_duration_sec": 120.408,
+      "samples_per_second": 15.148495116603549
+    },
+    "file_path": "/home/matejko/SLAM_AI/ai_slam_ws/out/exp_20260208_200713/dataset.npz",
+    "file_size_mb": 1.364
+  },
+  "training": {
+    "timing": {
+      "start_time": "2026-02-08T20:09:43.407292",
+      "end_time": "2026-02-08T20:09:53.035626",
+      "duration_seconds": 9.628334760665894
+    },
+    "parameters": {
+      "seed": 123,
+      "max_epochs": 200,
+      "patience": 20,
+      "min_delta": 1e-05,
+      "learning_rate": 0.001,
+      "validation_ratio": 0.2,
+      "batch_size": 128
+    },
+    "dataset_info": {
+      "n_total_samples": 1824,
+      "n_train_samples": 1459,
+      "n_validation_samples": 365,
+      "input_dimension": 363,
+      "output_dimension": 3
+    },
+    "model_info": {
+      "architecture": "MLP(in->256->128->64->3)",
+      "total_parameters": 134531,
+      "trainable_parameters": 134531
+    },
+    "training_results": {
+      "epochs_run": 107,
+      "best_epoch": 87,
+      "best_validation_loss": 0.2243107557296753,
+      "final_training_loss": 0.07036347625156243,
+      "early_stopped": true
+    },
+    "model_path": "/home/matejko/SLAM_AI/ai_slam_ws/out/exp_20260208_200713/model.pt",
+    "history_path": "/home/matejko/SLAM_AI/ai_slam_ws/out/exp_20260208_200713/train_history.json"
+  },
+  "inference": {
+    "timing": {
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {},
+    "statistics": {},
+    "model_path": null
+  },
+  "evaluation": {
+    "timing": {
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {},
+    "metrics": {},
+    "artifacts": {}
+  },
+  "total_experiment_time_sec": null,
+  "notes": [
+    "[2026-02-08T20:07:14.952301] Dataset collection started",
+    "[2026-02-08T20:09:43.407343] Training started",
+    "[2026-02-08T20:09:43.413426] Dataset collection completed: 1824 samples",
+    "[2026-02-08T20:09:53.035646] Training completed: 107 epochs, best_val_loss=0.224311"
+  ]
+}

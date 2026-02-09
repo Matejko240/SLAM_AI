@@ -1,0 +1,58 @@
+# ============================================================================
+# AI SLAM - Szybka Konfiguracja Testowa
+# ============================================================================
+# Krótki eksperyment do szybkiego testowania (ok. 30-40 sekund)
+# Użycie: ros2 launch ai_slam_bringup demo.launch.py config:=fast_test.yaml
+# ============================================================================
+
+experiment:
+  mode: "ai"
+  seed: 42
+  gui: false
+
+timing:
+  dataset_duration: 15.0        # Krótki dataset
+  dataset_start_delay: 5.0
+  dataset_wait_timeout: 30.0
+  experiment_duration: 40.0     # Krótki eksperyment
+  bridge_delay: 3.0
+  spawn_delay: 5.0
+  slam_configure_delay: 2.0
+
+dataset:
+  max_samples: 200
+  sample_rate: 10.0
+  scan_topic: "/scan"
+  odom_topic: "/odom"
+  gt_topic: "/ground_truth_pose"
+
+training:
+  max_epochs: 50                # Mniej epok
+  patience: 10                  # Szybszy early stopping
+  min_delta: 0.0001
+  learning_rate: 0.001
+  batch_size: 64
+  validation_ratio: 0.2
+  skip_if_model_exists: true
+
+inference:
+  model_wait_timeout: 60.0
+
+evaluation:
+  compute_rmse: true
+  compute_iou: true
+  save_trajectory_plot: true
+  save_error_plot: true
+  save_map_comparison: true
+
+odometry:
+  rw_sigma_xy: 0.005
+  rw_sigma_theta: 0.003
+
+driver:
+  linear_velocity: 0.4          # Trochę szybciej
+  angular_velocity: 0.6
+  turn_probability: 0.03
+
+output:
+  base_dir: "out"

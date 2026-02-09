@@ -1,0 +1,85 @@
+{
+  "experiment_id": "exp_house_01",
+  "created_at": "2026-02-08T19:58:01.256248",
+  "system_info": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python_version": "3.12.3",
+    "processor": "x86_64",
+    "machine": "x86_64",
+    "torch_version": "2.9.1+cu128",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_count": 1,
+    "gpu_name": "NVIDIA GeForce GTX 1050 Ti",
+    "total_memory_gb": 31.23,
+    "available_memory_gb": 28.95,
+    "cpu_count": 20
+  },
+  "dataset": {
+    "timing": {
+      "start_time": "2026-02-08T19:58:01.398323",
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {
+      "seed": 123,
+      "target_duration_sec": 120.0,
+      "max_samples": 5000,
+      "scan_topic": "/scan",
+      "odom_topic": "/odom",
+      "gt_topic": "/ground_truth_pose"
+    },
+    "statistics": {},
+    "file_path": null,
+    "file_size_mb": null
+  },
+  "training": {
+    "timing": {
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {},
+    "dataset_info": {},
+    "model_info": {},
+    "training_results": {},
+    "model_path": null,
+    "history_path": null
+  },
+  "inference": {
+    "timing": {
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {},
+    "statistics": {},
+    "model_path": null
+  },
+  "evaluation": {
+    "timing": {
+      "start_time": "2026-02-08T19:59:24.144831",
+      "end_time": null,
+      "duration_seconds": null
+    },
+    "parameters": {
+      "seed": 123,
+      "mode": "ai",
+      "duration_sec": 240.0,
+      "reference_map_yaml": "/home/matejko/SLAM_AI/ai_slam_ws/install/ai_slam_eval/share/ai_slam_eval/maps/reference_map.yaml"
+    },
+    "metrics": {},
+    "artifacts": {}
+  },
+  "total_experiment_time_sec": 114.35777688026428,
+  "notes": [
+    "[2026-02-08T19:58:01.398333] Dataset collection started",
+    "[2026-02-08T19:59:13.849154] Experiment log loaded and continued",
+    "[2026-02-08T19:59:13.882253] Dataset collection started",
+    "[2026-02-08T19:59:24.100098] Experiment log loaded and continued",
+    "[2026-02-08T19:59:24.144844] Evaluation started",
+    "[2026-02-08T19:59:55.614032] Experiment finalized. Total time: 114.4s",
+    "[2026-02-08T20:00:57.554951] Experiment log loaded and continued",
+    "[2026-02-08T20:00:57.583200] Dataset collection started"
+  ]
+}

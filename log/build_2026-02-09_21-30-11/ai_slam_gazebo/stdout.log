@@ -20,5 +20,7 @@ symbolically linking /home/matejko/SLAM_AI/build/ai_slam_gazebo/resource/ai_slam
 symbolically linking /home/matejko/SLAM_AI/build/ai_slam_gazebo/package.xml -> /home/matejko/SLAM_AI/install/ai_slam_gazebo/share/ai_slam_gazebo
 creating /home/matejko/SLAM_AI/install/ai_slam_gazebo/share/ai_slam_gazebo/worlds
 symbolically linking /home/matejko/SLAM_AI/build/ai_slam_gazebo/worlds/ai_slam_world.sdf -> /home/matejko/SLAM_AI/install/ai_slam_gazebo/share/ai_slam_gazebo/worlds
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_gazebo/worlds/world_train_house.sdf -> /home/matejko/SLAM_AI/install/ai_slam_gazebo/share/ai_slam_gazebo/worlds
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_gazebo/worlds/world_test_house.sdf -> /home/matejko/SLAM_AI/install/ai_slam_gazebo/share/ai_slam_gazebo/worlds
 creating /home/matejko/SLAM_AI/install/ai_slam_gazebo/share/ai_slam_gazebo/config
 symbolically linking /home/matejko/SLAM_AI/build/ai_slam_gazebo/config/bridge.yaml -> /home/matejko/SLAM_AI/install/ai_slam_gazebo/share/ai_slam_gazebo/config

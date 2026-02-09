@@ -31,4 +31,6 @@ creating /home/matejko/SLAM_AI/install/ai_slam_bringup/share/ai_slam_bringup/con
 symbolically linking /home/matejko/SLAM_AI/build/ai_slam_bringup/config/experiment_config.yaml -> /home/matejko/SLAM_AI/install/ai_slam_bringup/share/ai_slam_bringup/config
 symbolically linking /home/matejko/SLAM_AI/build/ai_slam_bringup/config/slam_toolbox_ai.yaml -> /home/matejko/SLAM_AI/install/ai_slam_bringup/share/ai_slam_bringup/config
 symbolically linking /home/matejko/SLAM_AI/build/ai_slam_bringup/config/fast_test.yaml -> /home/matejko/SLAM_AI/install/ai_slam_bringup/share/ai_slam_bringup/config
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_bringup/config/config_test_house.yaml -> /home/matejko/SLAM_AI/install/ai_slam_bringup/share/ai_slam_bringup/config
 symbolically linking /home/matejko/SLAM_AI/build/ai_slam_bringup/config/slam_toolbox_baseline.yaml -> /home/matejko/SLAM_AI/install/ai_slam_bringup/share/ai_slam_bringup/config
+symbolically linking /home/matejko/SLAM_AI/build/ai_slam_bringup/config/config_train_house.yaml -> /home/matejko/SLAM_AI/install/ai_slam_bringup/share/ai_slam_bringup/config

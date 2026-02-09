@@ -2,6 +2,7 @@ import math
 import time
 import numpy as np
 
+from collections import deque
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -80,6 +81,10 @@ class ScanMatcher(Node):
         self.declare_parameter("max_use_range", 10.0)  # max dystans punktów [m]
         self.declare_parameter("max_points", 240)      # ogranicz liczbę punktów (0=bez limitu)
 
+        self.declare_parameter("localmap_scans", 25)
+        self.declare_parameter("localmap_radius", 6.0)
+        self.declare_parameter("localmap_min_points", 200)
+
         # --- search ranges (dx, dy w [m], dtheta w [rad])
         # Local: okna i kroki (3 poziomy)
         self.declare_parameter("local_lvl1_win_xy", 0.10)
@@ -120,12 +125,19 @@ class ScanMatcher(Node):
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.twist_topic = str(self.get_parameter("twist_topic").value)
 
+        self.localmap_scans = int(self.get_parameter("localmap_scans").value)
+        self.localmap_radius = float(self.get_parameter("localmap_radius").value)
+        self.localmap_min_points = int(self.get_parameter("localmap_min_points").value)
+
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
         self.publish_tf = bool(self.get_parameter("publish_tf").value)
 
         self.method = str(self.get_parameter("method").value).lower()
+        if self.method not in ("local", "bruteforce", "localmap"):
+            self.get_logger().warn(f"Unknown method '{self.method}', falling back to 'local'.")
+            self.method = "local"
         self.publish_every_n = int(self.get_parameter("publish_every_n").value)
 
         self.grid_res = float(self.get_parameter("grid_res").value)
@@ -156,6 +168,7 @@ class ScanMatcher(Node):
 
         self.tf_br = TransformBroadcaster(self) if self.publish_tf else None
         self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
+        self.submap_world_pts = deque(maxlen=max(1, self.localmap_scans))
 
         self.get_logger().info(
             f"ScanMatcher started: method={self.method}, scan={self.scan_topic} -> pose={self.pose_topic}"
@@ -223,9 +236,10 @@ class ScanMatcher(Node):
 
         return best, best_score
 
-    def _estimate_delta_local(self, grid, size, pts_curr):
+    def _estimate_delta_local(self, grid, size, pts_curr, center=None):
         """3-poziomowe przeszukiwanie wokół poprzedniej delty (albo 0)."""
-        center = (self.prev_dx, self.prev_dy, self.prev_dth)
+        if center is None:
+            center = (self.prev_dx, self.prev_dy, self.prev_dth)
 
         lvl1 = (
             float(self.get_parameter("local_lvl1_win_xy").value),
@@ -270,6 +284,42 @@ class ScanMatcher(Node):
         self.x += c * dx - s * dy
         self.y += s * dx + c * dy
         self.th = wrap(self.th + dth)
+    def _local_to_world(self, pts_local: np.ndarray, x: float, y: float, th: float) -> np.ndarray:
+        c = math.cos(th); s = math.sin(th)
+        px = pts_local[:, 0]; py = pts_local[:, 1]
+        wx = x + c * px - s * py
+        wy = y + s * px + c * py
+        return np.stack([wx, wy], axis=1).astype(np.float32)
+
+    def _world_to_local(self, pts_world: np.ndarray, x: float, y: float, th: float) -> np.ndarray:
+        c = math.cos(th); s = math.sin(th)
+        dx = pts_world[:, 0] - x
+        dy = pts_world[:, 1] - y
+        lx = c * dx + s * dy
+        ly = -s * dx + c * dy
+        return np.stack([lx, ly], axis=1).astype(np.float32)
+
+    def _estimate_delta_localmap(self, pts_curr_local: np.ndarray):
+        if len(self.submap_world_pts) == 0:
+            return None
+
+        world_pts = np.concatenate(list(self.submap_world_pts), axis=0)
+        if world_pts.size == 0:
+            return None
+
+        submap_local = self._world_to_local(world_pts, self.x, self.y, self.th)
+
+        if self.localmap_radius > 0.0:
+            r2 = float(self.localmap_radius) ** 2
+            ok = (submap_local[:, 0] ** 2 + submap_local[:, 1] ** 2) <= r2
+            submap_local = submap_local[ok]
+
+        if submap_local.shape[0] < int(self.localmap_min_points):
+            return None
+
+        grid, size = self._make_grid(submap_local)
+        center = (self.prev_dx, self.prev_dy, self.prev_dth)
+        return self._estimate_delta_local(grid, size, pts_curr_local, center=center)
 
     def on_scan(self, msg: LaserScan):
         t_start = time.perf_counter()
@@ -279,6 +329,8 @@ class ScanMatcher(Node):
         if self.prev_scan_pts is None:
             self.prev_scan_pts = pts
             self.prev_stamp = msg.header.stamp
+            if self.method == "localmap":
+                self.submap_world_pts.append(self._local_to_world(pts, self.x, self.y, self.th))
             return
 
         # publish throttling (np. bruteforce co 5 skanów)
@@ -286,6 +338,8 @@ class ScanMatcher(Node):
         if self.publish_every_n > 1 and (self.step_idx % self.publish_every_n) != 0:
             self.prev_scan_pts = pts
             self.prev_stamp = msg.header.stamp
+            if self.method == "localmap":
+                self.submap_world_pts.append(self._local_to_world(pts, self.x, self.y, self.th))
             return
 
         # dt
@@ -296,14 +350,20 @@ class ScanMatcher(Node):
         else:
             dt = 0.1
 
-        # grid from prev
-        grid, size = self._make_grid(self.prev_scan_pts)
-
-        # estimate delta
-        if self.method == "bruteforce":
+        if self.method == "localmap":
+            est = self._estimate_delta_localmap(pts)
+            if est is None:
+                grid, size = self._make_grid(self.prev_scan_pts)
+                dx, dy, dth = self._estimate_delta_local(grid, size, pts)
+            else:
+                dx, dy, dth = est
+        elif self.method == "bruteforce":
+            grid, size = self._make_grid(self.prev_scan_pts)
             dx, dy, dth = self._estimate_delta_bruteforce(grid, size, pts)
         else:
+            grid, size = self._make_grid(self.prev_scan_pts)
             dx, dy, dth = self._estimate_delta_local(grid, size, pts)
+
 
         # optional low-pass filter on delta
         a = float(self.lpf_alpha)
@@ -317,7 +377,8 @@ class ScanMatcher(Node):
 
         # integrate
         self._integrate_pose(float(dx), float(dy), float(dth))
-
+        if self.method == "localmap":
+            self.submap_world_pts.append(self._local_to_world(pts, self.x, self.y, self.th))
         # publish PoseStamped (dla eval_node ważne: frame_id="odom")
         ps = PoseStamped()
         ps.header.stamp = msg.header.stamp

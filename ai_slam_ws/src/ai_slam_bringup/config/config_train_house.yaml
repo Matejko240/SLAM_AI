@@ -1,0 +1,16 @@
+experiment:
+  mode: "ai"
+  phase: "train"
+  seed: 123
+  gui: true
+
+simulation:
+  world_sdf: "world_train_house.sdf"
+
+tracks:
+  tor1_baseline: true
+  tor2_ai_slam: true
+  tor3_local: false
+  tor4_bruteforce: false
+  tor5_robak: false
+  tor6_rywak: false

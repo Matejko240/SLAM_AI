@@ -95,7 +95,11 @@ def launch_setup(context, *args, **kwargs):
     mode = str(get_param("mode", ["experiment", "mode"], "ai"))
     seed = int(get_param("seed", ["experiment", "seed"], 123))
     gui = str(get_param("gui", ["experiment", "gui"], "false")).lower()
-    
+    phase = str(get_param("phase", ["experiment", "phase"], "full")).lower()
+    if phase not in ("full", "train", "test"):
+        phase = "full"
+    world_sdf_arg = str(get_param("world_sdf", ["simulation", "world_sdf"], "ai_slam_world.sdf"))
+
     # === CZASY ===
     duration_sec = float(get_param("duration_sec", ["timing", "experiment_duration"], 120.0))
     dataset_duration_sec = float(get_param("dataset_duration_sec", ["timing", "dataset_duration"], 45.0))
@@ -121,11 +125,23 @@ def launch_setup(context, *args, **kwargs):
     
     # === INFERENCE ===
     model_wait_timeout = float(get_config_value(cfg, "inference", "model_wait_timeout", default=300.0))
-    
+    infer_scan_topic = get_config_value(cfg, "inference", "scan_topic", default="/scan_slam")
+    infer_odom_topic = get_config_value(cfg, "inference", "odom_topic", default="/odom")
+
+    # UWAGA: mapujemy nazwy z YAML -> nazwy parametrów w infer_node.py
+    infer_pose_topic = get_config_value(cfg, "inference", "output_pose_topic", default="/pose_ai")
+    infer_odom_ai_topic = get_config_value(cfg, "inference", "output_odom_topic", default="/odom_ai")
+    infer_tf_parent = get_config_value(cfg, "inference", "tf_parent_frame", default="odom_ai")
+    infer_tf_child  = get_config_value(cfg, "inference", "tf_child_frame", default="base_link")
+
     # === ODOMETRY ===
     rw_sigma_xy = float(get_config_value(cfg, "odometry", "rw_sigma_xy", default=0.005))
     rw_sigma_theta = float(get_config_value(cfg, "odometry", "rw_sigma_theta", default=0.003))
-    
+    odom_in_topic = get_config_value(cfg, "odometry", "input_topic", default="/odom_raw")
+    odom_out_topic = get_config_value(cfg, "odometry", "output_topic", default="/odom")
+    odom_frame_id = get_config_value(cfg, "odometry", "frame_id", default="odom")
+    odom_child_frame_id = get_config_value(cfg, "odometry", "child_frame_id", default="base_link")
+
     # === DRIVER ===
     driver_linear_vel = float(get_config_value(cfg, "driver", "linear_velocity", default=0.3))
     driver_angular_vel = float(get_config_value(cfg, "driver", "angular_velocity", default=0.5))
@@ -155,7 +171,19 @@ def launch_setup(context, *args, **kwargs):
     eval_share = get_package_share_directory("ai_slam_eval")
     ros_gz_sim_share = get_package_share_directory("ros_gz_sim")
 
-    world_path = os.path.join(gazebo_share, "worlds", "ai_slam_world.sdf")
+    # World (można podać nazwę .sdf z ai_slam_gazebo/worlds/ lub ścieżkę absolutną)
+    # World (launch-arg world_sdf ma pierwszeństwo nad configiem)
+    world_path_cfg = str(get_config_value(cfg, "simulation", "world_path", default=""))
+
+    if world_path_cfg:
+        world_path = world_path_cfg if os.path.isabs(world_path_cfg) else os.path.join(gazebo_share, world_path_cfg)
+    else:
+        # TU: używamy world_sdf_arg (launch-arg > config > default)
+        if os.path.isabs(world_sdf_arg):
+            world_path = world_sdf_arg
+        else:
+            world_path = os.path.join(gazebo_share, "worlds", world_sdf_arg)
+
     bridge_cfg = os.path.join(gazebo_share, "config", "bridge.yaml")
     model_sdf = os.path.join(desc_share, "models", "diffbot.sdf")
     urdf_path = os.path.join(desc_share, "urdf", "diffbot.urdf")
@@ -189,7 +217,21 @@ def launch_setup(context, *args, **kwargs):
     # === NODES ===
     is_ai_mode = (mode == "ai")
     is_gui = (gui == "true")
-    
+    tracks_cfg = get_config_value(cfg, "tracks", default={})
+
+    tor3_local_enabled = bool(tracks_cfg.get("tor3_local", True))
+    tor4_bruteforce_enabled = bool(tracks_cfg.get("tor4_bruteforce", False))
+    tor5_robak_enabled = bool(tracks_cfg.get("tor5_robak", False))
+    tor6_rywak_enabled = bool(tracks_cfg.get("tor6_rywak", False))
+
+    # fazy (zakładam, że zmienną `phase` już wcześniej wyliczysz z get_param)
+    do_train_phase = is_ai_mode and (phase in ("full", "train"))
+    do_test_phase  = is_ai_mode and (phase in ("full", "test"))
+    do_eval_phase  = (phase in ("full", "test"))
+
+    # tracki tylko w test/full (w train oszczędzamy CPU)
+    tor3_local_enabled = tor3_local_enabled and do_eval_phase
+    tor4_bruteforce_enabled = tor4_bruteforce_enabled and do_eval_phase
     # Gazebo launch
     gz_launch_headless = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(gz_sim_launch_py),
@@ -239,14 +281,16 @@ def launch_setup(context, *args, **kwargs):
         parameters=[{"use_sim_time": True}],
         output="screen",
     )
-    
+    sm3_cfg = get_config_value(cfg, "scan_matcher", "tor3", default={})
+    sm4_cfg = get_config_value(cfg, "scan_matcher", "tor4", default={})
+
     scan_matcher_local = Node(
         package="ai_slam_bringup",
         executable="scan_matcher",
         name="scan_matcher_local",
         parameters=[{
             "use_sim_time": True,
-            "method": "local",
+            "method": "localmap",
             "scan_topic": "/scan_slam",
             "pose_topic": "/pose_scanmatch",
             "twist_topic": "/twist_scanmatch",
@@ -255,8 +299,9 @@ def launch_setup(context, *args, **kwargs):
             "tf_child": "base_link_scanmatch",
             "publish_tf": True,
             "publish_every_n": 1,
-        }],
+        }, sm3_cfg],
         output="screen",
+        condition=IfCondition(str(tor3_local_enabled).lower()),
     )
 
     scan_matcher_bruteforce = Node(
@@ -278,8 +323,9 @@ def launch_setup(context, *args, **kwargs):
             "bf_range_th": 0.25,
             "bf_step_xy": 0.01,
             "bf_step_th": 0.01,
-        }],
+        }, sm4_cfg],
         output="screen",
+        condition=IfCondition(str(tor4_bruteforce_enabled).lower()),
     )
 
     gt_pose = Node(
@@ -297,6 +343,10 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed,
             "rw_sigma_xy": rw_sigma_xy,
             "rw_sigma_theta": rw_sigma_theta,
+            "in_topic": odom_in_topic,
+            "out_topic": odom_out_topic,
+            "frame_id": odom_frame_id,
+            "child_frame_id": odom_child_frame_id,
         }],
         output="screen",
     )
@@ -335,7 +385,7 @@ def launch_setup(context, *args, **kwargs):
         arguments=["--ros-args", "--log-level", "warn"],
         remappings=[("/map", "/map_ai")],
         output="log",  # Redirect to log file instead of screen
-        condition=IfCondition(str(is_ai_mode).lower()),
+        condition=IfCondition(str(do_test_phase).lower()),
     )
 
     # Lifecycle management
@@ -372,7 +422,7 @@ def launch_setup(context, *args, **kwargs):
                 transition_id=Transition.TRANSITION_CONFIGURE
             ))
         ],
-        condition=IfCondition(str(is_ai_mode).lower()),
+        condition=IfCondition(str(do_test_phase).lower()),
     )
     
     activate_ai = RegisterEventHandler(
@@ -388,7 +438,7 @@ def launch_setup(context, *args, **kwargs):
                 ))
             ]
         ),
-        condition=IfCondition(str(is_ai_mode).lower()),
+        condition=IfCondition(str(do_test_phase).lower()),
     )
 
     lifecycle_mgr_baseline = Node(
@@ -403,7 +453,7 @@ def launch_setup(context, *args, **kwargs):
         executable="lifecycle_manager",
         parameters=[{"use_sim_time": True, "nodes": ["slam_toolbox_ai"]}],
         output="screen",
-        condition=IfCondition(str(is_ai_mode).lower()),
+        condition=IfCondition(str(do_test_phase).lower()),
     )
 
     # AI Pipeline nodes
@@ -422,7 +472,7 @@ def launch_setup(context, *args, **kwargs):
             "gt_topic": dataset_gt_topic,
         }],
         output="screen",
-        condition=IfCondition(str(is_ai_mode).lower()),
+        condition=IfCondition(str(do_train_phase).lower()),
     )
 
     trainer = Node(
@@ -443,7 +493,7 @@ def launch_setup(context, *args, **kwargs):
             "val_ratio": validation_ratio,
         }],
         output="screen",
-        condition=IfCondition(str(is_ai_mode).lower()),
+        condition=IfCondition(str(do_train_phase).lower()),
     )
 
     infer = Node(
@@ -455,9 +505,16 @@ def launch_setup(context, *args, **kwargs):
             "out_dir": out_dir,
             "experiment_id": experiment_id,
             "model_wait_timeout": model_wait_timeout,
+            "scan_topic": infer_scan_topic,
+            "odom_topic": infer_odom_topic,
+            "pose_topic": infer_pose_topic,         # zgodnie z infer_node.py :contentReference[oaicite:18]{index=18}
+            "odom_ai_topic": infer_odom_ai_topic,   # zgodnie z infer_node.py :contentReference[oaicite:19]{index=19}
+            "tf_parent": infer_tf_parent,           # zgodnie z infer_node.py :contentReference[oaicite:20]{index=20}
+            "tf_child": infer_tf_child,             # zgodnie z infer_node.py :contentReference[oaicite:21]{index=21}
+   
         }],
         output="screen",
-        condition=IfCondition(str(is_ai_mode).lower()),
+        condition=IfCondition(str(do_test_phase).lower()),
     )
 
     evaluator = Node(
@@ -473,6 +530,8 @@ def launch_setup(context, *args, **kwargs):
             "reference_map_yaml": reference_map_yaml,
         }],
         output="screen",
+        condition=IfCondition(str(do_eval_phase).lower()),
+
     )
 
     # Environment variables
@@ -514,20 +573,19 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
-        # Argument do podania pliku konfiguracyjnego
         DeclareLaunchArgument(
-            "config", 
+            "config",
             default_value="experiment_config.yaml",
             description="Config file name (in config/) or full path"
         ),
-        # Argumenty które mogą nadpisać config (puste = użyj z config)
         DeclareLaunchArgument("mode", default_value="__USE_CONFIG__", description="baseline|ai"),
+        DeclareLaunchArgument("phase", default_value="__USE_CONFIG__", description="full|train|test"),
+        DeclareLaunchArgument("world_sdf", default_value="__USE_CONFIG__", description="Gazebo world SDF (filename in worlds/ or absolute path)"),
         DeclareLaunchArgument("seed", default_value="__USE_CONFIG__", description="Random seed"),
         DeclareLaunchArgument("duration_sec", default_value="__USE_CONFIG__", description="Experiment duration"),
         DeclareLaunchArgument("dataset_duration_sec", default_value="__USE_CONFIG__", description="Dataset duration"),
         DeclareLaunchArgument("gui", default_value="__USE_CONFIG__", description="Enable Gazebo GUI"),
         DeclareLaunchArgument("out_dir", default_value="__USE_CONFIG__", description="Output directory"),
         DeclareLaunchArgument("experiment_id", default_value="__USE_CONFIG__", description="Experiment ID"),
-        # OpaqueFunction pozwala na runtime evaluation
         OpaqueFunction(function=launch_setup),
     ])
