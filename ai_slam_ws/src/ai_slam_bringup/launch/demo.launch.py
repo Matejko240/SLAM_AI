@@ -16,7 +16,8 @@ Użycie:
 import os
 import yaml
 from datetime import datetime
-
+from launch.events import Shutdown
+from launch.event_handlers import OnProcessExit
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument, TimerAction, SetEnvironmentVariable, 
@@ -101,7 +102,7 @@ def launch_setup(context, *args, **kwargs):
     world_sdf_arg = str(get_param("world_sdf", ["simulation", "world_sdf"], "ai_slam_world.sdf"))
 
     # === CZASY ===
-    duration_sec = float(get_param("duration_sec", ["timing", "experiment_duration"], 120.0))
+    eval_duration_sec = float(get_param("eval_duration_sec", ["timing", "eval_duration"], 60.0))
     dataset_duration_sec = float(get_param("dataset_duration_sec", ["timing", "dataset_duration"], 45.0))
     dataset_wait_timeout = float(get_config_value(cfg, "timing", "dataset_wait_timeout", default=120.0))
     bridge_delay = float(get_config_value(cfg, "timing", "bridge_delay", default=3.0))
@@ -204,7 +205,7 @@ def launch_setup(context, *args, **kwargs):
     print(f"  Mode: {mode}")
     print(f"  Seed: {seed}")
     print(f"  GUI: {gui}")
-    print(f"  Experiment duration: {duration_sec}s")
+    print(f"  Eval duration: {eval_duration_sec}s")
     print(f"  Dataset duration: {dataset_duration_sec}s")
     print(f"  Training: max_epochs={max_epochs}, patience={patience}, lr={learning_rate}")
     print(f"  Output: {out_dir}/{experiment_id}")
@@ -526,7 +527,7 @@ def launch_setup(context, *args, **kwargs):
             "mode": mode,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "duration_sec": duration_sec,
+            "duration_sec": eval_duration_sec,
             "reference_map_yaml": reference_map_yaml,
         }],
         output="screen",
@@ -542,7 +543,28 @@ def launch_setup(context, *args, **kwargs):
         SetEnvironmentVariable("MESA_GLSL_VERSION_OVERRIDE", "450"),
         SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"),
     ]
+    # Definicja handlerów zamykania
+    auto_shutdown_train = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=trainer,
+            on_exit=[
+                LogInfo(msg='[AUTO] Trening zakończony. Zamykanie symulacji...'),
+                EmitEvent(event=Shutdown())
+            ]
+        ),
+        condition=IfCondition(str(do_train_phase).lower())
+    )
 
+    auto_shutdown_eval = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=evaluator,
+            on_exit=[
+                LogInfo(msg='[AUTO] Ewaluacja zakończona. Zamykanie symulacji...'),
+                EmitEvent(event=Shutdown())
+            ]
+        ),
+        condition=IfCondition(str(do_eval_phase).lower())
+    )
     return [
         *env_vars,
         gz_launch_headless,
@@ -568,6 +590,8 @@ def launch_setup(context, *args, **kwargs):
         trainer,
         infer,
         evaluator,
+        auto_shutdown_train,
+        auto_shutdown_eval,
     ]
 
 
@@ -582,7 +606,7 @@ def generate_launch_description():
         DeclareLaunchArgument("phase", default_value="__USE_CONFIG__", description="full|train|test"),
         DeclareLaunchArgument("world_sdf", default_value="__USE_CONFIG__", description="Gazebo world SDF (filename in worlds/ or absolute path)"),
         DeclareLaunchArgument("seed", default_value="__USE_CONFIG__", description="Random seed"),
-        DeclareLaunchArgument("duration_sec", default_value="__USE_CONFIG__", description="Experiment duration"),
+        DeclareLaunchArgument("eval_duration_sec", default_value="__USE_CONFIG__", description="Evaluation duration"),
         DeclareLaunchArgument("dataset_duration_sec", default_value="__USE_CONFIG__", description="Dataset duration"),
         DeclareLaunchArgument("gui", default_value="__USE_CONFIG__", description="Enable Gazebo GUI"),
         DeclareLaunchArgument("out_dir", default_value="__USE_CONFIG__", description="Output directory"),

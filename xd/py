@@ -1,0 +1,179 @@
+
+Porównaj in-amp vs op-amp.#
+IN-AMP to układ „pomiarowy”: ma bardzo duże tłumienie składowej wspólnej (CMRR) i jest robiony pod wzmacnianie małej różnicy napięć na tle dużego common-mode. Typowo ma zamknięte (wewnętrzne) sprzężenie zwrotne, a wzmocnienie ustawia się rezystorem/rezystorami, które nie są wpięte wprost w żadne wejście. W OP-AMP wzmocnienie zamkniętopętlowe robi się zwykle zewnętrznymi rezystorami, które wpływają też na impedancję wejściową (pętla sprzężenia „widzi” wejście). @
+
+Jakie są kluczowe różnice „IN-AMP vs OP-AMP” wymienione na slajdzie?#
+• IN-AMP ma wewnętrznie zdefiniowane zamkniętopętlowe wzmocnienie (dobierane układowo).  
+• OP-AMP: wzmocnienie zamkniętopętlowe jest wyznaczone przez zewnętrzne rezystory.  
+• IN-AMP: rezystor(y) nastawy wzmocnienia nie są połączone z żadnym wejściem.  
+• OP-AMP: rezystory w pętli sprzężenia mogą wpływać na rezystancję wejściową. @
+
+Czym różni się „difference amplifier” od in-ampa?#
+Difference amplifier (w rozumieniu slajdów) „nie jest in-ampem”: ma ograniczoną rezystancję wejściową, a napięcie wspólne VCM może być nawet większe niż napięcie zasilania wzmacniacza. @
+
+Co jest nie tak z układem fig.a (in-amp z dwoma kondensatorami na wejściu)?#
+Same kondensatory na wejściu potrafią „odciąć DC”: prądy polaryzacji wejść nie mają poprawnej ścieżki powrotu, więc dla składowej stałej wejścia „pływają”, punkt pracy robi się nieokreślony (łatwo o nasycenie), a odporność na zakłócenia i CMRR spadają. @
+
+Co jest nie tak z układem fig.b (current feedback amplifier, CFA) z rezystorami 1 MΩ?#
+Dla CFA wartość rezystora sprzężenia zwrotnego ma krytyczny wpływ na stabilność i pasmo. Zbyt duże Rf (np. 1 MΩ) zwykle mocno ogranicza pasmo/szybkość odpowiedzi i zwiększa ryzyko niestabilności oraz zniekształceń (układ „nie jest już taki szybki, jak powinien być” dla toru wideo). @
+
+Co oznaczają VV, CC, CV, VC (typy wzmacniaczy w slajdach)?#
+• VV — wzmacniacz napięciowy (voltage/voltage), klasyczny „op-amp napięciowy”; w fiszkach: „bufor diamentowy”.  
+• CC — wzmacniacz prądowy (current/current).  
+• CV — wzmacniacz transimpedancyjny (current/voltage).  
+• VC — wzmacniacz transkonduktancyjny (voltage/current). @
+
+Który wzmacniacz jest „diamentowy” (diamond buffer) w tym podziale?#
+VV (voltage/voltage). @
+
+Wymień główne parametry wzmacniacza operacyjnego (OPA).#
+Najczęściej wymagane „rdzenie” z wykładu:  
+• Offset (napięcie niezrównoważenia) i dryft offsetu.  
+• CMRR (tłumienie składowej wspólnej).  
+• PSRR (tłumienie zmian zasilania).  
+• Zakres wejścia/wyjścia (input/output swing; w tym rail-to-rail).  
+• Pasmo przenoszenia (bandwidth, fT/GBW) oraz Slew Rate (SR).  
+Dodatkowo często: prądy polaryzacji wejść i szumy. @
+
+Jak zdefiniować napięcie wspólne i różnicowe dla dwóch wejść?#
+• VCM = (V1 + V2) / 2  
+• VDIFF = V1 − V2 @
+
+Co to jest CMRR „na chłopski rozum”?#
+CMRR mówi, jak dobrze wzmacniacz „ignoruje” to, co jest wspólne na obu wejściach (common-mode), a wzmacnia tylko różnicę (VDIFF). Idealnie UOUT nie powinno reagować na czysty sygnał wspólny, ale w praktyce reaguje (UOUT ≠ 0) — im większy CMRR, tym mniej. @
+
+Co to jest PSRR?#
+PSRR opisuje, jak bardzo zmiany napięcia zasilania przenoszą się na wyjście (ΔUOUT/ΔUSupp). Duży PSRR = mała wrażliwość na „falowanie” zasilania. @
+
+Co to jest Slew Rate (SR) i jak wpływa na sinus?#
+SR to maksymalne |dUOUT/dt|. Dla sinusa SR ogranicza maksymalną częstotliwość przy danej amplitudzie: jeśli wymagane dU/dt > SR, sygnał na wyjściu „trójkątnieje” (zniekształca). @
+
+Czym jest wzmacniacz transimpedancyjny (CV) i gdzie się go używa?#
+To przetwornik prąd→napięcie: UOUT = zT · IIN (w praktyce Rm · IIN). Typowa aplikacja: czujniki prądowe, np. fotodioda. @
+
+Czym jest wzmacniacz transkonduktancyjny (VC) i jak go opisać?#
+To przetwornik napięcie→prąd: IOUT = gm · (VIN(+) − VIN(−)). @
+
+Na czym polega idea wzmacniacza ładunkowego?#
+Zamienia ładunek z czujnika na napięcie: VOUT ≈ −QIN / CF. Klucz: VOUT nie zależy (wprost) od pojemności czujnika CS ani pojemności pasożytniczych przewodów (Cparasite), więc jest dobry do czujników piezo i długich kabli. @
+
+Na czym polega idea wzmacniacza chopperowego?#
+Sygnał (zwłaszcza DC i bardzo niskie f) jest modulowany na wyższą częstotliwość, wzmacniany w torze AC i demodulowany z powrotem. Dzięki temu ogranicza się wpływ offsetu i szumu 1/f (lepsza dokładność dla małych sygnałów). @
+
+Jakie są podstawowe wady chopper-ampa z wykładu?#
+• Wejście jest pojedyncze (single-ended) i nie przyjmuje sygnału różnicowego bez dodatkowego front-endu.  
+• To układ z próbkowaniem (sampled data) — pasmo całości jest ułamkiem f_chop.  
+• f_chop jest ograniczona przez dynamikę wzmacniacza i błędy przełączania, więc często jest w niskich kHz → małe pasmo. @
+
+Na czym polega idea wzmacniacza z modulacją parametryczną?#
+Wzmocnienie uzyskuje się przez okresową zmianę parametru układu (np. C(t)=C0+ΔC·sin(ωt)). Energia z sygnału „pompującego” przechodzi do sygnału użytecznego. @
+
+W konwersji A/D: jaki jest SNR kwantyzacji dla idealnego N-bit ADC (pełnoskalowy sinus)?#
+SNRq[dB] ≈ 6.02·N + 1.76 dB. Czyli +1 bit ≈ +6 dB. @
+
+O ile dB rośnie SNR, gdy ENOB wzrośnie o 1 bit?#
+Około +6 dB (wynika z SNRq[dB] ≈ 6.02·N + 1.76). @
+
+Jaki jest związek OSR z ENOB (oversampling → efektywna rozdzielczość)?#
+W przybliżeniu: ΔENOB ≈ 0.5 · log2(OSR). Wniosek „na egzamin”: 4× większy OSR daje ok. +1 bit ENOB, a 2× większy OSR daje ok. +0.5 bit ENOB. @
+
+Ile dB SNR „zyskuję” przez oversampling, gdy OSR rośnie 4×?#
+Skoro 4× OSR ≈ +1 bit ENOB, to odpowiada to około +6 dB SNR. (Dla 2× OSR to ~+3 dB). @
+
+Jaka jest zależność między SNR a pojemnością kanału?#
+Shannon–Hartley: C = B · log2(1 + SNRlin). Większy SNR i/lub większe pasmo B → większa maks. przepływność. @
+
+Jakie są podstawowe metody izolacji galwanicznej w analogowych i cyfrowych układach?#
+• Optyczna  
+• Transformatorowa  
+• Magnetyczna  
+• Pojemnościowa  
+W analogu często stosuje się tor modulacja–demodulacja przez barierę, a w cyfrze dedykowane izolatory cyfrowe. @
+
+Wymień typy przekaźników (z wykładu).#
+• Regular (zwykłe)  
+• Latching / bistabilne  
+• Polarized  
+• Reed (w tym mercury wetted)  
+• Contactor (stycznik)  
+• SSR (solid state relay): tranzystorowy, triakowy, tyrystorowy  
+(+ w slajdach wspomniane też „inne”: safety switches, over current itd.) @
+
+Jakie są konfiguracje styków przekaźnika (podstawowe skróty)?#
+SPST, SPDT, DPST, DPDT (np. SPDT = SPCO). @
+
+Dlaczego przy wyłączaniu przekaźnika/cewki pojawia się wysokie napięcie?#
+Bo cewka jest indukcyjnością: UL = L · dIL/dt. Szybka zmiana prądu (duże |dI/dt|) indukuje duże |UL|; przy zmianie kierunku „zbocza” prądu zmienia się polaryzacja napięcia. @
+
+Po co jest dioda „flyback / clamp” równolegle do cewki?#
+Żeby ograniczyć (zaclampować) przepięcie przy wyłączaniu — inaczej wysokie UL może zniszczyć tranzystor i powodować niebezpieczne iskry na stykach. @
+
+Dlaczego sama dioda równoległa może wydłużać czas odpadania przekaźnika?#
+Bo clamp na małym napięciu powoduje wolniejszy spadek prądu cewki (mniejsze napięcie „wymusza” mniejsze |dI/dt|), więc przekaźnik dłużej trzyma. @
+
+Jak przyspiesza się odpadanie przekaźnika (wg slajdów)?#
+Stosuje się wyższy clamp (np. Zener clamp lub aktywny clamp), żeby dopuścić większe napięcie przy wyłączaniu → większe |dI/dt| → szybszy zanik prądu cewki → szybsze odpadanie. @
+
+Co to jest „overdrive” i „hold current” przy sterowaniu cewką?#
+Overdrive: chwilowo większe napięcie/prąd na starcie, żeby szybciej narósł prąd i przekaźnik szybciej zadziałał. Hold current: po zadziałaniu zmniejsza się prąd (np. PWM), żeby ograniczyć grzanie i pobór mocy, a nadal trzymać zadziałanie. @
+
+Jakie są metody skracania czasu załączenia przekaźnika (wg slajdów)?#
+1) Zwiększyć Vcc (większe napięcie → szybszy narost prądu).  
+2) Dodać rezystor szeregowy, aby utrzymać Imax przy większym Vcc (koszt: większa moc w rezystorze).  
+3) Użyć sterowania z ograniczeniem prądu: overdrive + przejście na hold current. @
+
+Wymień główne grupy silników z wykładu.#
+• AC indukcyjne: shaded-pole, split-phase/capacitor, 3-fazowe klatkowe (squirrel cage)  
+• AC synchroniczne  
+• DC szczotkowe (PMDC)  
+• BLDC  
+• Uniwersalne  
+• Krokowe (reluctance / permanent magnet / hybrid)  
+• Linear (VCM) @
+
+Podaj kluczową różnicę „AC induction vs AC synchronous” z tabeli.#
+Indukcyjny ma poślizg (prędkość zależy od obciążenia i jest < synchronicznej), a synchroniczny obraca się w synchronizacji z częstotliwością (bez poślizgu). @
+
+Schemat blokowy systemu pomiarowego z czujnikiem.#
+Wielkość mierzona → czujnik → kondycjonowanie sygnału (front-end) → kalibracja → konwersja A/D → przetwarzanie → wynik / sterowanie aktuatorami. @
+
+Accuracy vs Precision — jaka różnica?#
+Accuracy (trafność): jak blisko jesteś wartości prawdziwej. Precision (precyzja): jak mały jest rozrzut i jak powtarzalne są pomiary. Możesz mieć wysoką precyzję i niską trafność (lub odwrotnie). @
+
+Wymień główne typy czujników temperatury z wykładu.#
+• Diody i tranzystory (np. VBE / bandgap)  
+• RTD (np. Pt100/Pt1000)  
+• Termistory NTC/PTC  
+• Termopary  
+• (z podsumowania: także pirometr oraz pyroelement) @
+
+Jaki czujnik „najbardziej pasuje” do bardzo wysokich temperatur rzędu tysięcy °C (np. ~2000°C) wg slajdów?#
+Pirometr (pomiar bezkontaktowy promieniowania). @
+Narysuj / opisz dwa podstawowe schematy wzmacniacza pomiarowego (IN-AMP) (z wykładu).#
+1) Klasyczny „3 op-amp in-amp”: dwa wzmacniacze wejściowe (pierwszy stopień) + wzmacniacz różnicowy (drugi stopień). Wzmocnienie ustawia się jednym rezystorem RG, a oba wejścia mają symetryczną ścieżkę do wyjścia.  
+2) „2 op-amp in-amp”: uproszczona wersja z dwoma op-ampami, ale z natury ma gorszy CMRR (szczególnie dla wyższych częstotliwości) przez niesymetrię torów składowej wspólnej. @
+
+3 op-amp vs 2 op-amp in-amp — najważniejsze różnice „do odpowiedzi opisowej”.#
+• 3 op-amp: łatwiej realizować pracę z pojedynczym zasilaniem; sygnały z obu wejść idą „tym samym torem” → zwykle lepszy CMRR.  
+• 2 op-amp: konstrukcyjnie prostszy, ale typowo ma niższy CMRR, bo tory common-mode wejść nie są idealnie zbalansowane (zwłaszcza dla wysokich f). @
+
+Typy, podstawowe parametry i zasada działania: czujniki ciśnienia (wg slajdów).#
+Typy (najczęściej wymieniane):  
+• piezorezystancyjne  
+• pojemnościowe  
+• piezoelektryczne  
+Parametry „rdzeń” do omawiania: zakres, czułość, błąd, histereza, dryft, czas odpowiedzi. @
+
+Typy, podstawowe parametry i zasada działania: czujniki siły (wg slajdów).#
+Typy (najczęściej wymieniane):  
+• tensometryczne (strain gauge)  
+• piezoelektryczne  
+• hydrauliczne  
+Parametry „rdzeń”: zakres, czułość, błąd, histereza, dryft, czas odpowiedzi. @
+
+Typy, podstawowe parametry i zasada działania: czujniki wilgotności (wg slajdów).#
+Typy (najczęściej wymieniane):  
+• pojemnościowe  
+• rezystancyjne  
+• psychrometryczne  
+Parametry „rdzeń”: zakres, czułość, błąd, histereza, dryft, czas odpowiedzi. @

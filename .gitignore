@@ -3,6 +3,8 @@
 ai_slam_ws/build/
 ai_slam_ws/install/
 ai_slam_ws/log/
+log/
+install/
 out/*
 !.gitkeep
 .DS_Store

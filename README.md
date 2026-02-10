@@ -290,6 +290,8 @@ source ./.venv/bin/activate
 ### 2. Build
 ```bash
 cd ~/SLAM_AI/ai_slam_ws
+rm -rf build/ install/ log/
+source ~/SLAM_AI/.venv/bin/activate
 rosdep install --from-paths src --ignore-src -r -y --skip-keys ament_python
 colcon build --symlink-install
 source /opt/ros/jazzy/setup.bash
@@ -300,9 +302,9 @@ source install/setup.bash
 
 **Domyślny eksperyment (pełna konfiguracja):**
 ```bash
-cd ~/SLAM_AI
-./scripts/cleanup.sh
-./scripts/run_experiment.sh
+
+~/SLAM_AI/scripts/cleanup.sh
+~/SLAM_AI/scripts/run_full_cycle.sh
 ```
 
 **Szybki test (~40 sekund):**

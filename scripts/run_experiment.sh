@@ -1,4 +1,5 @@
 #!/bin/bash
+export PYTHONPATH=$PYTHONPATH:$HOME/SLAM_AI/.venv/lib/python3.12/site-packages
 # Run SLAM AI experiment with filtered output (suppresses TF_OLD_DATA spam)
 # Usage:
 #   ./run_experiment.sh                    # Default config
