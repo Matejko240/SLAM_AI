@@ -23,6 +23,12 @@ setup(
             "auto_driver=ai_slam_bringup.auto_driver:main",
             "lifecycle_manager=ai_slam_bringup.lifecycle_manager:main",
             "scan_matcher = ai_slam_bringup.scan_matcher:main",
+            "dataset_recorder_robak=ai_slam_ai.dataset_recorder_robak:main",
+            "train_model_robak=ai_slam_ai.train_model_robak:main",
+            "infer_robak_node=ai_slam_ai.infer_robak_node:main",
+            "dataset_recorder_rywak=ai_slam_ai.dataset_recorder_rywak:main",
+            "train_model_rywak=ai_slam_ai.train_model_rywak:main",
+            "infer_rywak_node=ai_slam_ai.infer_rywak_node:main",
         ],
     },
 )

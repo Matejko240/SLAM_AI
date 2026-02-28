@@ -26,8 +26,8 @@ tracks:
   tor2_ai_slam: true         # AI slam_toolbox (zostaw)
   tor3_local: false           # przeszukanie lokalne (scan_matcher - localmap)
   tor4_bruteforce: false     # przegląd zupełny (scan_matcher - bruteforce, ciężkie)
-  tor5_robak: false          # TODO: model Robaka (do dodania)
-  tor6_rywak: false          # TODO: model Rywaka (do dodania)
+  tor5_robak: true          # TODO: model Robaka (do dodania)
+  tor6_rywak: true          # TODO: model Rywaka (do dodania)
 
 # --- PARAMETRY TORÓW ScanMatcher (Tor3/Tor4) ---
 scan_matcher:
