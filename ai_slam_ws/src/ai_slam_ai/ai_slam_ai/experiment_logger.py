@@ -648,67 +648,81 @@ class ExperimentLogger:
     
     def save(self):
         """
-        Zapisuje log do pliku JSON z merging istniejących danych.
-        To zapobiega utracie danych gdy wiele node'ów zapisuje równocześnie.
+        Zapisuje log do pliku JSON w sposób bezpieczny dla wielu procesów (wiele node'ów).
+
+        Naprawia race-condition na `experiment_metadata.json.tmp`:
+        - używa lockfile, aby serializować zapis między procesami,
+        - używa unikalnego pliku tymczasowego (per PID), aby nie nadpisywać się nawzajem,
+        - robi atomowy replace na końcu.
         """
         import fcntl
-        
-        # Przygotuj dane do zapisania
-        current_data = self.log.to_dict()
-        
-        # Spróbuj wczytać istniejące dane i scalić
-        if os.path.exists(self.metadata_path):
-            try:
-                with open(self.metadata_path, "r", encoding="utf-8") as f:
-                    # Użyj file locking dla bezpieczeństwa
-                    try:
-                        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-                        saved_data = json.load(f)
-                    finally:
-                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                
-                # Scal dane - zachowaj istniejące wartości, dodaj nowe
-                for section in ["dataset", "training", "inference", "evaluation"]:
-                    if section in saved_data and saved_data[section]:
-                        current_data[section] = self._merge_dict(
-                            current_data[section], 
-                            saved_data[section]
-                        )
-                
-                # Zachowaj notatki z obu źródeł (unikając duplikatów)
-                existing_notes = set(saved_data.get("notes", []))
-                current_notes = current_data.get("notes", [])
-                merged_notes = list(existing_notes)
-                for note in current_notes:
-                    if note not in existing_notes:
-                        merged_notes.append(note)
-                current_data["notes"] = sorted(merged_notes)
-                
-                # Zachowaj wcześniejszy created_at
-                if saved_data.get("created_at"):
-                    current_data["created_at"] = saved_data["created_at"]
-                    
-                # Zachowaj total_experiment_time_sec, jeśli już było policzone wcześniej
-                if (saved_data.get("total_experiment_time_sec") is not None
-                        and current_data.get("total_experiment_time_sec") is None):
-                    current_data["total_experiment_time_sec"] = saved_data["total_experiment_time_sec"]
+        import tempfile
 
-                # Zachowaj total_experiment_time_sec jeśli została ustawiona (nie nadpisuj None wartością)
-                if current_data.get("total_experiment_time_sec") is None and saved_data.get("total_experiment_time_sec") is not None:
-                    current_data["total_experiment_time_sec"] = saved_data["total_experiment_time_sec"]
-                    
-            except (json.JSONDecodeError, IOError):
-                pass  # Jeśli nie można wczytać, użyj bieżących danych
-        
-        # Zapisz z file locking
-        tmp = self.metadata_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        os.makedirs(self.out_dir, exist_ok=True)
+
+        lock_path = self.metadata_path + ".lock"
+        current_data = self.log.to_dict()
+
+        # Serializacja zapisu między procesami
+        with open(lock_path, "w", encoding="utf-8") as lockf:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
             try:
-                json.dump(current_data, f, indent=2, ensure_ascii=False)
+                # Wczytaj najnowsze dane z dysku i scałuj
+                if os.path.exists(self.metadata_path):
+                    try:
+                        with open(self.metadata_path, "r", encoding="utf-8") as f:
+                            saved_data = json.load(f)
+
+                        for section in ["dataset", "training", "inference", "evaluation"]:
+                            if section in saved_data and saved_data[section]:
+                                current_data[section] = self._merge_dict(
+                                    current_data.get(section, {}) or {},
+                                    saved_data[section],
+                                )
+
+                        # Notatki – unikaj duplikatów
+                        existing_notes = list(saved_data.get("notes", []) or [])
+                        existing_set = set(existing_notes)
+                        for note in current_data.get("notes", []) or []:
+                            if note not in existing_set:
+                                existing_notes.append(note)
+                                existing_set.add(note)
+                        current_data["notes"] = existing_notes
+
+                        # Zachowaj created_at jeśli już istnieje
+                        if saved_data.get("created_at") and not current_data.get("created_at"):
+                            current_data["created_at"] = saved_data["created_at"]
+
+                        # Zachowaj total time jeśli już istnieje
+                        if saved_data.get("total_experiment_time_sec") is not None and current_data.get("total_experiment_time_sec") is None:
+                            current_data["total_experiment_time_sec"] = saved_data["total_experiment_time_sec"]
+
+                    except Exception:
+                        # Jeśli metadata jest w trakcie zapisu / uszkodzona, nie zabijaj treningu
+                        pass
+
+                # Unikalny tmp per proces (nie wspólny .tmp!)
+                fd, tmp_path = tempfile.mkstemp(
+                    prefix="experiment_metadata.",
+                    suffix=f".{os.getpid()}.tmp",
+                    dir=self.out_dir,
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(current_data, f, indent=2, ensure_ascii=False)
+                        f.flush()
+                        os.fsync(f.fileno())
+
+                    os.replace(tmp_path, self.metadata_path)
+                finally:
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except Exception:
+                        pass
+
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        os.replace(tmp, self.metadata_path)
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
     
     def get_summary(self) -> str:
         """Zwraca czytelne podsumowanie eksperymentu."""

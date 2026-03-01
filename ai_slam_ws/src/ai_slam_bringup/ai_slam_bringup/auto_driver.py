@@ -7,11 +7,13 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 class AutoDriver(Node):
     def __init__(self):
         super().__init__("auto_driver")
+        self.declare_parameter("debug", True)
+        self.declare_parameter("debug_every_n", 10)  # log co N ticków timera (np. 10 => ~1/s przy 10Hz)
         self.declare_parameter("seed", 123)
         self.declare_parameter("cmd_topic", "/cmd_vel")
         self.declare_parameter("scan_topic", "/scan_slam")
@@ -25,12 +27,22 @@ class AutoDriver(Node):
         self.declare_parameter("angular_velocity", 1.0)
         self.declare_parameter("obstacle_threshold", 0.45)
         self.declare_parameter("turn_probability", 0.02)
-        
+        # --- Exploration tuning (z demo.launch.py) ---
+        self.declare_parameter("explore_interval_ticks", 30)         # co ile ticków rozważyć skręt eksploracyjny
+        self.declare_parameter("explore_turn_probability", -1.0)     # <0 => użyj turn_probability
+        self.declare_parameter("odom_topic", "/odom_raw")  # DO STUCK DETECTION 
+        # --- Doorway / room-entering heuristic ---
+        self.declare_parameter("doorway_turn_probability", 0.0)      # 0 => wyłączone
+        self.declare_parameter("doorway_opening_threshold", 1.8)     # średnia odległość po stronie "otwartej"
+        self.declare_parameter("doorway_wall_threshold", 0.9)        # średnia odległość po stronie "ściany"
+        self.declare_parameter("doorway_turn_min_sec", 0.7)
+        self.declare_parameter("doorway_turn_max_sec", 1.4)
         seed = int(self.get_parameter("seed").value)
         self.rng = np.random.default_rng(seed)
 
         self.cmd_topic = str(self.get_parameter("cmd_topic").value)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
+        self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.rate_hz = float(self.get_parameter("rate_hz").value)
         self.v_forward = float(self.get_parameter("linear_velocity").value)
         self.w_turn = float(self.get_parameter("angular_velocity").value)
@@ -39,6 +51,16 @@ class AutoDriver(Node):
         self.side_threshold = float(self.get_parameter("side_threshold").value)
         self.emergency_threshold = float(self.get_parameter("emergency_threshold").value)
 
+        self.explore_interval = int(self.get_parameter("explore_interval_ticks").value)
+        self.explore_turn_probability = float(self.get_parameter("explore_turn_probability").value)
+        if self.explore_turn_probability < 0.0:
+            self.explore_turn_probability = self.turn_probability
+
+        self.doorway_turn_probability = float(self.get_parameter("doorway_turn_probability").value)
+        self.doorway_opening_threshold = float(self.get_parameter("doorway_opening_threshold").value)
+        self.doorway_wall_threshold = float(self.get_parameter("doorway_wall_threshold").value)
+        self.doorway_turn_min_sec = float(self.get_parameter("doorway_turn_min_sec").value)
+        self.doorway_turn_max_sec = float(self.get_parameter("doorway_turn_max_sec").value)
         
         self.min_front = None
         self.min_left = None
@@ -50,7 +72,8 @@ class AutoDriver(Node):
         self.turn_ticks = 0
         self.turn_dir = 1
         self.backup_ticks = 0
-        
+        self._last_scan_time = None
+        self._scan_rx_count = 0
         # Stuck detection - based on actual movement
         self.last_x = None
         self.last_y = None
@@ -68,8 +91,9 @@ class AutoDriver(Node):
         self.total_distance = 0.0  # track total distance traveled
         
         # Exploration - random direction changes
+        # Exploration - random direction changes
         self.explore_timer = 0
-        self.explore_interval = 30  # more frequent random turns
+        # self.explore_interval ustawiane z parametru explore_interval_ticks
         
         # Consecutive obstacle counter
         self.obstacle_counter = 0
@@ -78,9 +102,20 @@ class AutoDriver(Node):
         self.turn_cooldown = 0
 
         self.pub = self.create_publisher(Twist, self.cmd_topic, 10)
-        self.sub = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, 10)
-        self.odom_sub = self.create_subscription(Odometry, "/odom", self.on_odom, 10)
+        qos_scan = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_scan)
+        self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
         self.timer = self.create_timer(1.0 / self.rate_hz, self.on_timer)
+        
+        self.debug = bool(self.get_parameter("debug").value)
+        self.debug_every_n = int(self.get_parameter("debug_every_n").value)
+        self._dbg_tick = 0
+        self._dbg_last_reason = ""
 
     def on_odom(self, msg: Odometry):
         x = msg.pose.pose.position.x
@@ -90,14 +125,15 @@ class AutoDriver(Node):
             dist = math.sqrt((x - self.last_x)**2 + (y - self.last_y)**2)
             self.total_distance += dist
             
-            # If we're trying to go forward but not moving - we're stuck!
-            if self.last_cmd_forward and dist < self.move_threshold / self.rate_hz:
-                self.stuck_counter += 1
-            elif dist < self.move_threshold / self.rate_hz:
-                self.stuck_counter += 0.5
+            eps = self.move_threshold / self.rate_hz
+            if self.last_cmd_forward:
+                if dist < eps:
+                    self.stuck_counter += 1
+                else:
+                    self.stuck_counter = 0
             else:
-                self.stuck_counter = 0
-                self.forward_cmd_counter = 0
+                # nie jedziemy do przodu → nie eskaluj stucka
+                self.stuck_counter = max(0, self.stuck_counter - 1)
         
         self.last_x = x
         self.last_y = y
@@ -123,61 +159,80 @@ class AutoDriver(Node):
                 self.loop_counter = 0
         else:
             self.loop_counter = 0
+    def _sector_stats(self, ranges: np.ndarray, angles: np.ndarray, a0: float, a1: float):
+        """
+        Zwraca (min_robust, mean) w sektorze [a0, a1] (radiany),
+        angle=0 przód, +pi/2 lewo, -pi/2 prawo.
+        """
+        if a0 > a1:
+            a0, a1 = a1, a0
+        mask = (angles >= a0) & (angles <= a1)
+        if not np.any(mask):
+            return None, None
+
+        rr = ranges[mask]
+        if rr.size == 0:
+            return None, None
+
+        # Robust: ignoruj pojedyncze "glitche" (np. 0.0 / range_min)
+        # zamiast czystego min bierz 10 percentyl
+        min_robust = float(np.percentile(rr, 10))
+        mean_v = float(np.mean(rr))
+        return min_robust, mean_v
+
 
     def on_scan(self, msg: LaserScan):
+        self._last_scan_time = self.get_clock().now()
+        self._scan_rx_count += 1
         ranges = np.asarray(msg.ranges, dtype=np.float32)
-        n = len(ranges)
+        n = int(ranges.size)
         if n == 0:
             return
-        
-        # Replace inf/nan with max range
-        max_range = msg.range_max
-        ranges = np.where(np.isfinite(ranges), ranges, max_range)
-        
-        # Log raw min for debugging
-        raw_min = float(np.min(ranges))
-        
-        # NOTE: Index 0 = BACK of robot, Index n/2 = FRONT of robot
-        # Front: indices around n/2 (180 degrees) ±20 degrees
-        front_center = n // 2
-        front_window = max(1, int(n * 20 / 360))
-        front_indices = [(front_center + i) % n for i in range(-front_window, front_window + 1)]
-        front = ranges[front_indices]
-        self.min_front = float(np.min(front))
-        
-        # Front-left: around 135 degrees (±15 degrees)
-        fl_center = 3 * n // 8  # 135 degrees
-        fl_window = max(1, int(n * 15 / 360))
-        fl_indices = [(fl_center + i) % n for i in range(-fl_window, fl_window + 1)]
-        self.min_front_left = float(np.min(ranges[fl_indices]))
-        
-        # Front-right: around 225 degrees (±15 degrees)
-        fr_center = 5 * n // 8  # 225 degrees
-        fr_window = max(1, int(n * 15 / 360))
-        fr_indices = [(fr_center + i) % n for i in range(-fr_window, fr_window + 1)]
-        self.min_front_right = float(np.min(ranges[fr_indices]))
-        
-        # Right: indices around 90 degrees (±30 degrees) - swapped!
-        right_center = n // 4  # 90 degrees
-        right_window = max(1, int(n * 30 / 360))
-        right_indices = [(right_center + i) % n for i in range(-right_window, right_window + 1)]
-        right = ranges[right_indices]
-        self.min_right = float(np.min(right))
-        self.avg_right = float(np.mean(right))
-        
-        # Left: indices around 270 degrees (±30 degrees) - swapped!
-        left_center = 3 * n // 4  # 270 degrees
-        left_window = max(1, int(n * 30 / 360))
-        left_indices = [(left_center + i) % n for i in range(-left_window, left_window + 1)]
-        left = ranges[left_indices]
-        self.min_left = float(np.min(left))
-        self.avg_left = float(np.mean(left))
+
+        rmax = float(msg.range_max) if msg.range_max > 0 else 10.0
+        rmin = float(msg.range_min) if msg.range_min > 0 else 0.08
+
+        # --- sanitize: INF/NAN oraz zera traktuj jako "brak pomiaru"
+        raw = ranges.copy()
+        invalid = (~np.isfinite(raw)) | (raw <= 1e-3)
+        ranges = np.where(invalid, rmax, raw).astype(np.float32)
+        ranges = np.clip(ranges, rmin, rmax)
+
+        # kąty wiązek
+        angles = float(msg.angle_min) + np.arange(n, dtype=np.float32) * float(msg.angle_increment)
+        angles = (angles + math.pi) % (2.0 * math.pi) - math.pi  # normalize do [-pi, pi]
+
+        # sektory
+        front = math.radians(25.0)     # +/-25°
+        diag0 = math.radians(25.0)
+        diag1 = math.radians(65.0)
+        side0 = math.radians(70.0)
+        side1 = math.radians(110.0)
+
+        self.min_front, _ = self._sector_stats(ranges, angles, -front, +front)
+        self.min_front_left, _ = self._sector_stats(ranges, angles, +diag0, +diag1)
+        self.min_front_right, _ = self._sector_stats(ranges, angles, -diag1, -diag0)
+
+        self.min_left, self.avg_left = self._sector_stats(ranges, angles, +side0, +side1)
+        self.min_right, self.avg_right = self._sector_stats(ranges, angles, -side1, -side0)
+        if self.debug:
+            raw = np.asarray(msg.ranges, dtype=np.float32)
+            n = raw.size
+            if n > 0:
+                rmax = float(msg.range_max) if msg.range_max > 0 else 10.0
+                zeros = int(np.sum(raw <= 1e-3))
+                nans = int(np.sum(~np.isfinite(raw)))
+                clipped = int(np.sum(np.isfinite(raw) & (raw >= rmax - 1e-3)))
+                self._dbg_scan_stats = (n, zeros, nans, clipped, float(msg.angle_min), float(msg.angle_increment))
         
 
 
     def on_timer(self):
         twist = Twist()
-        
+        if self.debug and self._last_scan_time is None and (self._dbg_tick % 20 == 0):
+            self.get_logger().warn(f"[DRV] No LaserScan received yet on topic: {self.scan_topic}")
+        self._dbg_tick += 1
+        reason = "drive"
         # Check for loop - robot circling around obstacle
         if self.loop_counter > 3:  # faster detection
             self.backup_ticks = int(2.0 * self.rate_hz)  # longer backup
@@ -255,13 +310,14 @@ class AutoDriver(Node):
             self.pub.publish(twist)
             return
         
-        # Even if not trying to go forward, if something is SUPER close, backup
+        # Jeśli coś jest SUPER blisko, cofaj TYLKO gdy faktycznie pchaliśmy do przodu.
         super_close = (self.min_front is not None) and (self.min_front < 0.20)
-        if super_close:
+        if super_close and self.last_cmd_forward:
             twist.linear.x = -0.2
-            twist.angular.z = self.rng.choice([-1.0, 1.0])
+            twist.angular.z = float(self.rng.choice([-1.0, 1.0]))
             self.last_cmd_forward = False
             self.pub.publish(twist)
+            reason = "super_close_backup"
             return
         
         any_front_obstacle = front_obstacle or front_left_obstacle or front_right_obstacle
@@ -285,6 +341,7 @@ class AutoDriver(Node):
         if self.turn_cooldown == 0 and (front_obstacle or (left_obstacle and right_obstacle)):
             # Obstacle ahead or both sides blocked
             if self.avg_left is not None and self.avg_right is not None:
+                reason = "obstacle_turn"
                 # Add randomness to avoid getting stuck in patterns
                 if self.rng.random() < self.turn_probability:
                     self.turn_dir = int(self.rng.choice([-1, 1]))
@@ -326,18 +383,43 @@ class AutoDriver(Node):
             steering = -0.6 * self.w_turn
         elif right_obstacle and not left_obstacle:
             steering = 0.6 * self.w_turn
-        
+        # Doorway / room-entering heuristic:
+        # Jeśli przód jest wolny, a jedna strona wygląda jak "otwarcie" (dużo przestrzeni),
+        # a druga jak "ściana", to czasem skręcamy w stronę otwarcia.
+        if (
+            self.turn_cooldown == 0
+            and self.doorway_turn_probability > 0.0
+            and not any_front_obstacle
+            and self.avg_left is not None
+            and self.avg_right is not None
+        ):
+            left_open = (self.avg_left > self.doorway_opening_threshold) and (self.avg_right < self.doorway_wall_threshold)
+            right_open = (self.avg_right > self.doorway_opening_threshold) and (self.avg_left < self.doorway_wall_threshold)
+
+            if (left_open or right_open) and (self.rng.random() < self.doorway_turn_probability):
+                # +1 = skręt w lewo (CCW), -1 = skręt w prawo (CW) – zgodnie z resztą Twojego kodu
+                self.turn_dir = 1 if left_open else -1
+                turn_sec = float(self.rng.uniform(self.doorway_turn_min_sec, self.doorway_turn_max_sec))
+                self.turn_ticks = int(turn_sec * self.rate_hz)
+                self.turn_cooldown = int(1.0 * self.rate_hz)
+                twist.linear.x = 0.0
+                twist.angular.z = float(self.turn_dir) * self.w_turn
+                self.last_cmd_forward = False
+                reason = "doorway_turn"
+                self.pub.publish(twist)
+                return
         # Random exploration turns - less frequent, rely more on straight driving
         self.explore_timer += 1
         if self.explore_timer >= self.explore_interval:
             self.explore_timer = 0
-            if self.rng.random() < self.turn_probability:  # 20% chance (was 25%)
+            if self.rng.random() < self.explore_turn_probability:
                 self.turn_dir = int(self.rng.choice([-1, 1]))
                 self.turn_ticks = int(self.rng.uniform(0.8, 1.5) * self.rate_hz)  # longer turns
                 twist.linear.x = 0.0
                 twist.angular.z = float(self.turn_dir) * self.w_turn
                 self.last_cmd_forward = False
                 self.pub.publish(twist)
+                reason = "explore_turn"
                 return
 
         # Normal forward motion - STRAIGHT, minimal wander
@@ -346,7 +428,30 @@ class AutoDriver(Node):
         twist.angular.z = steering
         self.last_cmd_forward = True
         self.pub.publish(twist)
+        # --- DEBUG: log co N ticków lub przy zmianie powodu (DZIAŁA ZAWSZE w tej ścieżce)
+        if self.debug:
+            if (self._dbg_tick % max(1, self.debug_every_n) == 0) or (reason != self._dbg_last_reason):
+                self._dbg_last_reason = reason
 
+                mf = -1.0 if self.min_front is None else float(self.min_front)
+                mfl = -1.0 if self.min_front_left is None else float(self.min_front_left)
+                mfr = -1.0 if self.min_front_right is None else float(self.min_front_right)
+                ml = -1.0 if self.min_left is None else float(self.min_left)
+                mr = -1.0 if self.min_right is None else float(self.min_right)
+                al = -1.0 if self.avg_left is None else float(self.avg_left)
+                ar = -1.0 if self.avg_right is None else float(self.avg_right)
+
+                if hasattr(self, "_dbg_scan_stats"):
+                    n, zeros, nans, clipped, amin, ainc = self._dbg_scan_stats
+                else:
+                    n, zeros, nans, clipped, amin, ainc = (0, 0, 0, 0, 0.0, 0.0)
+
+                self.get_logger().info(
+                    f"[DRV] reason={reason} cmd(v={twist.linear.x:.2f}, w={twist.angular.z:.2f}) "
+                    f"front={mf:.2f} fl={mfl:.2f} fr={mfr:.2f} left(min/avg)={ml:.2f}/{al:.2f} right(min/avg)={mr:.2f}/{ar:.2f} "
+                    f"stuck={self.stuck_counter:.1f} fwd={int(self.last_cmd_forward)} "
+                    f"scan(n={n}, zeros={zeros}, nans={nans}, maxed={clipped}, a_min={amin:.2f}, a_inc={ainc:.4f})"
+                )
 
 def main():
     rclpy.init()

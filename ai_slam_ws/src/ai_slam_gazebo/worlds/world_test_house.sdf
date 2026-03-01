@@ -735,7 +735,7 @@
 
     <model name="plant_pot">
       <static>true</static>
-      <pose>3.2000 0.6000 0.4000 0.0000 0.0000 0.0000</pose>
+      <pose>3.2000 0.7200 0.4000 0.0000 0.0000 0.0000</pose>
       <link name="link">
         <collision name="col">
           <geometry><cylinder><radius>0.2000</radius><length>0.8000</length></cylinder></geometry>

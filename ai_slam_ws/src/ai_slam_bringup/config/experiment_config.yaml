@@ -24,7 +24,7 @@ simulation:
 tracks:
   tor1_baseline: true        # baseline slam_toolbox (zostaw)
   tor2_ai_slam: true         # AI slam_toolbox (zostaw)
-  tor3_local: false           # przeszukanie lokalne (scan_matcher - localmap)
+  tor3_local: true           # przeszukanie lokalne (scan_matcher - localmap)
   tor4_bruteforce: false     # przegląd zupełny (scan_matcher - bruteforce, ciężkie)
   tor5_robak: true          # model Robaka skan1 + skan2 = delta pose,
   tor6_rywak: true          # model Rywaka d_theta1 + d_theta2 + delta_scan => v,w ==(delta time)=> delta pose
@@ -48,14 +48,14 @@ scan_matcher:
 # --- CZASY EKSPERYMENTU (w sekundach) ---
 timing:
   # Faza 1: Zbieranie danych
-  dataset_duration: 240.0        # Czas zbierania datasetu (faza 1)
+  dataset_duration: 120.0        # Czas zbierania datasetu (faza 1)
   dataset_start_delay: 5.0      # Opóźnienie startu zbierania (po spawnie robota)
   
   # Faza 2: Trening modelu  
-  dataset_wait_timeout: 240.0   # Max czas oczekiwania na dataset przed treningiem
+  dataset_wait_timeout: 300.0   # Max czas oczekiwania na dataset przed treningiem
   
   # Faza 3-4: Inferencja i ewaluacja
-  eval_duration: 240.0    
+  eval_duration: 120.0    
   
   # Wewnętrzne opóźnienia (zaawansowane)
   bridge_delay: 3.0             # Opóźnienie startu bridge'a Gazebo
@@ -64,9 +64,9 @@ timing:
 
 # --- PARAMETRY ZBIERANIA DANYCH (dataset_recorder) ---
 dataset:
-  max_samples: 5000             # Maksymalna liczba próbek w datasecie
+  max_samples: 20000             # Maksymalna liczba próbek w datasecie
   sample_rate: 10.0             # Próbki na sekundę (Hz)
-  scan_topic: "/scan"           # Topic skanów LiDAR
+  scan_topic: "/scan_slam"           # Topic skanów LiDAR
   odom_topic: "/odom"           # Topic odometrii (corrupted)
   gt_topic: "/ground_truth_pose" # Topic ground truth
 
@@ -93,8 +93,8 @@ inference:
   odom_topic: "/odom"           # Topic odometrii wejściowej
   output_pose_topic: "/pose_ai" # Topic publikowania poprawionej pozycji
   output_odom_topic: "/odom_ai" # Topic publikowania poprawionej odometrii
-  tf_parent_frame: "odom_ai"    # Parent frame dla TF
-  tf_child_frame: "base_link"   # Child frame dla TF
+  tf_parent_frame: odom_ai
+  tf_child_frame: base_link_ai
   model_wait_timeout: 300.0     # Max czas oczekiwania na model (sekundy)
 
 # --- PARAMETRY SLAM (slam_toolbox) ---
@@ -116,11 +116,24 @@ slam:
   enable_interactive_mode: false
   # Różnice dla wariantów
   baseline:
-    odom_frame: "odom"
-    map_frame: "map"
+    # może być puste (dziedziczy z common)
   ai:
-    odom_frame: "odom_ai"
-    map_frame: "map_ai"
+    scan_topic: /scan_slam_ai
+    base_frame: base_link_ai
+    odom_frame: odom_ai
+    map_frame: map_ai
+
+  robak:
+    scan_topic: /scan_slam_robak
+    base_frame: base_link_robak
+    odom_frame: odom_robak
+    map_frame: map_robak
+
+  rywak:
+    scan_topic: /scan_slam_rywak
+    base_frame: base_link_rywak
+    odom_frame: odom_rywak
+    map_frame: map_rywak
 
 # --- PARAMETRY EWALUACJI (eval_node) ---
 evaluation:
@@ -153,11 +166,21 @@ odometry:
 # --- PARAMETRY ROBOTA (auto_driver) ---
 driver:
   linear_velocity: 0.3          # Prędkość liniowa (m/s)
-  angular_velocity: 0.5         # Prędkość kątowa (rad/s)
+  angular_velocity: 0.90         # Prędkość kątowa (rad/s)
   turn_probability: 0.005        # Prawdopodobieństwo skrętu (per tick)
-  obstacle_threshold: 0.5       # Próg detekcji przeszkody (m)
+  obstacle_threshold: 0.5      # Próg detekcji przeszkody (m)
   side_threshold: 0.35          # Próg boczny (m)
   emergency_threshold: 0.25     # Próg awaryjny (m)
+  explore_interval_ticks: 20
+  explore_turn_probability: 0.08
+
+  doorway_turn_probability: 0.25
+  doorway_opening_threshold: 2.0
+  doorway_wall_threshold: 0.9
+  doorway_turn_min_sec: 0.7
+  doorway_turn_max_sec: 1.4
+  debug: true
+  debug_every_n: 5
 # --- WYJŚCIE ---
 output:
   base_dir: "out"               # Katalog bazowy na eksperymenty
