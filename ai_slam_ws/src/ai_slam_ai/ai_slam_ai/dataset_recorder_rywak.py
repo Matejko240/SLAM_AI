@@ -2,6 +2,7 @@ import io
 import math
 import os
 import time
+from collections import deque
 import numpy as np
 
 import rclpy
@@ -10,8 +11,12 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 
-from .common import seed_all, ensure_dir
+from .common import seed_all, ensure_dir, wrap, xytheta_from_odom
 from .experiment_logger import ExperimentLogger
+
+
+def _stamp_to_sec(stamp) -> float:
+    return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
 
 
 def _resample_to_360(ranges: np.ndarray) -> np.ndarray:
@@ -42,6 +47,11 @@ def _sanitize_scan(msg: LaserScan) -> np.ndarray:
     return ranges.astype(np.float32)
 
 
+def _interp_angle(th0: float, th1: float, alpha: float) -> float:
+    d = wrap(float(th1) - float(th0))
+    return wrap(float(th0) + float(alpha) * d)
+
+
 class DatasetRecorderRywak(Node):
     def __init__(self):
         super().__init__("dataset_recorder_rywak")
@@ -55,6 +65,11 @@ class DatasetRecorderRywak(Node):
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("odom_topic", "/odom_raw")
         self.declare_parameter("dataset_name", "dataset_rywak.npz")
+        self.declare_parameter("write_experiment_metadata", False)
+        self.declare_parameter("sync_tolerance_sec", 0.08)
+        self.declare_parameter("interpolate_odom", True)
+        self.declare_parameter("sync_pair_gap_sec", 0.2)
+        self.declare_parameter("delta_scan_clip", 2.0)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -72,9 +87,20 @@ class DatasetRecorderRywak(Node):
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.dataset_path = os.path.join(self.out_dir, str(self.get_parameter("dataset_name").value))
+        self.write_experiment_metadata = bool(self.get_parameter("write_experiment_metadata").value)
+        self.sync_tolerance_sec = float(self.get_parameter("sync_tolerance_sec").value)
+        self.interpolate_odom = bool(self.get_parameter("interpolate_odom").value)
+        self.sync_pair_gap_sec = float(self.get_parameter("sync_pair_gap_sec").value)
+        self.delta_scan_clip = float(self.get_parameter("delta_scan_clip").value)
 
-        self.latest_odom: Odometry | None = None
+        # (stamp_sec, theta, v, w)
+        self.odom_buf = deque(maxlen=2000)
+        self.odom_count = 0
+        self.odom_miss_count = 0
+        self.odom_interp_count = 0
+        self.odom_nearest_count = 0
         self.prev_scan = None
+        self.theta_hist = deque(maxlen=3)
 
         self.X = []
         self.Y = []
@@ -89,25 +115,95 @@ class DatasetRecorderRywak(Node):
         self.wait_timer = self.create_timer(1.0, self.wait_for_topics)
         self.timer = self.create_timer(0.5, self.check_done)
 
-        self.exp_logger.start_dataset_collection(
-            seed=self.seed,
-            duration_sec=self.duration_sec,
-            max_samples=self.max_samples,
-            scan_topic=self.scan_topic,
-            odom_topic=self.odom_topic,
-            gt_topic="(unused)",
-        )
+        if self.write_experiment_metadata:
+            self.exp_logger.start_dataset_collection(
+                seed=self.seed,
+                duration_sec=self.duration_sec,
+                max_samples=self.max_samples,
+                scan_topic=self.scan_topic,
+                odom_topic=self.odom_topic,
+                gt_topic="(unused)",
+            )
 
         self.get_logger().info(f"[Rywak] out_dir={self.out_dir}")
-        self.get_logger().info(f"[Rywak] scan={self.scan_topic}, odom={self.odom_topic}")
+        self.get_logger().info(
+            f"[Rywak] scan={self.scan_topic}, odom={self.odom_topic}, "
+            f"interp={self.interpolate_odom}, tol={self.sync_tolerance_sec}, "
+            f"gap={self.sync_pair_gap_sec}, delta_clip={self.delta_scan_clip}"
+        )
 
     def on_odom(self, msg: Odometry):
-        self.latest_odom = msg
+        self.odom_count += 1
+        t = _stamp_to_sec(msg.header.stamp)
+        _, _, th = xytheta_from_odom(msg)
+        v = float(msg.twist.twist.linear.x)
+        w = float(msg.twist.twist.angular.z)
+        self.odom_buf.append((t, th, v, w))
+
+    def _nearest_odom(self, t_scan: float):
+        if not self.odom_buf:
+            return None
+
+        while len(self.odom_buf) > 2 and self.odom_buf[1][0] < (t_scan - 1.0):
+            self.odom_buf.popleft()
+
+        t_best, th_best, v_best, w_best = min(self.odom_buf, key=lambda x: abs(x[0] - t_scan))
+        if abs(t_best - t_scan) > self.sync_tolerance_sec:
+            return None
+        return th_best, v_best, w_best
+
+    def _interpolated_odom(self, t_scan: float):
+        if len(self.odom_buf) < 2:
+            return None
+
+        prev = None
+        for cur in self.odom_buf:
+            if cur[0] < t_scan:
+                prev = cur
+                continue
+
+            if prev is None:
+                return None
+
+            t0, th0, v0, w0 = prev
+            t1, th1, v1, w1 = cur
+            gap = float(t1 - t0)
+            if gap < 1e-6:
+                if abs(t_scan - t0) <= self.sync_tolerance_sec:
+                    return float(th0), float(v0), float(w0)
+                return None
+
+            if gap > self.sync_pair_gap_sec:
+                return None
+            if (t_scan - t0) > self.sync_tolerance_sec:
+                return None
+            if (t1 - t_scan) > self.sync_tolerance_sec:
+                return None
+
+            alpha = (t_scan - t0) / gap
+            th = _interp_angle(th0, th1, alpha)
+            v = float(v0 + alpha * (v1 - v0))
+            w = float(w0 + alpha * (w1 - w0))
+            return th, v, w
+
+        return None
+
+    def _odom_at(self, t_scan: float):
+        if self.interpolate_odom:
+            interp = self._interpolated_odom(t_scan)
+            if interp is not None:
+                self.odom_interp_count += 1
+                return interp
+
+        nearest = self._nearest_odom(t_scan)
+        if nearest is not None:
+            self.odom_nearest_count += 1
+        return nearest
 
     def wait_for_topics(self):
         if self.topics_ready:
             return
-        if self.latest_odom is not None:
+        if len(self.odom_buf) > 0:
             self.topics_ready = True
             self.t0 = self.get_clock().now()
             self.get_logger().info("[Rywak][FAZA 1] DATASET START")
@@ -115,24 +211,40 @@ class DatasetRecorderRywak(Node):
             self.get_logger().info("[Rywak] Waiting for odom...")
 
     def on_scan(self, msg: LaserScan):
-        if not self.topics_ready or self.latest_odom is None:
+        if not self.topics_ready:
             return
 
         scan = _sanitize_scan(msg)
         if scan is None:
             return
 
+        t_scan = _stamp_to_sec(msg.header.stamp)
+        odom_match = self._odom_at(t_scan)
+        if odom_match is None:
+            self.odom_miss_count += 1
+            return
+        th, v, w = odom_match
+
         if self.prev_scan is None:
+            self.prev_scan = scan
+            self.theta_hist.append(th)
+            return
+
+        delta_scan = (scan - self.prev_scan).astype(np.float32)
+        if self.delta_scan_clip > 0.0:
+            delta_scan = np.clip(delta_scan, -self.delta_scan_clip, self.delta_scan_clip).astype(np.float32)
+        self.theta_hist.append(th)
+        if len(self.theta_hist) < 3:
             self.prev_scan = scan
             return
 
-        diff = (scan - self.prev_scan).astype(np.float32)
+        d_theta1 = wrap(float(self.theta_hist[-1] - self.theta_hist[-2]))
+        d_theta2 = wrap(float(self.theta_hist[-2] - self.theta_hist[-3]))
 
-        # features: [scan(360), diff(360)] => 720
-        x = np.concatenate([scan, diff], axis=0).astype(np.float32)
-
-        v = float(self.latest_odom.twist.twist.linear.x)
-        w = float(self.latest_odom.twist.twist.angular.z)
+        # features: [d_theta1, d_theta2, delta_scan(360)] => 362
+        x = np.concatenate(
+            [np.asarray([d_theta1, d_theta2], dtype=np.float32), delta_scan], axis=0
+        ).astype(np.float32)
         y = np.asarray([v, w], dtype=np.float32)
 
         self.X.append(x)
@@ -156,7 +268,7 @@ class DatasetRecorderRywak(Node):
             rclpy.shutdown()
             return
 
-        X = np.stack(self.X).astype(np.float32)  # (N,720)
+        X = np.stack(self.X).astype(np.float32)  # (N,362)
         Y = np.stack(self.Y).astype(np.float32)  # (N,2)
 
         meta = {
@@ -164,6 +276,14 @@ class DatasetRecorderRywak(Node):
             "n": np.int64(Y.shape[0]),
             "in_dim": np.int64(X.shape[1]),
             "out_dim": np.int64(2),
+            "feature_mode": np.asarray(["dtheta_dtheta_deltascan"], dtype=object),
+            "sync_tolerance_sec": np.float32(self.sync_tolerance_sec),
+            "interpolate_odom": np.int64(1 if self.interpolate_odom else 0),
+            "sync_pair_gap_sec": np.float32(self.sync_pair_gap_sec),
+            "delta_scan_clip": np.float32(self.delta_scan_clip),
+            "odom_sync_miss_count": np.int64(self.odom_miss_count),
+            "odom_sync_interp_count": np.int64(self.odom_interp_count),
+            "odom_sync_nearest_count": np.int64(self.odom_nearest_count),
         }
 
         ensure_dir(self.out_dir)
@@ -187,14 +307,19 @@ class DatasetRecorderRywak(Node):
         except Exception:
             pass
 
-        self.exp_logger.end_dataset_collection(
-            n_samples=int(Y.shape[0]),
-            scan_dim=int(X.shape[1]),
-            actual_duration_sec=float(actual_duration),
-            file_path=self.dataset_path,
-        )
+        if self.write_experiment_metadata:
+            self.exp_logger.end_dataset_collection(
+                n_samples=int(Y.shape[0]),
+                scan_dim=int(X.shape[1]),
+                actual_duration_sec=float(actual_duration),
+                file_path=self.dataset_path,
+            )
 
-        self.get_logger().info(f"[Rywak] Saved dataset: {self.dataset_path} (n={Y.shape[0]})")
+        self.get_logger().info(
+            f"[Rywak] Saved dataset: {self.dataset_path} "
+            f"(n={Y.shape[0]}, odom_sync_interp={self.odom_interp_count}, "
+            f"odom_sync_nearest={self.odom_nearest_count}, odom_sync_miss={self.odom_miss_count})"
+        )
         rclpy.shutdown()
 
 

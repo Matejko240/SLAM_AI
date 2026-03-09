@@ -13,23 +13,23 @@ cd "$(dirname "$0")/.."
 source /opt/ros/jazzy/setup.bash
 source ai_slam_ws/install/setup.bash
 
-# Determine config
-CONFIG=""
+# Determine launch args
+LAUNCH_ARGS=()
 case "$1" in
     fast)
-        CONFIG="config:=fast_test.yaml"
+        LAUNCH_ARGS+=("config:=fast_test.yaml")
         shift
         ;;
     full)
-        CONFIG="config:=experiment_config.yaml"
+        LAUNCH_ARGS+=("config:=experiment_config.yaml")
         shift
         ;;
     train)
-        CONFIG="config:=config_train_house.yaml"
+        LAUNCH_ARGS+=("config:=experiment_config.yaml" "phase:=train")
         shift
         ;;
     test)
-        CONFIG="config:=config_test_house.yaml"
+        LAUNCH_ARGS+=("config:=experiment_config.yaml" "phase:=test")
         shift
         ;;
     *)
@@ -39,10 +39,10 @@ esac
 
 echo "========================================"
 echo "Running SLAM AI Experiment"
-echo "Config: ${CONFIG:-default (experiment_config.yaml)}"
+echo "Launch args: ${LAUNCH_ARGS[*]:-default (experiment_config.yaml)}"
 echo "Extra args: $@"
 echo "========================================"
 echo ""
 
 # Run with filtered output - hide TF, SLAM sync warnings, and PyTorch GPU warnings
-ros2 launch ai_slam_bringup demo.launch.py $CONFIG "$@" 2>&1 | grep -v -E "TF_OLD_DATA|wiki.ros.org/tf/Errors|jump back in time|Transform from base_link|unconnected trees|extrapolation|rcl_lifecycle|cuda capability|CUDA capability|pytorch.org/get-started|warnings.warn|UserWarning|sm_61|sm_70|Failed to compute odom"
+ros2 launch ai_slam_bringup demo.launch.py "${LAUNCH_ARGS[@]}" "$@" 2>&1 | grep -v -E "TF_OLD_DATA|wiki.ros.org/tf/Errors|jump back in time|Transform from base_link|unconnected trees|extrapolation|rcl_lifecycle|cuda capability|CUDA capability|pytorch.org/get-started|warnings.warn|UserWarning|sm_61|sm_70|Failed to compute odom"

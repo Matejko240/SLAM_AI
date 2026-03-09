@@ -130,43 +130,78 @@ def occgrid_to_array(msg: OccupancyGrid) -> np.ndarray:
     return data
 
 
-def map_iou(ref_occ: np.ndarray, ref_info: dict, slam_msg: OccupancyGrid) -> float:
+def project_map_to_ref_grid(ref_info: dict, ref_shape: tuple[int, int], slam_msg: OccupancyGrid):
+    """Rzutuje OccupancyGrid SLAM do siatki mapy referencyjnej (z orientacją obu map)."""
     slam = occgrid_to_array(slam_msg)
     slam_res = float(slam_msg.info.resolution)
     slam_ox = float(slam_msg.info.origin.position.x)
     slam_oy = float(slam_msg.info.origin.position.y)
+    slam_yaw = float(yaw_from_quat(slam_msg.info.origin.orientation))
+    cs = math.cos(slam_yaw)
+    ss = math.sin(slam_yaw)
 
     ref_res = float(ref_info["resolution"])
     origin = ref_info["origin"]
     ref_ox = float(origin[0])
     ref_oy = float(origin[1])
+    ref_yaw = float(origin[2]) if len(origin) >= 3 else 0.0
+    cr = math.cos(ref_yaw)
+    sr = math.sin(ref_yaw)
 
-    ref_h, ref_w = ref_occ.shape
-    occ_ref = ref_occ
-
-    union = 0
-    inter = 0
+    ref_h, ref_w = ref_shape
+    occ = np.zeros((ref_h, ref_w), dtype=np.bool_)
+    known = np.zeros((ref_h, ref_w), dtype=np.bool_)
 
     for i in range(ref_h):
         for j in range(ref_w):
-            x = ref_ox + (j + 0.5) * ref_res
-            y = ref_oy + (i + 0.5) * ref_res
-            sj = int(math.floor((x - slam_ox) / slam_res))
-            si = int(math.floor((y - slam_oy) / slam_res))
+            xr = (j + 0.5) * ref_res
+            yr = (i + 0.5) * ref_res
+
+            xw = ref_ox + cr * xr - sr * yr
+            yw = ref_oy + sr * xr + cr * yr
+
+            dx = xw - slam_ox
+            dy = yw - slam_oy
+
+            # world -> slam_local (R(-yaw))
+            xs = cs * dx + ss * dy
+            ys = -ss * dx + cs * dy
+
+            sj = int(math.floor(xs / slam_res))
+            si = int(math.floor(ys / slam_res))
             if si < 0 or sj < 0 or si >= slam.shape[0] or sj >= slam.shape[1]:
                 continue
+
             v = int(slam[si, sj])
             if v == -1:
                 continue
-            occ_s = v >= 50
-            occ_r = bool(occ_ref[i, j])
-            u = occ_r or occ_s
-            if u:
-                union += 1
-                if occ_r and occ_s:
-                    inter += 1
+
+            known[i, j] = True
+            occ[i, j] = (v >= 50)
+
+    return occ, known
+
+
+def map_iou(ref_occ: np.ndarray, ref_info: dict, slam_msg: OccupancyGrid) -> float:
+    occ_s, known = project_map_to_ref_grid(ref_info, ref_occ.shape, slam_msg)
+    return map_iou_binary(ref_occ, occ_s, known)
+
+
+def map_iou_binary(ref_occ: np.ndarray, occ_s: np.ndarray, known: np.ndarray | None = None) -> float:
+    occ_r = ref_occ.astype(np.bool_)
+    occ_s = occ_s.astype(np.bool_)
+    if known is None:
+        known = np.ones_like(occ_r, dtype=np.bool_)
+    else:
+        known = known.astype(np.bool_)
+
+    union_mask = known & (occ_r | occ_s)
+    inter_mask = known & occ_r & occ_s
+
+    union = int(np.count_nonzero(union_mask))
     if union == 0:
         return 1.0
+    inter = int(np.count_nonzero(inter_mask))
     return float(inter) / float(union)
 
 
@@ -190,6 +225,9 @@ class EvalNode(Node):
         self.declare_parameter("scan_topic_points", "/scan_slam")
         self.declare_parameter("points_max_range", 8.0)
         self.declare_parameter("points_beam_step", 6)
+        self.declare_parameter("sync_tolerance_sec", 0.15)
+        self.declare_parameter("maps_rotate_180", True)
+        self.declare_parameter("maps_max_cols", 3)
         # --- nazwy artefaktów (żeby results.json wskazywał faktyczne pliki)
         self.declare_parameter("robak_dataset_name", "dataset_robak.npz")
         self.declare_parameter("robak_model_name", "model_robak.pt")
@@ -232,12 +270,16 @@ class EvalNode(Node):
 
         self.err_xy_sm = []
         self.err_th_sm = []
+        self.ts_sm = []
         self.err_xy_bf = []
         self.err_th_bf = []
+        self.ts_bf = []
         self.err_xy_robak = []
         self.err_th_robak = []
+        self.ts_robak = []
         self.err_xy_rywak = []
         self.err_th_rywak = []
+        self.ts_rywak = []
 
         self.map_baseline = None
         self.map_ai = None
@@ -254,6 +296,7 @@ class EvalNode(Node):
         self.err_th = []
         self.err_xy_ai = []
         self.err_th_ai = []
+        self.ts_ai = []
         
         # Śledzenie momentu startu inferencji AI
         self.ai_start_time = None  # Czas pierwszego otrzymania /pose_ai
@@ -269,6 +312,9 @@ class EvalNode(Node):
         self.scan_topic_points = str(self.get_parameter("scan_topic_points").value)
         self.points_max_range = float(self.get_parameter("points_max_range").value)
         self.points_beam_step = int(self.get_parameter("points_beam_step").value)
+        self.sync_tolerance_sec = float(self.get_parameter("sync_tolerance_sec").value)
+        self.maps_rotate_180 = bool(self.get_parameter("maps_rotate_180").value)
+        self.maps_max_cols = max(1, int(self.get_parameter("maps_max_cols").value))
         self.create_subscription(PoseStamped, self.gt_topic, self.on_gt, 50)
         self.create_subscription(Odometry, self.odom_topic, self.on_odom, 50)
         self.create_subscription(PoseStamped, self.pose_topic_ai, self.on_ai, 50)
@@ -441,9 +487,27 @@ class EvalNode(Node):
 
         if self.pose_rywak is not None and self.points_map_rywak is not None:
             self._stamp_points_to_ref_grid(self.points_map_rywak, self.pose_rywak, msg)
+
+    def _stamp_to_sec(self, stamp) -> float:
+        return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
+    def _is_time_synced(self, msg_a, msg_b) -> bool:
+        if msg_a is None or msg_b is None:
+            return False
+        try:
+            ta = self._stamp_to_sec(msg_a.header.stamp)
+            tb = self._stamp_to_sec(msg_b.header.stamp)
+            return abs(ta - tb) <= self.sync_tolerance_sec
+        except Exception:
+            return False
+
     def tick(self):
         t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
         if self.gt is None or self.odom is None:
+            if t >= self.duration_sec:
+                self.finish()
+            return
+        if not self._is_time_synced(self.odom, self.gt):
             if t >= self.duration_sec:
                 self.finish()
             return
@@ -461,7 +525,7 @@ class EvalNode(Node):
         self.err_xy.append([ex, ey])
         self.err_th.append(eth)
 
-        if self.pose_ai is not None:
+        if self.pose_ai is not None and self._is_time_synced(self.pose_ai, self.gt):
             ax, ay, ath = xytheta_from_pose(self.pose_ai)
             self.ai_xy.append([ax, ay, ath])
             exa = gx - ax
@@ -469,8 +533,9 @@ class EvalNode(Node):
             etha = wrap(gth - ath)
             self.err_xy_ai.append([exa, eya])
             self.err_th_ai.append(etha)
+            self.ts_ai.append(float(t))
             
-        if self.pose_sm is not None:
+        if self.pose_sm is not None and self._is_time_synced(self.pose_sm, self.gt):
             sx, sy, sth = xytheta_from_pose(self.pose_sm)
             self.sm_xy.append([sx, sy, sth])
             exs = gx - sx
@@ -478,8 +543,9 @@ class EvalNode(Node):
             eths = wrap(gth - sth)
             self.err_xy_sm.append([exs, eys])
             self.err_th_sm.append(eths)
+            self.ts_sm.append(float(t))
 
-        if self.pose_bf is not None:
+        if self.pose_bf is not None and self._is_time_synced(self.pose_bf, self.gt):
             bx, by, bth = xytheta_from_pose(self.pose_bf)
             self.bf_xy.append([bx, by, bth])
             exb = gx - bx
@@ -487,7 +553,8 @@ class EvalNode(Node):
             ethb = wrap(gth - bth)
             self.err_xy_bf.append([exb, eyb])
             self.err_th_bf.append(ethb)
-        if self.pose_robak is not None:
+            self.ts_bf.append(float(t))
+        if self.pose_robak is not None and self._is_time_synced(self.pose_robak, self.gt):
             rx, ry, rth = xytheta_from_pose(self.pose_robak)
             self.robak_xy.append([rx, ry, rth])
             exr = gx - rx
@@ -495,8 +562,9 @@ class EvalNode(Node):
             ethr = wrap(gth - rth)
             self.err_xy_robak.append([exr, eyr])
             self.err_th_robak.append(ethr)
+            self.ts_robak.append(float(t))
 
-        if self.pose_rywak is not None:
+        if self.pose_rywak is not None and self._is_time_synced(self.pose_rywak, self.gt):
             rx, ry, rth = xytheta_from_pose(self.pose_rywak)
             self.rywak_xy.append([rx, ry, rth])
             exr = gx - rx
@@ -504,6 +572,7 @@ class EvalNode(Node):
             ethr = wrap(gth - rth)
             self.err_xy_rywak.append([exr, eyr])
             self.err_th_rywak.append(ethr)
+            self.ts_rywak.append(float(t))
         if t >= self.duration_sec:
             # Poczekaj na mapy przed zakończeniem (max 10s dodatkowego czasu)
             if not hasattr(self, '_map_wait_deadline'):
@@ -623,8 +692,17 @@ class EvalNode(Node):
             rmse_th_rywak = float(np.sqrt(np.mean(err_th_r ** 2)))
         iou_map = None
         iou_map_ai = None
+        iou_map_robak = None
+        iou_map_rywak = None
         # Debug: sprawdź czy mamy dane do obliczenia IOU
-        self.get_logger().info(f"IOU calculation: ref_occ={self.ref_occ is not None}, map_baseline={self.map_baseline is not None}, map_ai={self.map_ai is not None}")
+        self.get_logger().info(
+            "IOU calculation: "
+            f"ref_occ={self.ref_occ is not None}, "
+            f"map_baseline={self.map_baseline is not None}, "
+            f"map_ai={self.map_ai is not None}, "
+            f"map_robak={self.map_robak is not None}, "
+            f"map_rywak={self.map_rywak is not None}"
+        )
         
         if self.ref_occ is not None and self.map_baseline is not None:
             try:
@@ -648,11 +726,46 @@ class EvalNode(Node):
             if self.map_ai is None:
                 self.get_logger().warn("No /map_ai received - IOU AI cannot be calculated")
 
+        if self.ref_occ is not None:
+            if self.map_robak is not None:
+                try:
+                    iou_map_robak = map_iou(self.ref_occ, self.ref_info, self.map_robak)
+                    self.get_logger().info(f"IOU Robak: {iou_map_robak}")
+                except Exception as e:
+                    self.get_logger().error(f"Failed to calculate IOU Robak: {e}")
+            elif self.points_map_robak is not None and np.count_nonzero(self.points_map_robak) > 0:
+                try:
+                    occ_pts = self.points_map_robak.astype(np.bool_)
+                    iou_map_robak = map_iou_binary(self.ref_occ, occ_pts, known=occ_pts)
+                    self.get_logger().info(f"IOU Robak (points fallback): {iou_map_robak}")
+                except Exception as e:
+                    self.get_logger().error(f"Failed to calculate IOU Robak (points): {e}")
+            else:
+                self.get_logger().warn("No /map_robak received - IOU Robak cannot be calculated")
+
+            if self.map_rywak is not None:
+                try:
+                    iou_map_rywak = map_iou(self.ref_occ, self.ref_info, self.map_rywak)
+                    self.get_logger().info(f"IOU Rywak: {iou_map_rywak}")
+                except Exception as e:
+                    self.get_logger().error(f"Failed to calculate IOU Rywak: {e}")
+            elif self.points_map_rywak is not None and np.count_nonzero(self.points_map_rywak) > 0:
+                try:
+                    occ_pts = self.points_map_rywak.astype(np.bool_)
+                    iou_map_rywak = map_iou_binary(self.ref_occ, occ_pts, known=occ_pts)
+                    self.get_logger().info(f"IOU Rywak (points fallback): {iou_map_rywak}")
+                except Exception as e:
+                    self.get_logger().error(f"Failed to calculate IOU Rywak (points): {e}")
+            else:
+                self.get_logger().warn("No /map_rywak received - IOU Rywak cannot be calculated")
+
         traj_path = os.path.join(self.out_dir, "trajectory.png")
         err_path = os.path.join(self.out_dir, "errors.png")
         maps_path = os.path.join(self.out_dir, "maps.png")
+        traj_data_path = os.path.join(self.out_dir, "trajectory_data.npz")
         results_path = os.path.join(self.out_dir, "results.json")
 
+        self._save_trajectory_data(traj_data_path)
         self._plot_trajectories(traj_path)
         self._plot_errors(err_path)
         self._plot_maps(maps_path)
@@ -664,10 +777,12 @@ class EvalNode(Node):
             "metrics": {
                 "rmse_xy_baseline": rmse_xy,
                 "rmse_theta_baseline": rmse_th,
+                "iou_map_baseline": iou_map,
                 "rmse_xy_ai": rmse_xy_ai,
                 "rmse_theta_ai": rmse_th_ai,
-                "iou_map_baseline": iou_map,
                 "iou_map_ai": iou_map_ai,
+                "iou_map_robak": iou_map_robak,
+                "iou_map_rywak": iou_map_rywak,
                 "rmse_xy_scanmatch": rmse_xy_sm,
                 "rmse_theta_scanmatch": rmse_th_sm,
                 "rmse_xy_bruteforce": rmse_xy_bf,
@@ -679,11 +794,14 @@ class EvalNode(Node):
             },
             "artifacts": {
                 "trajectory_png": traj_path,
+                "trajectory_data_npz": traj_data_path,
                 "errors_png": err_path,
                 "maps_png": maps_path,
                 "reference_map_yaml": self.ref_yaml,
                 "map_topic_baseline": "/map",
                 "map_topic_ai": "/map_ai",
+                "map_topic_robak": "/map_robak",
+                "map_topic_rywak": "/map_rywak",
                 "dataset_npz": os.path.join(self.out_dir, "dataset.npz"),
                 "model_pt": os.path.join(self.out_dir, "model.pt"),
                 "train_history_json": os.path.join(self.out_dir, "train_history.json"),
@@ -711,6 +829,8 @@ class EvalNode(Node):
                 rmse_theta_ai=rmse_th_ai,
                 iou_map_baseline=iou_map,
                 iou_map_ai=iou_map_ai,
+                iou_map_robak=iou_map_robak,
+                iou_map_rywak=iou_map_rywak,
                 n_samples=len(self.ts),
                 artifacts=results["artifacts"]
             )
@@ -732,54 +852,122 @@ class EvalNode(Node):
 
         rclpy.shutdown()
 
+    def _save_trajectory_data(self, path):
+        def _as_xytheta_array(samples):
+            arr = np.asarray(samples, dtype=np.float32)
+            if arr.size == 0:
+                return np.zeros((0, 3), dtype=np.float32)
+            return arr.reshape((-1, 3))
+
+        np.savez_compressed(
+            path,
+            time_s=np.asarray(self.ts, dtype=np.float32),
+            gt_xytheta=_as_xytheta_array(self.gt_xy),
+            baseline_xytheta=_as_xytheta_array(self.odom_xy),
+            ai_time_s=np.asarray(self.ts_ai, dtype=np.float32),
+            ai_xytheta=_as_xytheta_array(self.ai_xy),
+            scanmatch_time_s=np.asarray(self.ts_sm, dtype=np.float32),
+            scanmatch_xytheta=_as_xytheta_array(self.sm_xy),
+            bruteforce_time_s=np.asarray(self.ts_bf, dtype=np.float32),
+            bruteforce_xytheta=_as_xytheta_array(self.bf_xy),
+            robak_time_s=np.asarray(self.ts_robak, dtype=np.float32),
+            robak_xytheta=_as_xytheta_array(self.robak_xy),
+            rywak_time_s=np.asarray(self.ts_rywak, dtype=np.float32),
+            rywak_xytheta=_as_xytheta_array(self.rywak_xy),
+        )
+
+    def _reference_bounds_polygon(self):
+        if self.ref_info is None or self.ref_occ is None:
+            corners = np.array(
+                [
+                    [-3.0, -3.0],
+                    [3.0, -3.0],
+                    [3.0, 3.0],
+                    [-3.0, 3.0],
+                ],
+                dtype=np.float32,
+            )
+        else:
+            res = float(self.ref_info["resolution"])
+            ox = float(self.ref_info["origin"][0])
+            oy = float(self.ref_info["origin"][1])
+            oyaw = float(self.ref_info["origin"][2]) if len(self.ref_info["origin"]) >= 3 else 0.0
+            h, w = self.ref_occ.shape
+
+            local = np.array(
+                [
+                    [0.0, 0.0],
+                    [w * res, 0.0],
+                    [w * res, h * res],
+                    [0.0, h * res],
+                ],
+                dtype=np.float32,
+            )
+            c = math.cos(oyaw)
+            s = math.sin(oyaw)
+
+            corners = np.zeros_like(local, dtype=np.float32)
+            corners[:, 0] = ox + c * local[:, 0] - s * local[:, 1]
+            corners[:, 1] = oy + s * local[:, 0] + c * local[:, 1]
+
+        xmin = float(np.min(corners[:, 0]))
+        xmax = float(np.max(corners[:, 0]))
+        ymin = float(np.min(corners[:, 1]))
+        ymax = float(np.max(corners[:, 1]))
+        return corners, xmin, ymin, xmax, ymax
+
     def _plot_trajectories(self, path):
         gt = np.asarray(self.gt_xy, dtype=np.float32)
         od = np.asarray(self.odom_xy, dtype=np.float32)
 
-        # --- bounds z mapy referencyjnej (zamiast -3..3)
-        if self.ref_info is not None and self.ref_occ is not None:
-            res = float(self.ref_info["resolution"])
-            ox = float(self.ref_info["origin"][0])
-            oy = float(self.ref_info["origin"][1])
-            h, w = self.ref_occ.shape
-            xmin, ymin = ox, oy
-            xmax, ymax = ox + w * res, oy + h * res
-        else:
-            xmin, ymin, xmax, ymax = -3.0, -3.0, 3.0, 3.0
+        ref_poly, xmin, ymin, xmax, ymax = self._reference_bounds_polygon()
 
         margin = 0.5
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        from matplotlib.patches import Rectangle
+        from matplotlib.patches import Polygon
+        label_gt = "GT (trajektoria rzeczywista)"
+        label_baseline = "baseline (SLAM)"
+        label_ai = "AI (korekcja)"
+        label_robak = "robak"
+        label_rywak = "rywak"
+        label_scanmatch = "scanmatch"
+        label_bruteforce = "bruteforce"
 
         # Left: full view with all trajectories
         ax1 = axes[0]
-        ax1.plot(gt[:, 0], gt[:, 1], color="tab:blue", label="GT", linewidth=1.5)
-        ax1.plot(od[:, 0], od[:, 1], color="tab:orange", label="baseline", linewidth=1.0, alpha=0.7)
+        ax1.plot(gt[:, 0], gt[:, 1], color="tab:blue", label=label_gt, linewidth=1.8)
+        ax1.plot(od[:, 0], od[:, 1], color="tab:orange", label=label_baseline, linewidth=1.0, alpha=0.7)
 
         if len(self.ai_xy) > 0:
             ai = np.asarray(self.ai_xy, dtype=np.float32)
-            ax1.plot(ai[:, 0], ai[:, 1], color="tab:green", label="AI", linewidth=1.5)
+            ax1.plot(ai[:, 0], ai[:, 1], color="tab:green", label=label_ai, linewidth=1.5)
 
         if len(self.robak_xy) > 0:
             rb = np.asarray(self.robak_xy, dtype=np.float32)
-            ax1.plot(rb[:, 0], rb[:, 1], color="tab:red", label="robak", linewidth=1.0, alpha=0.8)
+            ax1.plot(rb[:, 0], rb[:, 1], color="tab:red", label=label_robak, linewidth=1.0, alpha=0.8)
 
         if len(self.rywak_xy) > 0:
             ry = np.asarray(self.rywak_xy, dtype=np.float32)
-            ax1.plot(ry[:, 0], ry[:, 1], color="tab:purple", label="rywak", linewidth=1.0, alpha=0.8)
+            ax1.plot(ry[:, 0], ry[:, 1], color="tab:purple", label=label_rywak, linewidth=1.0, alpha=0.8)
 
         if len(self.sm_xy) > 0:
             sm = np.asarray(self.sm_xy, dtype=np.float32)
-            ax1.plot(sm[:, 0], sm[:, 1], label="scanmatch", linewidth=1.0, alpha=0.8)
+            ax1.plot(sm[:, 0], sm[:, 1], label=label_scanmatch, linewidth=1.0, alpha=0.8)
 
         if len(self.bf_xy) > 0:
             bf = np.asarray(self.bf_xy, dtype=np.float32)
-            ax1.plot(bf[:, 0], bf[:, 1], label="bruteforce", linewidth=1.0, alpha=0.8)
+            ax1.plot(bf[:, 0], bf[:, 1], label=label_bruteforce, linewidth=1.0, alpha=0.8)
 
-        rect1 = Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                        fill=False, edgecolor="gray", linestyle="--", linewidth=1.5, label="ref map bounds")
-        ax1.add_patch(rect1)
+        poly1 = Polygon(
+            ref_poly,
+            fill=False,
+            edgecolor="gray",
+            linestyle="--",
+            linewidth=1.5,
+            label="ref map bounds",
+        )
+        ax1.add_patch(poly1)
 
         ax1.set_aspect("equal")
         ax1.legend(loc="best")
@@ -790,19 +978,20 @@ class EvalNode(Node):
 
         # Right: zoom to reference map bounds
         ax2 = axes[1]
-        ax2.plot(gt[:, 0], gt[:, 1], color="tab:blue", label="GT", linewidth=1.5)
+        ax2.plot(gt[:, 0], gt[:, 1], color="tab:blue", label=label_gt, linewidth=1.8)
+        ax2.plot(od[:, 0], od[:, 1], color="tab:orange", label=label_baseline, linewidth=1.0, alpha=0.7)
 
         if len(self.ai_xy) > 0:
             ai = np.asarray(self.ai_xy, dtype=np.float32)
-            ax2.plot(ai[:, 0], ai[:, 1], color="tab:green", label="AI", linewidth=1.5)
+            ax2.plot(ai[:, 0], ai[:, 1], color="tab:green", label=label_ai, linewidth=1.5)
 
         if len(self.robak_xy) > 0:
             rb = np.asarray(self.robak_xy, dtype=np.float32)
-            ax2.plot(rb[:, 0], rb[:, 1], color="tab:red", label="robak", linewidth=1.0, alpha=0.8)
+            ax2.plot(rb[:, 0], rb[:, 1], color="tab:red", label=label_robak, linewidth=1.0, alpha=0.8)
 
         if len(self.rywak_xy) > 0:
             ry = np.asarray(self.rywak_xy, dtype=np.float32)
-            ax2.plot(ry[:, 0], ry[:, 1], color="tab:purple", label="rywak", linewidth=1.0, alpha=0.8)
+            ax2.plot(ry[:, 0], ry[:, 1], color="tab:purple", label=label_rywak, linewidth=1.0, alpha=0.8)
 
         ax2.set_xlim(xmin - margin, xmax + margin)
         ax2.set_ylim(ymin - margin, ymax + margin)
@@ -810,12 +999,11 @@ class EvalNode(Node):
         ax2.legend(loc="best")
         ax2.set_xlabel("x [m]")
         ax2.set_ylabel("y [m]")
-        ax2.set_title("GT vs metody (widok wg mapy referencyjnej)")
+        ax2.set_title("Metody vs GT (widok wg mapy referencyjnej)")
         ax2.grid(True, alpha=0.3)
 
-        rect2 = Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                        fill=False, edgecolor="gray", linestyle="--", linewidth=2)
-        ax2.add_patch(rect2)
+        poly2 = Polygon(ref_poly, fill=False, edgecolor="gray", linestyle="--", linewidth=2)
+        ax2.add_patch(poly2)
 
         plt.tight_layout()
         plt.savefig(path, dpi=150)
@@ -832,31 +1020,29 @@ class EvalNode(Node):
         plt.plot(t, np.sqrt(err[:, 0] ** 2 + err[:, 1] ** 2), label="pos err baseline")
         plt.plot(t, np.abs(eth), label="|theta| baseline")
 
-        def _plot_series(err_xy_list, err_th_list, label_prefix, alpha=0.7):
-            if len(err_xy_list) == 0:
+        def _plot_series(ts_list, err_xy_list, err_th_list, label_prefix, alpha=0.7):
+            if len(ts_list) == 0 or len(err_xy_list) == 0:
                 return
+            tt = np.asarray(ts_list, dtype=np.float32)
             e_xy = np.asarray(err_xy_list, dtype=np.float32)
             e_th = np.asarray(err_th_list, dtype=np.float32)
-            n = min(len(t), e_xy.shape[0], e_th.shape[0])
+            n = min(tt.shape[0], e_xy.shape[0], e_th.shape[0])
             if n <= 0:
                 return
-            plt.plot(t[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label=f"pos err {label_prefix}", alpha=alpha)
-            plt.plot(t[:n], np.abs(e_th[:n]), label=f"|theta| {label_prefix}", alpha=alpha)
+            plt.plot(tt[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label=f"pos err {label_prefix}", alpha=alpha)
+            plt.plot(tt[:n], np.abs(e_th[:n]), label=f"|theta| {label_prefix}", alpha=alpha)
 
-        _plot_series(self.err_xy_sm, self.err_th_sm, "scanmatch")
-        _plot_series(self.err_xy_bf, self.err_th_bf, "bruteforce")
-        _plot_series(self.err_xy_robak, self.err_th_robak, "robak")
-        _plot_series(self.err_xy_rywak, self.err_th_rywak, "rywak")
+        _plot_series(self.ts_sm, self.err_xy_sm, self.err_th_sm, "scanmatch")
+        _plot_series(self.ts_bf, self.err_xy_bf, self.err_th_bf, "bruteforce")
+        _plot_series(self.ts_robak, self.err_xy_robak, self.err_th_robak, "robak")
+        _plot_series(self.ts_rywak, self.err_xy_rywak, self.err_th_rywak, "rywak")
 
         # AI: rysujemy od momentu, kiedy AI zaczęło publikować /pose_ai
-        if len(self.err_xy_ai) > 0:
+        if len(self.ts_ai) > 0 and len(self.err_xy_ai) > 0:
+            t_ai = np.asarray(self.ts_ai, dtype=np.float32)
             e_xy = np.asarray(self.err_xy_ai, dtype=np.float32)
             e_th = np.asarray(self.err_th_ai, dtype=np.float32)
-            if self.ai_start_idx is not None and self.ai_start_idx < len(t):
-                t_ai = t[self.ai_start_idx:self.ai_start_idx + len(e_xy)]
-            else:
-                t_ai = t[-len(e_xy):] if len(e_xy) <= len(t) else t
-            n = min(len(t_ai), e_xy.shape[0], e_th.shape[0])
+            n = min(t_ai.shape[0], e_xy.shape[0], e_th.shape[0])
             if n > 0:
                 plt.plot(t_ai[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label="pos err AI")
                 plt.plot(t_ai[:n], np.abs(e_th[:n]), label="|theta| AI", alpha=0.7)
@@ -883,13 +1069,16 @@ class EvalNode(Node):
             return
 
         ref = self.ref_occ.astype(np.uint8)
-        maps = [("ref", ref)]
+        ref_name = "ref"
+        if self.maps_rotate_180:
+            ref_name = "ref (rot180)"
+        maps = [(ref_name, ref)]
 
         def _append_occ(name, msg):
             if msg is None:
                 return
-            m = occgrid_to_array(msg)
-            occ = (m >= 50).astype(np.uint8)
+            occ, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, msg)
+            occ = occ.astype(np.uint8)
             maps.append((name, occ))
 
         _append_occ("baseline", self.map_baseline)
@@ -897,30 +1086,52 @@ class EvalNode(Node):
 
         # --- Robak map (prefer occupancy grid from slam_toolbox, fallback to points) ---
         if getattr(self, "map_robak", None) is not None:
-            m = occgrid_to_array(self.map_robak)
-            mr = (m >= 50).astype(np.uint8)
+            mr, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, self.map_robak)
+            mr = mr.astype(np.uint8)
             maps.append(("robak", mr))
         elif getattr(self, "points_map_robak", None) is not None:
             maps.append(("robak (points)", self.points_map_robak.astype(np.uint8)))
 
         # --- Rywak map (prefer occupancy grid from slam_toolbox, fallback to points) ---
         if getattr(self, "map_rywak", None) is not None:
-            m = occgrid_to_array(self.map_rywak)
-            my = (m >= 50).astype(np.uint8)
+            my, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, self.map_rywak)
+            my = my.astype(np.uint8)
             maps.append(("rywak", my))
         elif getattr(self, "points_map_rywak", None) is not None:
             maps.append(("rywak (points)", self.points_map_rywak.astype(np.uint8)))
 
-        plt.figure(figsize=(4 * len(maps), 4))
-        for i, (name, arr) in enumerate(maps, start=1):
-            ax = plt.subplot(1, len(maps), i)
-            ax.imshow(arr, origin="lower")
+        n_maps = len(maps)
+        if n_maps <= self.maps_max_cols:
+            nrows = 1
+            ncols = n_maps
+        else:
+            nrows = 2
+            ncols = int(math.ceil(n_maps / 2.0))
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 4.2 * nrows), squeeze=False)
+        axes_flat = axes.ravel()
+
+        for i, (name, arr) in enumerate(maps):
+            ax = axes_flat[i]
+            disp = arr
+            if self.maps_rotate_180:
+                disp = np.rot90(disp, 2)
+            ax.imshow(disp, origin="lower", cmap="gray", vmin=0, vmax=1, interpolation="nearest")
             ax.set_title(name)
             ax.set_xticks([])
             ax.set_yticks([])
-        plt.tight_layout()
-        plt.savefig(path, dpi=150)
-        plt.close()
+
+        for j in range(n_maps, len(axes_flat)):
+            axes_flat[j].axis("off")
+
+        if self.maps_rotate_180:
+            fig.suptitle("Porownanie map (widok obrocony o 180 stopni)", fontsize=12)
+            fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
+        else:
+            fig.suptitle("Porownanie map", fontsize=12)
+            fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
 
 
 def main():

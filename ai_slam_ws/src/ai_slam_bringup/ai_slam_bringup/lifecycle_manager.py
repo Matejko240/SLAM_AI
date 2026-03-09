@@ -21,6 +21,7 @@ class LifecycleManager(Node):
 
         self.timer = self.create_timer(1.0, self.tick)
         self.done = set()
+        self.unavailable_counts = {}
 
     def _srv_name(self, node, suffix):
         if node.startswith("/"):
@@ -68,8 +69,15 @@ class LifecycleManager(Node):
 
             st = self._get_state(n)
             if st is None:
-                self.done.add(n)
+                cnt = self.unavailable_counts.get(n, 0) + 1
+                self.unavailable_counts[n] = cnt
+                if cnt % 10 == 0:
+                    self.get_logger().warn(
+                        f"Lifecycle service for '{n}' unavailable for {cnt}s, retrying..."
+                    )
                 continue
+
+            self.unavailable_counts[n] = 0
 
             if st == 1:
                 ok = self._change_state(n, Transition.TRANSITION_CONFIGURE)

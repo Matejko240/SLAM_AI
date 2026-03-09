@@ -66,6 +66,22 @@ def get_config_value(config: dict, *keys, default=None):
     return value
 
 
+def parse_bool(value, default=False):
+    """Konwertuje bool/str/int na bool w sposób odporny na 'false' jako string."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("1", "true", "t", "yes", "y", "on"):
+            return True
+        if v in ("0", "false", "f", "no", "n", "off", ""):
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def merge_params(*param_dicts):
     """Łączy słowniki parametrów, ignorując wartości niebędące dict."""
     merged = {}
@@ -117,7 +133,10 @@ def launch_setup(context, *args, **kwargs):
     learning_rate = float(get_config_value(cfg, "training", "learning_rate", default=0.001))
     batch_size = int(get_config_value(cfg, "training", "batch_size", default=128))
     validation_ratio = float(get_config_value(cfg, "training", "validation_ratio", default=0.2))
-    skip_if_model_exists = bool(get_config_value(cfg, "training", "skip_if_model_exists", default=True))
+    skip_if_model_exists = parse_bool(
+        get_config_value(cfg, "training", "skip_if_model_exists", default=True),
+        default=True,
+    )
     
     # === DATASET ===
     dataset_max_samples = int(get_config_value(cfg, "dataset", "max_samples", default=5000))
@@ -158,6 +177,8 @@ def launch_setup(context, *args, **kwargs):
     driver_door_wall = float(get_config_value(cfg, "driver", "doorway_wall_threshold", default=0.9))
     driver_door_min = float(get_config_value(cfg, "driver", "doorway_turn_min_sec", default=0.7))
     driver_door_max = float(get_config_value(cfg, "driver", "doorway_turn_max_sec", default=1.4))
+    driver_debug = parse_bool(get_config_value(cfg, "driver", "debug", default=True), default=True)
+    driver_debug_every_n = int(get_config_value(cfg, "driver", "debug_every_n", default=10))
 
     # === ROBAK (ALSAI) ===
     robak_cfg = get_config_value(cfg, "robak", default={})
@@ -171,6 +192,17 @@ def launch_setup(context, *args, **kwargs):
     robak_max_pair_dist = float(robak_cfg.get("max_pair_dist", robak_cfg.get("max_delta_dist", 0.5)))
     robak_max_pair_dyaw = float(robak_cfg.get("max_pair_dyaw", robak_cfg.get("max_delta_yaw", math.pi)))
     robak_label_frame = str(robak_cfg.get("label_frame", "local"))
+    robak_sync_tolerance = float(robak_cfg.get("sync_tolerance_sec", 0.08))
+    robak_aug_noise_std_scale = float(robak_cfg.get("augment_noise_std_scale", 0.0))
+    robak_aug_cut_fraction = float(robak_cfg.get("augment_cut_fraction", 0.0))
+    robak_aug_cut_max_points = int(robak_cfg.get("augment_cut_max_points", 20))
+    robak_infer_max_step_trans = float(robak_cfg.get("infer_max_step_trans", 0.12))
+    robak_infer_max_step_yaw = float(robak_cfg.get("infer_max_step_yaw", 0.35))
+    robak_infer_delta_ema_alpha = float(robak_cfg.get("infer_delta_ema_alpha", 0.55))
+    robak_infer_odom_heading_alpha = float(robak_cfg.get("infer_odom_heading_alpha", 0.20))
+    robak_infer_odom_sync_tolerance = float(robak_cfg.get("infer_odom_sync_tolerance_sec", 0.08))
+    robak_infer_odom_delta_xy_alpha = float(robak_cfg.get("infer_odom_delta_xy_alpha", 0.35))
+    robak_infer_odom_delta_yaw_alpha = float(robak_cfg.get("infer_odom_delta_yaw_alpha", 0.45))
     robak_lr = float(robak_cfg.get("lr", learning_rate))
     robak_epochs = int(robak_cfg.get("max_epochs", max_epochs))
     robak_patience = int(robak_cfg.get("patience", patience))
@@ -186,6 +218,30 @@ def launch_setup(context, *args, **kwargs):
     rywak_dataset_duration = float(rywak_cfg.get("dataset_duration", dataset_duration_sec))
     rywak_max_samples = int(rywak_cfg.get("max_samples", dataset_max_samples))
     rywak_odom_label_topic = str(rywak_cfg.get("odom_label_topic", "/odom_raw"))
+    rywak_sync_tolerance = float(rywak_cfg.get("sync_tolerance_sec", 0.08))
+    rywak_interpolate_odom = parse_bool(rywak_cfg.get("interpolate_odom", False), default=False)
+    rywak_sync_pair_gap = float(rywak_cfg.get("sync_pair_gap_sec", 0.2))
+    rywak_delta_scan_clip = float(rywak_cfg.get("delta_scan_clip", 2.0))
+    rywak_hidden_dims = list(rywak_cfg.get("hidden_dims", [192, 96, 48]))
+    rywak_dropout = float(rywak_cfg.get("dropout", 0.1))
+    rywak_weight_decay = float(rywak_cfg.get("weight_decay", 1e-4))
+    rywak_huber_delta = float(rywak_cfg.get("huber_delta", 1.0))
+    rywak_input_noise_std = float(rywak_cfg.get("input_noise_std", 0.02))
+    rywak_clip_grad_norm = float(rywak_cfg.get("clip_grad_norm", 1.0))
+    rywak_loss_v_weight = float(rywak_cfg.get("loss_v_weight", 1.0))
+    rywak_loss_w_weight = float(rywak_cfg.get("loss_w_weight", 1.5))
+    rywak_v_clip_abs = float(rywak_cfg.get("v_clip_abs", 0.45))
+    rywak_w_clip_abs = float(rywak_cfg.get("w_clip_abs", 1.20))
+    rywak_fuse_odom_v_weight = float(rywak_cfg.get("fuse_odom_v_weight", 0.25))
+    rywak_fuse_odom_w_weight = float(rywak_cfg.get("fuse_odom_w_weight", 0.55))
+    rywak_fuse_odom_v_gain = float(rywak_cfg.get("fuse_odom_v_gain", 0.45))
+    rywak_fuse_odom_w_gain = float(rywak_cfg.get("fuse_odom_w_gain", 0.35))
+    rywak_vel_ema_alpha = float(rywak_cfg.get("vel_ema_alpha", 0.60))
+    rywak_anchor_yaw_to_odom = float(rywak_cfg.get("anchor_yaw_to_odom", 0.35))
+    rywak_heading_for_xy_odom_weight = float(rywak_cfg.get("heading_for_xy_odom_weight", 0.60))
+    rywak_xy_step_odom_weight = float(rywak_cfg.get("xy_step_odom_weight", 0.35))
+    rywak_xy_step_odom_gain = float(rywak_cfg.get("xy_step_odom_gain", 0.45))
+    rywak_max_integration_dt = float(rywak_cfg.get("max_integration_dt", 0.20))
     rywak_lr = float(rywak_cfg.get("lr", learning_rate))
     rywak_epochs = int(rywak_cfg.get("max_epochs", max_epochs))
     rywak_patience = int(rywak_cfg.get("patience", patience))
@@ -194,16 +250,28 @@ def launch_setup(context, *args, **kwargs):
     rywak_pose_topic = str(rywak_cfg.get("pose_topic", "/pose_rywak"))
 
     # === SLAM TOOLBOX ===
+    slam_cfg_root = get_config_value(cfg, "slam", default={})
     slam_common_cfg = get_config_value(cfg, "slam", "common", default={})
     slam_baseline_cfg = get_config_value(cfg, "slam", "baseline", default={})
     slam_ai_cfg = get_config_value(cfg, "slam", "ai", default={})
     slam_robak_cfg = get_config_value(cfg, "slam", "robak", default={})
     slam_rywak_cfg = get_config_value(cfg, "slam", "rywak", default={})
 
-    slam_baseline_params = merge_params(slam_common_cfg, slam_baseline_cfg)
-    slam_ai_params = merge_params(slam_common_cfg, slam_ai_cfg)
-    slam_robak_params = merge_params(slam_common_cfg, slam_robak_cfg)
-    slam_rywak_params = merge_params(slam_common_cfg, slam_rywak_cfg)
+    # Parametry na poziomie "slam" (np. max_laser_range, resolution) też stosujemy do wszystkich wariantów.
+    slam_variant_keys = {"common", "baseline", "ai", "robak", "rywak"}
+    slam_global_cfg = {}
+    if isinstance(slam_cfg_root, dict):
+        for key, value in slam_cfg_root.items():
+            if key in slam_variant_keys:
+                continue
+            if isinstance(value, dict):
+                continue
+            slam_global_cfg[key] = value
+
+    slam_baseline_params = merge_params(slam_global_cfg, slam_common_cfg, slam_baseline_cfg)
+    slam_ai_params = merge_params(slam_global_cfg, slam_common_cfg, slam_ai_cfg)
+    slam_robak_params = merge_params(slam_global_cfg, slam_common_cfg, slam_robak_cfg)
+    slam_rywak_params = merge_params(slam_global_cfg, slam_common_cfg, slam_rywak_cfg)
         
     # === OUTPUT ===
     out_dir = str(get_param("out_dir", ["output", "base_dir"], "out"))
@@ -243,6 +311,9 @@ def launch_setup(context, *args, **kwargs):
     # Reference map
     ref_map_cfg = str(get_config_value(cfg, "evaluation", "reference_map_yaml", default=""))
     reference_map_yaml = ref_map_cfg if ref_map_cfg else os.path.join(eval_share, "maps", "reference_map.yaml")
+    eval_sync_tolerance = float(get_config_value(cfg, "evaluation", "sync_tolerance_sec", default=0.15))
+    eval_maps_rotate_180 = parse_bool(get_config_value(cfg, "evaluation", "maps_rotate_180", default=True), default=True)
+    eval_maps_max_cols = int(get_config_value(cfg, "evaluation", "maps_max_cols", default=3))
     
     gz_sim_launch_py = os.path.join(ros_gz_sim_share, "launch", "gz_sim.launch.py")
 
@@ -473,6 +544,8 @@ def launch_setup(context, *args, **kwargs):
             "doorway_wall_threshold": driver_door_wall,
             "doorway_turn_min_sec": driver_door_min,
             "doorway_turn_max_sec": driver_door_max,
+            "debug": driver_debug,
+            "debug_every_n": driver_debug_every_n,
             "odom_topic": odom_in_topic,  # zwykle /odom_raw
         }],
         output="screen",
@@ -500,17 +573,12 @@ def launch_setup(context, *args, **kwargs):
         output="log",  # Redirect to log file instead of screen
         condition=IfCondition(str(do_test_phase).lower()),
     )
-    slam_robak_cfg = get_config_value(cfg, "slam", "robak", default={})
-    slam_rywak_cfg = get_config_value(cfg, "slam", "rywak", default={})
-    slam_robak_params = merge_params(slam_common_cfg, slam_robak_cfg)
-    slam_rywak_params = merge_params(slam_common_cfg, slam_rywak_cfg)
-
     slam_robak = LifecycleNode(
         package="slam_toolbox",
         executable="sync_slam_toolbox_node",
         name="slam_toolbox_robak",
         namespace="",
-        parameters=[slam_params_ai, {"use_sim_time": True}, slam_robak_params],
+        parameters=[{"use_sim_time": True}, slam_robak_params],
         arguments=["--ros-args", "--log-level", "warn"],
         remappings=[("/map", "/map_robak")],
         output="log",
@@ -522,28 +590,13 @@ def launch_setup(context, *args, **kwargs):
         executable="sync_slam_toolbox_node",
         name="slam_toolbox_rywak",
         namespace="",
-        parameters=[slam_params_ai, {"use_sim_time": True}, slam_rywak_params],
+        parameters=[{"use_sim_time": True}, slam_rywak_params],
         arguments=["--ros-args", "--log-level", "warn"],
         remappings=[("/map", "/map_rywak")],
         output="log",
         condition=IfCondition(str(rywak_test_enabled).lower()),
     )
 
-    lifecycle_mgr_robak = Node(
-        package="ai_slam_bringup",
-        executable="lifecycle_manager",
-        parameters=[{"use_sim_time": True, "nodes": ["slam_toolbox_robak"]}],
-        output="screen",
-        condition=IfCondition(str(robak_test_enabled).lower()),
-    )
-
-    lifecycle_mgr_rywak = Node(
-        package="ai_slam_bringup",
-        executable="lifecycle_manager",
-        parameters=[{"use_sim_time": True, "nodes": ["slam_toolbox_rywak"]}],
-        output="screen",
-        condition=IfCondition(str(rywak_test_enabled).lower()),
-    )
     # Lifecycle management
     configure_baseline = TimerAction(
         period=slam_configure_delay,
@@ -650,36 +703,6 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(str(rywak_test_enabled).lower()),
     )
 
-    lifecycle_mgr_robak = Node(
-        package="ai_slam_bringup",
-        executable="lifecycle_manager",
-        parameters=[{"use_sim_time": True, "nodes": ["slam_toolbox_robak"]}],
-        output="screen",
-        condition=IfCondition(str(robak_test_enabled).lower()),
-    )
-
-    lifecycle_mgr_rywak = Node(
-        package="ai_slam_bringup",
-        executable="lifecycle_manager",
-        parameters=[{"use_sim_time": True, "nodes": ["slam_toolbox_rywak"]}],
-        output="screen",
-        condition=IfCondition(str(rywak_test_enabled).lower()),
-    )
-    lifecycle_mgr_baseline = Node(
-        package="ai_slam_bringup",
-        executable="lifecycle_manager",
-        parameters=[{"use_sim_time": True, "nodes": ["slam_toolbox_baseline"]}],
-        output="screen",
-    )
-
-    lifecycle_mgr_ai = Node(
-        package="ai_slam_bringup",
-        executable="lifecycle_manager",
-        parameters=[{"use_sim_time": True, "nodes": ["slam_toolbox_ai"]}],
-        output="screen",
-        condition=IfCondition(str(do_test_phase).lower()),
-    )
-
     # AI Pipeline nodes
     dataset_rec = Node(
         package="ai_slam_ai",
@@ -758,6 +781,11 @@ def launch_setup(context, *args, **kwargs):
             "max_pair_dist": robak_max_pair_dist,
             "max_pair_dyaw": robak_max_pair_dyaw,
             "label_frame": robak_label_frame,
+            "sync_tolerance_sec": robak_sync_tolerance,
+            "augment_noise_std_scale": robak_aug_noise_std_scale,
+            "augment_cut_fraction": robak_aug_cut_fraction,
+            "augment_cut_max_points": robak_aug_cut_max_points,
+            "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(robak_train_enabled).lower()),
@@ -782,6 +810,7 @@ def launch_setup(context, *args, **kwargs):
             "lr": robak_lr,
             "batch_size": robak_batch,
             "val_ratio": robak_val_ratio,
+            "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(robak_train_enabled).lower()),
@@ -800,12 +829,21 @@ def launch_setup(context, *args, **kwargs):
             "pose_topic": robak_pose_topic,
             "init_from": "gt",
             "gt_topic": dataset_gt_topic,
+            "odom_topic": odom_in_topic,
+            "max_step_trans": robak_infer_max_step_trans,
+            "max_step_yaw": robak_infer_max_step_yaw,
+            "delta_ema_alpha": robak_infer_delta_ema_alpha,
+            "odom_heading_alpha": robak_infer_odom_heading_alpha,
+            "odom_sync_tolerance_sec": robak_infer_odom_sync_tolerance,
+            "odom_delta_xy_alpha": robak_infer_odom_delta_xy_alpha,
+            "odom_delta_yaw_alpha": robak_infer_odom_delta_yaw_alpha,
+            "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(robak_test_enabled).lower()),
     )
 
-    # --- PORÓWNANIA: Rywak (scan+diff -> v,w) ---
+    # --- PORÓWNANIA: Rywak (d_theta1 + d_theta2 + delta_scan -> v,w) ---
     dataset_rec_rywak = Node(
         package="ai_slam_ai",
         executable="dataset_recorder_rywak",
@@ -818,7 +856,12 @@ def launch_setup(context, *args, **kwargs):
             "max_samples": rywak_max_samples,
             "scan_topic": dataset_scan_topic,
             "odom_topic": rywak_odom_label_topic,
+            "sync_tolerance_sec": rywak_sync_tolerance,
+            "interpolate_odom": rywak_interpolate_odom,
+            "sync_pair_gap_sec": rywak_sync_pair_gap,
+            "delta_scan_clip": rywak_delta_scan_clip,
             "dataset_name": rywak_dataset_name,
+            "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(rywak_train_enabled).lower()),
@@ -843,6 +886,15 @@ def launch_setup(context, *args, **kwargs):
             "lr": rywak_lr,
             "batch_size": rywak_batch,
             "val_ratio": rywak_val_ratio,
+            "hidden_dims": rywak_hidden_dims,
+            "dropout": rywak_dropout,
+            "weight_decay": rywak_weight_decay,
+            "huber_delta": rywak_huber_delta,
+            "input_noise_std": rywak_input_noise_std,
+            "clip_grad_norm": rywak_clip_grad_norm,
+            "loss_v_weight": rywak_loss_v_weight,
+            "loss_w_weight": rywak_loss_w_weight,
+            "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(rywak_train_enabled).lower()),
@@ -859,7 +911,25 @@ def launch_setup(context, *args, **kwargs):
             "model_name": rywak_model_name,
             "scan_topic": infer_scan_topic,
             "pose_topic": rywak_pose_topic,
+            "odom_topic": rywak_odom_label_topic,
             "init_from_odom_topic": odom_in_topic,
+            "sync_tolerance_sec": rywak_sync_tolerance,
+            "interpolate_odom": rywak_interpolate_odom,
+            "sync_pair_gap_sec": rywak_sync_pair_gap,
+            "delta_scan_clip": rywak_delta_scan_clip,
+            "v_clip_abs": rywak_v_clip_abs,
+            "w_clip_abs": rywak_w_clip_abs,
+            "fuse_odom_v_weight": rywak_fuse_odom_v_weight,
+            "fuse_odom_w_weight": rywak_fuse_odom_w_weight,
+            "fuse_odom_v_gain": rywak_fuse_odom_v_gain,
+            "fuse_odom_w_gain": rywak_fuse_odom_w_gain,
+            "vel_ema_alpha": rywak_vel_ema_alpha,
+            "anchor_yaw_to_odom": rywak_anchor_yaw_to_odom,
+            "heading_for_xy_odom_weight": rywak_heading_for_xy_odom_weight,
+            "xy_step_odom_weight": rywak_xy_step_odom_weight,
+            "xy_step_odom_gain": rywak_xy_step_odom_gain,
+            "max_integration_dt": rywak_max_integration_dt,
+            "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(rywak_test_enabled).lower()),
@@ -875,6 +945,9 @@ def launch_setup(context, *args, **kwargs):
             "experiment_id": experiment_id,
             "duration_sec": eval_duration_sec,
             "reference_map_yaml": reference_map_yaml,
+            "sync_tolerance_sec": eval_sync_tolerance,
+            "maps_rotate_180": eval_maps_rotate_180,
+            "maps_max_cols": eval_maps_max_cols,
             "pose_topic_ai": infer_pose_topic,
             "pose_topic_scanmatch": "/pose_scanmatch",
             "pose_topic_bruteforce": "/pose_bruteforce",
@@ -898,6 +971,8 @@ def launch_setup(context, *args, **kwargs):
         SetEnvironmentVariable("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/50_mesa.json"),
         SetEnvironmentVariable("MESA_GL_VERSION_OVERRIDE", "4.5"),
         SetEnvironmentVariable("MESA_GLSL_VERSION_OVERRIDE", "450"),
+        SetEnvironmentVariable("GLOG_minloglevel", "2"),
+        SetEnvironmentVariable("GLOG_logtostderr", "1"),
         SetEnvironmentVariable("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] [{name}]: {message}"),
     ]
     # =========================
@@ -993,12 +1068,6 @@ def launch_setup(context, *args, **kwargs):
 
         configure_rywak,
         activate_rywak,
-
-        # lifecycle_managery
-        lifecycle_mgr_baseline,
-        lifecycle_mgr_ai,
-        lifecycle_mgr_robak,
-        lifecycle_mgr_rywak,
 
         # pipeline dataset/train/infer
         dataset_rec,

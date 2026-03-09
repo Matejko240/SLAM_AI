@@ -2,6 +2,11 @@
 <sdf version="1.10">
   <world name="world_test_house">
     <gravity>0 0 -9.8</gravity>
+    <physics name="fast_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_update_rate>2000</real_time_update_rate>
+      <real_time_factor>2.0</real_time_factor>
+    </physics>
 
     <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>

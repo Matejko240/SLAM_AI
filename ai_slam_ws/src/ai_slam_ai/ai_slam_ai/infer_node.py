@@ -5,6 +5,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped, TransformStamped
@@ -41,6 +42,7 @@ class InferNode(Node):
         self.declare_parameter("out_dir", "out")
         self.declare_parameter("experiment_id", "")
         self.declare_parameter("model_name", "model.pt")
+        self.declare_parameter("model_wait_timeout", 300.0)
         self.declare_parameter("scan_topic", "/scan_slam")
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("pose_topic", "/pose_ai")
@@ -69,6 +71,9 @@ class InferNode(Node):
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
+        self.model_wait_timeout = float(self.get_parameter("model_wait_timeout").value)
+        self.model_wait_start = time.time()
+        self._model_wait_warned = False
 
         self.latest_odom = None
         self.model = None
@@ -83,7 +88,7 @@ class InferNode(Node):
         self.tf_br = TransformBroadcaster(self)
 
         self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 50)
-        self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, 20)
+        self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
 
         self.timer = self.create_timer(0.5, self.try_load_model)
         
@@ -101,8 +106,8 @@ class InferNode(Node):
             total_duration = time.time() - self.infer_start
             avg_inference_time = sum(self.inference_times) / len(self.inference_times) if self.inference_times else 0
             
-            # Zapisz aktualne statystyki (nadpisze poprzednie)
-            self.exp_logger.end_inference(
+            # Zapisz aktualne statystyki bez kończenia etapu inferencji
+            self.exp_logger.update_inference_statistics(
                 n_predictions=self.inference_count,
                 total_duration_sec=total_duration,
                 avg_inference_time_ms=avg_inference_time
@@ -112,6 +117,17 @@ class InferNode(Node):
         if self.model is not None:
             return
         if not os.path.exists(self.model_path):
+            wait_elapsed = time.time() - self.model_wait_start
+            if wait_elapsed >= self.model_wait_timeout:
+                self.get_logger().error(
+                    f"Model not found after {self.model_wait_timeout:.1f}s: {self.model_path}. "
+                    "Shutting down infer_node."
+                )
+                rclpy.shutdown()
+                return
+            if (not self._model_wait_warned) and wait_elapsed >= 5.0:
+                self.get_logger().warn(f"Waiting for model file: {self.model_path}")
+                self._model_wait_warned = True
             return
         payload = torch.load(self.model_path, map_location="cpu")
         self.in_dim = int(payload.get("in_dim", 363))
@@ -247,13 +263,20 @@ class InferNode(Node):
                 total_duration_sec=total_duration,
                 avg_inference_time_ms=avg_inference_time
             )
-            
-            self.get_logger().info("="*60)
-            self.get_logger().info(f"[FAZA 3] INFERENCJA AI - KONIEC")
-            self.get_logger().info(f"Liczba predykcji: {self.inference_count}")
-            self.get_logger().info(f"Całkowity czas: {total_duration:.1f}s")
-            self.get_logger().info(f"Średni czas inferencji: {avg_inference_time:.3f}ms")
-            self.get_logger().info("="*60)
+
+            can_log = False
+            try:
+                can_log = bool(rclpy.ok())
+            except Exception:
+                can_log = False
+
+            if can_log:
+                self.get_logger().info("="*60)
+                self.get_logger().info(f"[FAZA 3] INFERENCJA AI - KONIEC")
+                self.get_logger().info(f"Liczba predykcji: {self.inference_count}")
+                self.get_logger().info(f"Całkowity czas: {total_duration:.1f}s")
+                self.get_logger().info(f"Średni czas inferencji: {avg_inference_time:.3f}ms")
+                self.get_logger().info("="*60)
 
 
 def main():

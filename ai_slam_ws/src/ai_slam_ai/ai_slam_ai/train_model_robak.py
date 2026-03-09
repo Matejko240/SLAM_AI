@@ -51,6 +51,7 @@ class TrainModelRobak(Node):
         self.declare_parameter("model_name", "model_robak.pt")
         self.declare_parameter("history_name", "train_history_robak.json")
         self.declare_parameter("skip_if_model_exists", True)
+        self.declare_parameter("write_experiment_metadata", False)
 
         self.declare_parameter("max_epochs", 200)
         self.declare_parameter("patience", 20)
@@ -81,6 +82,7 @@ class TrainModelRobak(Node):
         self.val_ratio = float(self.get_parameter("val_ratio").value)
         self.batch_size = int(self.get_parameter("batch_size").value)
         self.dataset_wait_timeout = float(self.get_parameter("dataset_wait_timeout").value)
+        self.write_experiment_metadata = bool(self.get_parameter("write_experiment_metadata").value)
 
         self.timer = self.create_timer(0.5, self.run_once)
         self.did = False
@@ -106,15 +108,16 @@ class TrainModelRobak(Node):
             rclpy.shutdown()
             return
 
-        self.exp_logger.start_training(
-            seed=self.seed,
-            max_epochs=self.max_epochs,
-            patience=self.patience,
-            min_delta=self.min_delta,
-            lr=self.lr,
-            val_ratio=self.val_ratio,
-            batch_size=self.batch_size,
-        )
+        if self.write_experiment_metadata:
+            self.exp_logger.start_training(
+                seed=self.seed,
+                max_epochs=self.max_epochs,
+                patience=self.patience,
+                min_delta=self.min_delta,
+                lr=self.lr,
+                val_ratio=self.val_ratio,
+                batch_size=self.batch_size,
+            )
 
         data = np.load(self.dataset_path, allow_pickle=True)
         X = data["X_pairs"].astype(np.float32)  # (N,2,360)
@@ -157,14 +160,15 @@ class TrainModelRobak(Node):
         device = torch.device("cpu")
         model.to(device)
 
-        self.exp_logger.set_training_dataset_info(
-            n_total=n, n_train=X_tr.shape[0], n_val=n_val,
-            input_dim=720, output_dim=3
-        )
-        self.exp_logger.set_training_model_info(
-            architecture="RobakConv1D(2x360)",
-            model=model
-        )
+        if self.write_experiment_metadata:
+            self.exp_logger.set_training_dataset_info(
+                n_total=n, n_train=X_tr.shape[0], n_val=n_val,
+                input_dim=720, output_dim=3
+            )
+            self.exp_logger.set_training_model_info(
+                architecture="RobakConv1D(2x360)",
+                model=model
+            )
 
         opt = optim.Adam(model.parameters(), lr=self.lr)
         loss_fn = nn.MSELoss()
@@ -236,15 +240,16 @@ class TrainModelRobak(Node):
             default=0
         ) + 1
 
-        self.exp_logger.end_training(
-            epochs_run=len(history["epochs"]),
-            best_epoch=best_epoch_idx,
-            best_val_loss=best_val,
-            final_train_loss=final_train_loss,
-            early_stopped=early_stopped,
-            model_path=self.model_path,
-            history_path=self.history_path
-        )
+        if self.write_experiment_metadata:
+            self.exp_logger.end_training(
+                epochs_run=len(history["epochs"]),
+                best_epoch=best_epoch_idx,
+                best_val_loss=best_val,
+                final_train_loss=final_train_loss,
+                early_stopped=early_stopped,
+                model_path=self.model_path,
+                history_path=self.history_path
+            )
 
         self.get_logger().info(f"[Robak] Saved model: {self.model_path} | best_val={best_val:.6f}")
         rclpy.shutdown()

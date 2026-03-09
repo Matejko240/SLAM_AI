@@ -208,14 +208,17 @@ class EvaluationMetadata:
     def set_metrics(self, rmse_xy_baseline: float, rmse_theta_baseline: float,
                    rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float],
                    iou_map_baseline: Optional[float], iou_map_ai: Optional[float],
-                   n_samples: int):
+                   n_samples: int, iou_map_robak: Optional[float] = None,
+                   iou_map_rywak: Optional[float] = None):
         self.metrics = {
             "rmse_xy_baseline": rmse_xy_baseline,
             "rmse_theta_baseline": rmse_theta_baseline,
+            "iou_map_baseline": iou_map_baseline,
             "rmse_xy_ai": rmse_xy_ai,
             "rmse_theta_ai": rmse_theta_ai,
-            "iou_map_baseline": iou_map_baseline,
             "iou_map_ai": iou_map_ai,
+            "iou_map_robak": iou_map_robak,
+            "iou_map_rywak": iou_map_rywak,
             "n_evaluation_samples": n_samples,
         }
         
@@ -578,6 +581,16 @@ class ExperimentLogger:
         )
         self.log.add_note(f"Inference completed: {n_predictions} predictions")
         self.save()
+
+    def update_inference_statistics(self, n_predictions: int, total_duration_sec: float,
+                                    avg_inference_time_ms: float):
+        """Aktualizuje statystyki inferencji bez oznaczania etapu jako zakończonego."""
+        self.log.inference.set_statistics(
+            n_predictions=n_predictions,
+            total_duration_sec=total_duration_sec,
+            avg_inference_time_ms=avg_inference_time_ms
+        )
+        self.save()
     
     # ==================== Evaluation ====================
     
@@ -595,14 +608,18 @@ class ExperimentLogger:
     def end_evaluation(self, rmse_xy_baseline: float, rmse_theta_baseline: float,
                        rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float],
                        iou_map_baseline: Optional[float], iou_map_ai: Optional[float],
-                       n_samples: int, artifacts: Dict[str, str]):
+                       n_samples: int, artifacts: Dict[str, str],
+                       iou_map_robak: Optional[float] = None,
+                       iou_map_rywak: Optional[float] = None):
         """Kończy logowanie ewaluacji."""
         self.log.evaluation.timing.end()
         self.log.evaluation.set_metrics(
             rmse_xy_baseline=rmse_xy_baseline, rmse_theta_baseline=rmse_theta_baseline,
             rmse_xy_ai=rmse_xy_ai, rmse_theta_ai=rmse_theta_ai,
             iou_map_baseline=iou_map_baseline, iou_map_ai=iou_map_ai,
-            n_samples=n_samples
+            n_samples=n_samples,
+            iou_map_robak=iou_map_robak,
+            iou_map_rywak=iou_map_rywak,
         )
         self.log.evaluation.artifacts = artifacts
         self.log.add_note("Evaluation completed")
@@ -841,6 +858,8 @@ class ExperimentLogger:
             "eval_rmse_theta_ai": evaluation.get("metrics", {}).get("rmse_theta_ai"),
             "eval_iou_baseline": evaluation.get("metrics", {}).get("iou_map_baseline"),
             "eval_iou_ai": evaluation.get("metrics", {}).get("iou_map_ai"),
+            "eval_iou_robak": evaluation.get("metrics", {}).get("iou_map_robak"),
+            "eval_iou_rywak": evaluation.get("metrics", {}).get("iou_map_rywak"),
             "eval_xy_improvement_pct": evaluation.get("metrics", {}).get("rmse_xy_improvement_percent"),
             "eval_theta_improvement_pct": evaluation.get("metrics", {}).get("rmse_theta_improvement_percent"),
             "eval_n_samples": evaluation.get("metrics", {}).get("n_evaluation_samples"),

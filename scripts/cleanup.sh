@@ -51,6 +51,14 @@ pgrep -f "gz|gazebo|ignition" | xargs -r kill -9 2>/dev/null
 # Wait a bit more
 sleep 1
 
+# Stop ROS2 daemon cleanly (if running)
+ros2 daemon stop >/dev/null 2>&1 || true
+
+# Clear stale FastDDS SHM lock files (częsty problem w WSL)
+find /dev/shm -maxdepth 1 -type f \
+  \( -name 'fastrtps_*' -o -name 'fastrtps_port*' -o -name 'sem.fastrtps_port*_mutex' \) \
+  -delete 2>/dev/null || true
+
 # Clear ROS2 runtime directories if needed
 rm -rf ~/.ros/run/* 2>/dev/null
 

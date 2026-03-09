@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import os
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -160,6 +161,34 @@ def main():
         child_link = links.get(child)
         child_pose = parse_pose(child_link.find("pose")) if child_link is not None else ["0"] * 6
         add_joint(robot, joint, child_pose)
+
+    # KDL in robot_state_publisher warns if the root link has inertial.
+    # Keep base_link as root and move its inertial to a fixed child link.
+    base_link = None
+    for link in robot.findall("link"):
+        if link.get("name") == "base_link":
+            base_link = link
+            break
+    if base_link is not None:
+        base_inertial = base_link.find("inertial")
+        if base_inertial is not None:
+            base_link.remove(base_inertial)
+
+            inertia_link = ET.Element("link")
+            inertia_link.set("name", "base_link_inertia")
+            inertia_link.append(copy.deepcopy(base_inertial))
+            robot.insert(1, inertia_link)
+
+            inertia_joint = ET.SubElement(robot, "joint")
+            inertia_joint.set("name", "base_link_inertia_joint")
+            inertia_joint.set("type", "fixed")
+            parent = ET.SubElement(inertia_joint, "parent")
+            parent.set("link", "base_link")
+            child = ET.SubElement(inertia_joint, "child")
+            child.set("link", "base_link_inertia")
+            origin = ET.SubElement(inertia_joint, "origin")
+            origin.set("xyz", "0 0 0")
+            origin.set("rpy", "0 0 0")
 
     # Pretty print
     xml_raw = ET.tostring(robot, encoding="utf-8")

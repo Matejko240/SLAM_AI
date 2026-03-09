@@ -9,6 +9,23 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
+
+def parse_bool(value, default=False):
+    """Konwertuje parametr ROS (bool/str/int) do bool w przewidywalny sposób."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("1", "true", "t", "yes", "y", "on"):
+            return True
+        if v in ("0", "false", "f", "no", "n", "off", ""):
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 class AutoDriver(Node):
     def __init__(self):
         super().__init__("auto_driver")
@@ -112,7 +129,7 @@ class AutoDriver(Node):
         self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
         self.timer = self.create_timer(1.0 / self.rate_hz, self.on_timer)
         
-        self.debug = bool(self.get_parameter("debug").value)
+        self.debug = parse_bool(self.get_parameter("debug").value, default=True)
         self.debug_every_n = int(self.get_parameter("debug_every_n").value)
         self._dbg_tick = 0
         self._dbg_last_reason = ""

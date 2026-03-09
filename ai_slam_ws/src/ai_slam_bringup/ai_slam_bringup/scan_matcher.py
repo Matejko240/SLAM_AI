@@ -114,6 +114,7 @@ class ScanMatcher(Node):
 
         # --- filtracja delty (wygładzenie)
         self.declare_parameter("lpf_alpha", 0.0)  # 0=off, np 0.3 = delikatny filtr
+        self.declare_parameter("warn_step_ms", 60.0)  # próg warningów wydajności
 
         # --- init
         self.declare_parameter("init_x", 0.0)
@@ -149,6 +150,7 @@ class ScanMatcher(Node):
         self.reg_theta_scale = float(self.get_parameter("reg_theta_scale").value)
 
         self.lpf_alpha = float(self.get_parameter("lpf_alpha").value)
+        self.warn_step_ms = float(self.get_parameter("warn_step_ms").value)
 
         self.x = float(self.get_parameter("init_x").value)
         self.y = float(self.get_parameter("init_y").value)
@@ -424,7 +426,7 @@ class ScanMatcher(Node):
 
         t_end = time.perf_counter()
         ms = (t_end - t_start) * 1000.0
-        if ms > 60.0 and (self.step_idx % 10) == 0:
+        if ms > self.warn_step_ms and (self.step_idx % 10) == 0:
             self.get_logger().warn(f"scan_matcher step took {ms:.1f} ms (method={self.method})")
 
 

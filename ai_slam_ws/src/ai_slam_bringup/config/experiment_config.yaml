@@ -13,7 +13,7 @@ experiment:
   mode: "ai"                    # "baseline" - tylko SLAM, "ai" - pełny pipeline z AI
   phase: "full"
   seed: 123                     # Seed dla powtarzalności (odom_corruptor, driver, trening)
-  gui: true                   # true = włącz GUI Gazebo, false = headless (szybsze)
+  gui: false                   # true = włącz GUI Gazebo, false = headless (szybsze)
 
 # --- SYMULACJA / ŚWIAT (Gazebo) ---
 simulation:
@@ -24,7 +24,7 @@ simulation:
 tracks:
   tor1_baseline: true        # baseline slam_toolbox (zostaw)
   tor2_ai_slam: true         # AI slam_toolbox (zostaw)
-  tor3_local: true           # przeszukanie lokalne (scan_matcher - localmap)
+  tor3_local: false           # przeszukanie lokalne (scan_matcher - localmap)
   tor4_bruteforce: false     # przegląd zupełny (scan_matcher - bruteforce, ciężkie)
   tor5_robak: true          # model Robaka skan1 + skan2 = delta pose,
   tor6_rywak: true          # model Rywaka d_theta1 + d_theta2 + delta_scan => v,w ==(delta time)=> delta pose
@@ -33,9 +33,11 @@ tracks:
 scan_matcher:
   tor3:
     method: "localmap"
-    localmap_scans: 25
-    localmap_radius: 6.0
-    localmap_min_points: 200
+    localmap_scans: 15
+    localmap_radius: 5.0
+    localmap_min_points: 150
+    max_points: 180
+    warn_step_ms: 90.0
     publish_every_n: 1
   tor4:
     method: "bruteforce"
@@ -44,18 +46,64 @@ scan_matcher:
     bf_range_th: 0.25
     bf_step_xy: 0.01
     bf_step_th: 0.01
+robak:
+  offsets: [1]               # inferencja online używa par kolejnych skanów (offset=1)
+  dataset_duration: 180.0
+  max_samples: 20000
+  max_pair_dist: 0.08        # odrzuć zbyt dalekie pary (często outliery synchronizacji)
+  max_pair_dyaw: 0.25
+  sync_tolerance_sec: 0.08
+  label_frame: "local"
+  augment_noise_std_scale: 0.01   # ALSAI-like: szum proporcjonalny do zasięgu
+  augment_cut_fraction: 0.15      # szansa maskowania losowego segmentu skanu
+  augment_cut_max_points: 20
+  infer_max_step_trans: 0.12      # max translacja jednego kroku [m]
+  infer_max_step_yaw: 0.35        # max rotacja jednego kroku [rad]
+  infer_delta_ema_alpha: 0.55     # wygładzanie predykcji delta (0-1)
+  infer_odom_heading_alpha: 0.18  # dociąganie yaw do odometrii (0=off)
+  infer_odom_sync_tolerance_sec: 0.08
+  infer_odom_delta_xy_alpha: 0.30
+  infer_odom_delta_yaw_alpha: 0.40
+rywak:
+  dataset_duration: 180.0
+  max_samples: 20000
+  odom_label_topic: "/odom_raw"
+  sync_tolerance_sec: 0.08
+  interpolate_odom: false         # bardziej stabilne między uruchomieniami (nearest zamiast pełnej interpolacji)
+  sync_pair_gap_sec: 0.20         # max odstęp (s) pomiędzy próbkami odom do interpolacji
+  delta_scan_clip: 2.0
+  hidden_dims: [192, 96, 48]
+  dropout: 0.10
+  weight_decay: 0.0001
+  huber_delta: 1.0
+  input_noise_std: 0.02
+  clip_grad_norm: 1.0
+  loss_v_weight: 1.0
+  loss_w_weight: 1.5
+  v_clip_abs: 0.45
+  w_clip_abs: 1.20
+  fuse_odom_v_weight: 0.35
+  fuse_odom_w_weight: 0.65
+  fuse_odom_v_gain: 0.10
+  fuse_odom_w_gain: 0.10
+  vel_ema_alpha: 0.55
+  anchor_yaw_to_odom: 0.42
+  heading_for_xy_odom_weight: 0.72
+  xy_step_odom_weight: 0.25
+  xy_step_odom_gain: 0.10
+  max_integration_dt: 0.20
 
 # --- CZASY EKSPERYMENTU (w sekundach) ---
 timing:
   # Faza 1: Zbieranie danych
-  dataset_duration: 120.0        # Czas zbierania datasetu (faza 1)
+  dataset_duration: 180.0        # Czas zbierania datasetu (faza 1)
   dataset_start_delay: 5.0      # Opóźnienie startu zbierania (po spawnie robota)
   
   # Faza 2: Trening modelu  
   dataset_wait_timeout: 300.0   # Max czas oczekiwania na dataset przed treningiem
   
   # Faza 3-4: Inferencja i ewaluacja
-  eval_duration: 120.0    
+  eval_duration: 180.0    
   
   # Wewnętrzne opóźnienia (zaawansowane)
   bridge_delay: 3.0             # Opóźnienie startu bridge'a Gazebo
@@ -141,6 +189,8 @@ evaluation:
   reference_map_yaml: ""        # Ścieżka do mapy referencyjnej (puste = domyślna)
   map_topic_baseline: "/map"    # Topic mapy baseline
   map_topic_ai: "/map_ai"       # Topic mapy AI
+  maps_rotate_180: true         # Obrót wizualizacji map (ref + wszystkie metody) o 180 stopni
+  maps_max_cols: 3              # Maks. liczba kolumn zanim maps.png przejdzie do 2 wierszy
   
   # Metryki
   compute_rmse: true            # Oblicz RMSE (xy, theta)
@@ -179,7 +229,7 @@ driver:
   doorway_wall_threshold: 0.9
   doorway_turn_min_sec: 0.7
   doorway_turn_max_sec: 1.4
-  debug: true
+  debug: false
   debug_every_n: 5
 # --- WYJŚCIE ---
 output:
