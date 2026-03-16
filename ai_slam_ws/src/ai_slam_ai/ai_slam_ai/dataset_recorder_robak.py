@@ -13,7 +13,14 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseStamped
 
-from .common import seed_all, ensure_dir, wrap, xytheta_from_pose_stamped
+from .common import (
+    ensure_dir,
+    parse_filter_mode,
+    passes_motion_filter,
+    seed_all,
+    wrap,
+    xytheta_from_pose_stamped,
+)
 from .experiment_logger import ExperimentLogger
 
 
@@ -134,6 +141,10 @@ class DatasetRecorderRobak(Node):
 
         # --- pairing like ALSAI (offsety w skanach)
         self.declare_parameter("offsets", [1, 2, 3, 4, 5, 8, 10])
+        self.declare_parameter("min_pair_dist", 0.0)                 # [m]
+        self.declare_parameter("min_pair_dyaw", 0.0)                 # [rad]
+        self.declare_parameter("min_pair_dt_sec", 0.0)               # [s]
+        self.declare_parameter("pair_filter_mode", "any")            # any | all
         self.declare_parameter("max_pair_dist", 0.5)                 # [m]
         self.declare_parameter("max_pair_dyaw", float(math.pi))      # [rad] ~180deg
 
@@ -163,6 +174,10 @@ class DatasetRecorderRobak(Node):
 
         self.offsets: List[int] = [int(x) for x in list(self.get_parameter("offsets").value)]
         self.offsets = sorted(list(set([o for o in self.offsets if o > 0])))
+        self.min_pair_dist = float(self.get_parameter("min_pair_dist").value)
+        self.min_pair_dyaw = float(self.get_parameter("min_pair_dyaw").value)
+        self.min_pair_dt_sec = float(self.get_parameter("min_pair_dt_sec").value)
+        self.pair_filter_mode = parse_filter_mode(str(self.get_parameter("pair_filter_mode").value))
         self.max_pair_dist = float(self.get_parameter("max_pair_dist").value)
         self.max_pair_dyaw = float(self.get_parameter("max_pair_dyaw").value)
         self.label_frame = str(self.get_parameter("label_frame").value).lower()
@@ -175,13 +190,15 @@ class DatasetRecorderRobak(Node):
 
         self.gt_count = 0
         self.gt_miss_count = 0
+        self.pair_accept_count = 0
+        self.pair_reject_filter_count = 0
         self.aug_samples_count = 0
         self.scan_count = 0
         # (stamp_sec, (x,y,th))
         self.gt_buf: Deque[Tuple[float, Tuple[float, float, float]]] = deque(maxlen=2000)
 
-        # buf: (scan360, (x,y,th))
-        self.buf: Deque[Tuple[np.ndarray, Tuple[float, float, float]]] = deque(
+        # buf: (t_scan_sec, scan360, (x,y,th))
+        self.buf: Deque[Tuple[float, np.ndarray, Tuple[float, float, float]]] = deque(
             maxlen=max(self.offsets) + 1
         )
 
@@ -201,7 +218,12 @@ class DatasetRecorderRobak(Node):
 
         self.get_logger().info(f"[Robak] out_dir={self.out_dir}")
         self.get_logger().info(f"[Robak] scan={self.scan_topic}, gt={self.gt_topic}, offsets={self.offsets}")
-        self.get_logger().info(f"[Robak] label_frame={self.label_frame}, max_dist={self.max_pair_dist}, max_dyaw={self.max_pair_dyaw:.3f}")
+        self.get_logger().info(
+            f"[Robak] label_frame={self.label_frame}, "
+            f"min_dist={self.min_pair_dist}, min_dyaw={self.min_pair_dyaw:.3f}, "
+            f"min_dt={self.min_pair_dt_sec:.3f}, filter_mode={self.pair_filter_mode}, "
+            f"max_dist={self.max_pair_dist}, max_dyaw={self.max_pair_dyaw:.3f}"
+        )
         self.get_logger().info(
             f"[Robak] augment: noise_std_scale={self.augment_noise_std_scale}, "
             f"cut_fraction={self.augment_cut_fraction}, cut_max_points={self.augment_cut_max_points}"
@@ -262,30 +284,41 @@ class DatasetRecorderRobak(Node):
             self.gt_miss_count += 1
             return
 
-        self.buf.append((scan, curr_gt))
+        self.buf.append((t_scan, scan, curr_gt))
         self.scan_count += 1
 
         # tworzymy próbki dla wszystkich offsetów (jeśli bufor ma dane)
         if len(self.buf) < (max(self.offsets) + 1):
             return
 
-        scan_curr, gt_curr = self.buf[-1]
+        t_curr, scan_curr, gt_curr = self.buf[-1]
 
         for off in self.offsets:
-            scan_prev, gt_prev = self.buf[-(off + 1)]
+            t_prev, scan_prev, gt_prev = self.buf[-(off + 1)]
 
             # gating jak w ALSAI: max dystans i max dyaw
-            dx_w = gt_curr[0] - gt_prev[0]
-            dy_w = gt_curr[1] - gt_prev[1]
-            dist = math.hypot(dx_w, dy_w)
-            dyaw = wrap(gt_curr[2] - gt_prev[2])
+            keep_motion, delta = passes_motion_filter(
+                gt_prev,
+                gt_curr,
+                dt_sec=max(0.0, float(t_curr - t_prev)),
+                min_translation=self.min_pair_dist,
+                min_rotation=self.min_pair_dyaw,
+                min_time_gap_sec=self.min_pair_dt_sec,
+                mode=self.pair_filter_mode,
+            )
 
-            if dist > self.max_pair_dist:
+            if delta.distance > self.max_pair_dist:
+                self.pair_reject_filter_count += 1
                 continue
-            if abs(dyaw) > self.max_pair_dyaw:
+            if abs(delta.dtheta) > self.max_pair_dyaw:
+                self.pair_reject_filter_count += 1
+                continue
+            if not keep_motion:
+                self.pair_reject_filter_count += 1
                 continue
 
             dx, dy, dth = _delta_pose(gt_prev, gt_curr, self.label_frame)
+            self.pair_accept_count += 1
 
             self.X_pairs.append(np.stack([scan_prev, scan_curr], axis=0).astype(np.float32))
             self.Y.append(np.asarray([dx, dy, dth], dtype=np.float32))
@@ -334,10 +367,16 @@ class DatasetRecorderRobak(Node):
             "x_shape": np.asarray(X.shape, dtype=np.int64),
             "label_frame": np.asarray([self.label_frame], dtype=object),
             "offsets": np.asarray(self.offsets, dtype=np.int64),
+            "min_pair_dist": np.float32(self.min_pair_dist),
+            "min_pair_dyaw": np.float32(self.min_pair_dyaw),
+            "min_pair_dt_sec": np.float32(self.min_pair_dt_sec),
+            "pair_filter_mode": np.asarray([self.pair_filter_mode], dtype=object),
             "max_pair_dist": np.float32(self.max_pair_dist),
             "max_pair_dyaw": np.float32(self.max_pair_dyaw),
             "sync_tolerance_sec": np.float32(self.sync_tolerance_sec),
             "gt_sync_miss_count": np.int64(self.gt_miss_count),
+            "pair_accept_count": np.int64(self.pair_accept_count),
+            "pair_reject_filter_count": np.int64(self.pair_reject_filter_count),
             "augment_noise_std_scale": np.float32(self.augment_noise_std_scale),
             "augment_cut_fraction": np.float32(self.augment_cut_fraction),
             "augment_cut_max_points": np.int64(self.augment_cut_max_points),
@@ -375,7 +414,9 @@ class DatasetRecorderRobak(Node):
 
         self.get_logger().info(
             f"[Robak] Saved dataset: {self.dataset_path} "
-            f"(n={Y.shape[0]}, aug_added={self.aug_samples_count}, gt_sync_miss={self.gt_miss_count})"
+            f"(n={Y.shape[0]}, pairs_ok={self.pair_accept_count}, "
+            f"pairs_filtered={self.pair_reject_filter_count}, "
+            f"aug_added={self.aug_samples_count}, gt_sync_miss={self.gt_miss_count})"
         )
         rclpy.shutdown()
 

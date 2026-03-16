@@ -3,8 +3,8 @@ slam_toolbox_ai:
     use_sim_time: true
     use_lifecycle_manager: false
     mode: mapping
-    scan_topic: /scan_slam
-    base_frame: base_link
+    scan_topic: /scan_slam_ai
+    base_frame: base_link_ai
     odom_frame: odom_ai
     map_frame: map_ai
     publish_tf: true
@@ -12,8 +12,8 @@ slam_toolbox_ai:
     publish_pose: true
     resolution: 0.05
     max_laser_range: 10.0
-    minimum_time_interval: 0.10
+    minimum_time_interval: 0.20
     transform_timeout: 0.20
-    tf_buffer_duration: 30.0
+    tf_buffer_duration: 120.0
     map_update_interval: 2.0
     enable_interactive_mode: false

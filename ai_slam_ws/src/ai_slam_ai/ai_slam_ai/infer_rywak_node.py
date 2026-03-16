@@ -93,7 +93,7 @@ class InferRywakNode(Node):
         self.declare_parameter("model_name", "model_rywak.pt")
         self.declare_parameter("write_experiment_metadata", False)
 
-        self.declare_parameter("scan_topic", "/scan_slam")
+        self.declare_parameter("scan_topic", "/scan_slam_rywak")
         self.declare_parameter("pose_topic", "/pose_rywak")
         self.declare_parameter("tf_parent", "odom_rywak")
         self.declare_parameter("tf_child", "base_link_rywak")
@@ -113,6 +113,8 @@ class InferRywakNode(Node):
         self.declare_parameter("fuse_odom_w_gain", 0.35)
         self.declare_parameter("vel_ema_alpha", 0.60)
         self.declare_parameter("anchor_yaw_to_odom", 0.35)
+        self.declare_parameter("anchor_xy_to_odom", 0.0)
+        self.declare_parameter("anchor_xy_to_odom_gain", 0.0)
         self.declare_parameter("heading_for_xy_odom_weight", 0.60)
         self.declare_parameter("xy_step_odom_weight", 0.35)
         self.declare_parameter("xy_step_odom_gain", 0.45)
@@ -149,6 +151,8 @@ class InferRywakNode(Node):
         self.fuse_odom_w_gain = float(self.get_parameter("fuse_odom_w_gain").value)
         self.vel_ema_alpha = float(self.get_parameter("vel_ema_alpha").value)
         self.anchor_yaw_to_odom = float(self.get_parameter("anchor_yaw_to_odom").value)
+        self.anchor_xy_to_odom = float(self.get_parameter("anchor_xy_to_odom").value)
+        self.anchor_xy_to_odom_gain = float(self.get_parameter("anchor_xy_to_odom_gain").value)
         self.heading_for_xy_odom_weight = float(self.get_parameter("heading_for_xy_odom_weight").value)
         self.xy_step_odom_weight = float(self.get_parameter("xy_step_odom_weight").value)
         self.xy_step_odom_gain = float(self.get_parameter("xy_step_odom_gain").value)
@@ -201,6 +205,7 @@ class InferRywakNode(Node):
             f"fuse(v={self.fuse_odom_v_weight}+{self.fuse_odom_v_gain}*err, "
             f"w={self.fuse_odom_w_weight}+{self.fuse_odom_w_gain}*err), "
             f"ema={self.vel_ema_alpha}, yaw_anchor={self.anchor_yaw_to_odom}, "
+            f"xy_anchor={self.anchor_xy_to_odom}+{self.anchor_xy_to_odom_gain}*err, "
             f"xy_heading_odom_w={self.heading_for_xy_odom_weight}, "
             f"xy_step_odom_w={self.xy_step_odom_weight}+{self.xy_step_odom_gain}*err, "
             f"max_dt={self.max_integration_dt}"
@@ -214,12 +219,12 @@ class InferRywakNode(Node):
 
     def on_odom(self, msg: Odometry):
         t = _stamp_to_sec(msg.header.stamp)
-        _, _, th = xytheta_from_odom(msg)
+        x, y, th = xytheta_from_odom(msg)
         v = float(msg.twist.twist.linear.x)
         w = float(msg.twist.twist.angular.z)
-        self.odom_buf.append((t, th, v, w))
+        self.odom_buf.append((t, x, y, th, v, w))
         if self.init_odom_topic == self.odom_topic and not self.pose_inited:
-            self.x, self.y, self.th = xytheta_from_odom(msg)
+            self.x, self.y, self.th = x, y, th
             self.pose_inited = True
 
     def _nearest_odom(self, t_scan: float):
@@ -229,10 +234,10 @@ class InferRywakNode(Node):
         while len(self.odom_buf) > 2 and self.odom_buf[1][0] < (t_scan - 1.0):
             self.odom_buf.popleft()
 
-        t_best, th_best, v_best, w_best = min(self.odom_buf, key=lambda x: abs(x[0] - t_scan))
+        t_best, x_best, y_best, th_best, v_best, w_best = min(self.odom_buf, key=lambda x: abs(x[0] - t_scan))
         if abs(t_best - t_scan) > self.sync_tolerance_sec:
             return None
-        return float(th_best), float(v_best), float(w_best)
+        return float(x_best), float(y_best), float(th_best), float(v_best), float(w_best)
 
     def _interpolated_odom(self, t_scan: float):
         if len(self.odom_buf) < 2:
@@ -247,12 +252,12 @@ class InferRywakNode(Node):
             if prev is None:
                 return None
 
-            t0, th0, v0, w0 = prev
-            t1, th1, v1, w1 = cur
+            t0, x0, y0, th0, v0, w0 = prev
+            t1, x1, y1, th1, v1, w1 = cur
             gap = float(t1 - t0)
             if gap < 1e-6:
                 if abs(t_scan - t0) <= self.sync_tolerance_sec:
-                    return float(th0), float(v0), float(w0)
+                    return float(x0), float(y0), float(th0), float(v0), float(w0)
                 return None
 
             if gap > self.sync_pair_gap_sec:
@@ -263,10 +268,12 @@ class InferRywakNode(Node):
                 return None
 
             alpha = (t_scan - t0) / gap
+            x = float(x0 + alpha * (x1 - x0))
+            y = float(y0 + alpha * (y1 - y0))
             th = _interp_angle(th0, th1, alpha)
             v = float(v0 + alpha * (v1 - v0))
             w = float(w0 + alpha * (w1 - w0))
-            return th, v, w
+            return x, y, th, v, w
 
         return None
 
@@ -340,7 +347,7 @@ class InferRywakNode(Node):
         if odom_match is None:
             self.odom_miss_count += 1
             return
-        th_cur, v_odom, w_odom = odom_match
+        x_odom, y_odom, th_cur, v_odom, w_odom = odom_match
 
         if self.prev_scan is None:
             self.prev_scan = scan
@@ -436,6 +443,15 @@ class InferRywakNode(Node):
         step_w = min(max(step_base + step_gain * step_err, 0.0), 1.0)
         self.x += (1.0 - step_w) * step_pred_x + step_w * step_odom_x
         self.y += (1.0 - step_w) * step_pred_y + step_w * step_odom_y
+
+        xy_anchor_base = min(max(self.anchor_xy_to_odom, 0.0), 1.0)
+        xy_anchor_gain = max(0.0, self.anchor_xy_to_odom_gain)
+        if xy_anchor_base > 0.0 or xy_anchor_gain > 0.0:
+            err_xy = math.hypot(self.x - float(x_odom), self.y - float(y_odom))
+            step_scale = max(abs(float(v_odom)) * dt, 0.05)
+            anchor_w = min(max(xy_anchor_base + xy_anchor_gain * (err_xy / step_scale), 0.0), 1.0)
+            self.x = (1.0 - anchor_w) * self.x + anchor_w * float(x_odom)
+            self.y = (1.0 - anchor_w) * self.y + anchor_w * float(y_odom)
 
         ps = PoseStamped()
         ps.header.stamp = msg.header.stamp

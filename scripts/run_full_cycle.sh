@@ -20,8 +20,12 @@ if command -v flock >/dev/null 2>&1; then
 fi
 
 # --- 0. Ustawienia wstępne ---
-export PYTHONPATH=$PYTHONPATH:$HOME/SLAM_AI/.venv/lib/python3.12/site-packages
-cd "$(dirname "$0")/.."
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_SITE="$ROOT_DIR/.venv/lib/python3.12/site-packages"
+if [[ -d "$VENV_SITE" ]]; then
+    export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$VENV_SITE"
+fi
+cd "$ROOT_DIR"
 
 # === CZYSZCZENIE PRZED STARTEM ===
 echo "--- Uruchamianie cleanup.sh przed startem ---"
@@ -47,7 +51,16 @@ if [ ! -f "$CONFIG_PATH" ]; then
 fi
 
 # --- 1. Generowanie ID Eksperymentu ---
-EXP_ID="exp_$(date +%Y%m%d_%H%M%S)"
+EXP_ID=""
+for arg in "$@"; do
+    if [[ "$arg" == experiment_id:=* ]]; then
+        EXP_ID="${arg#experiment_id:=}"
+        break
+    fi
+done
+if [ -z "$EXP_ID" ]; then
+    EXP_ID="exp_$(date +%Y%m%d_%H%M%S)"
+fi
 
 # --- 2. Parsowanie Konfiguracji (bezpiecznie przez YAML) ---
 read -r TRAIN_MAP TEST_MAP DATASET_TIME EVAL_TIME < <(

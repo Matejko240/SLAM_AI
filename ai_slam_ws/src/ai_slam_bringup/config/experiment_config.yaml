@@ -48,8 +48,12 @@ scan_matcher:
     bf_step_th: 0.01
 robak:
   offsets: [1]               # inferencja online używa par kolejnych skanów (offset=1)
-  dataset_duration: 180.0
+  dataset_duration: 30.0
   max_samples: 20000
+  min_pair_dist: 0.03        # minimalne przesunięcie między skanami używanymi do próbki [m]
+  min_pair_dyaw: 0.05        # minimalna zmiana yaw między skanami [rad]
+  min_pair_dt_sec: 0.0       # opcjonalny minimalny odstęp czasu między skanami [s]
+  pair_filter_mode: "any"    # any = ruch liniowy lub obrót, all = oba warunki naraz
   max_pair_dist: 0.08        # odrzuć zbyt dalekie pary (często outliery synchronizacji)
   max_pair_dyaw: 0.25
   sync_tolerance_sec: 0.08
@@ -60,18 +64,25 @@ robak:
   infer_max_step_trans: 0.12      # max translacja jednego kroku [m]
   infer_max_step_yaw: 0.35        # max rotacja jednego kroku [rad]
   infer_delta_ema_alpha: 0.55     # wygładzanie predykcji delta (0-1)
-  infer_odom_heading_alpha: 0.18  # dociąganie yaw do odometrii (0=off)
+  infer_odom_heading_alpha: 0.30  # dociąganie yaw do odometrii (0=off)
   infer_odom_sync_tolerance_sec: 0.08
-  infer_odom_delta_xy_alpha: 0.30
-  infer_odom_delta_yaw_alpha: 0.40
+  infer_odom_delta_xy_alpha: 0.50
+  infer_odom_delta_yaw_alpha: 0.60
+  infer_odom_pose_xy_alpha: 0.08   # kotwiczenie absolutnego x,y do odometrii (baza)
+  infer_odom_pose_xy_gain: 0.16    # dodatkowe kotwiczenie gdy błąd x,y narasta
 rywak:
-  dataset_duration: 180.0
+  dataset_duration: 30.0
   max_samples: 20000
   odom_label_topic: "/odom_raw"
   sync_tolerance_sec: 0.08
   interpolate_odom: false         # bardziej stabilne między uruchomieniami (nearest zamiast pełnej interpolacji)
   sync_pair_gap_sec: 0.20         # max odstęp (s) pomiędzy próbkami odom do interpolacji
   delta_scan_clip: 2.0
+  min_sample_dist: 0.03           # minimalne przesunięcie między kolejnymi zaakceptowanymi skanami [m]
+  min_sample_dyaw: 0.04           # minimalna zmiana yaw między zaakceptowanymi skanami [rad]
+  min_sample_dt_sec: 0.0          # opcjonalny minimalny odstęp czasu między próbkami [s]
+  min_delta_scan_rms: 0.04        # minimalna RMS różnica skanu, by odsiać prawie identyczne próbki
+  sample_filter_mode: "any"       # any = wystarczy ruch/obrót/zmiana skanu
   hidden_dims: [192, 96, 48]
   dropout: 0.10
   weight_decay: 0.0001
@@ -82,28 +93,30 @@ rywak:
   loss_w_weight: 1.5
   v_clip_abs: 0.45
   w_clip_abs: 1.20
-  fuse_odom_v_weight: 0.35
-  fuse_odom_w_weight: 0.65
-  fuse_odom_v_gain: 0.10
-  fuse_odom_w_gain: 0.10
-  vel_ema_alpha: 0.55
-  anchor_yaw_to_odom: 0.42
-  heading_for_xy_odom_weight: 0.72
-  xy_step_odom_weight: 0.25
-  xy_step_odom_gain: 0.10
+  fuse_odom_v_weight: 0.45
+  fuse_odom_w_weight: 0.75
+  fuse_odom_v_gain: 0.25
+  fuse_odom_w_gain: 0.20
+  vel_ema_alpha: 0.60
+  anchor_yaw_to_odom: 0.65
+  anchor_xy_to_odom: 0.06         # kotwiczenie absolutnego x,y do odometrii (baza)
+  anchor_xy_to_odom_gain: 0.18    # dodatkowe kotwiczenie gdy dryft pozycji rośnie
+  heading_for_xy_odom_weight: 0.90
+  xy_step_odom_weight: 0.50
+  xy_step_odom_gain: 0.30
   max_integration_dt: 0.20
 
 # --- CZASY EKSPERYMENTU (w sekundach) ---
 timing:
   # Faza 1: Zbieranie danych
-  dataset_duration: 180.0        # Czas zbierania datasetu (faza 1)
+  dataset_duration: 30.0        # Czas zbierania datasetu (faza 1)
   dataset_start_delay: 5.0      # Opóźnienie startu zbierania (po spawnie robota)
   
   # Faza 2: Trening modelu  
-  dataset_wait_timeout: 300.0   # Max czas oczekiwania na dataset przed treningiem
+  dataset_wait_timeout: 1000.0   # Max czas oczekiwania na dataset przed treningiem
   
   # Faza 3-4: Inferencja i ewaluacja
-  eval_duration: 180.0    
+  eval_duration: 100.0    
   
   # Wewnętrzne opóźnienia (zaawansowane)
   bridge_delay: 3.0             # Opóźnienie startu bridge'a Gazebo
@@ -117,6 +130,18 @@ dataset:
   scan_topic: "/scan_slam"           # Topic skanów LiDAR
   odom_topic: "/odom"           # Topic odometrii (corrupted)
   gt_topic: "/ground_truth_pose" # Topic ground truth
+
+# --- PARAMETRY GROUND TRUTH (gt_pose_publisher) ---
+ground_truth:
+  use_tf_world: true            # true = preferuj pozycję robota z /tf_world (Gazebo dynamic_pose)
+  tf_world_topic: "/tf_world"   # Topic z TFMessage z world frame
+  tf_world_timeout_sec: 0.5     # Fallback do /odom_raw jeśli brak świeżych danych z tf_world
+  model_name_hint: "diffbot"    # Podpowiedź nazwy modelu w child_frame_id
+  base_link_hint: "base_link"   # Podpowiedź nazwy linku bazowego
+  world_frame_hint: "world"     # Oczekiwana nazwa frame świata
+  heuristic_max_score: 15.0     # Wyższy próg = mniej "no_match", ale większe ryzyko złego dopasowania
+  heuristic_max_step_m: 0.8     # Maks. krok [m] między kolejnymi klatkami GT (ciągłość toru)
+  debug_every_n: 5000           # Częstotliwość logów diagnostycznych GT
 
 # --- PARAMETRY TRENOWANIA (train_model) ---
 training:
@@ -137,7 +162,7 @@ training:
 
 # --- PARAMETRY INFERENCJI (infer_node) ---
 inference:
-  scan_topic: "/scan_slam"      # Topic skanów do inferencji (po scan_fix)
+  scan_topic: "/scan_slam_ai"   # Topic skanów do inferencji AI (musi zgadzać się z frame base_link_ai)
   odom_topic: "/odom"           # Topic odometrii wejściowej
   output_pose_topic: "/pose_ai" # Topic publikowania poprawionej pozycji
   output_odom_topic: "/odom_ai" # Topic publikowania poprawionej odometrii
@@ -158,9 +183,11 @@ slam:
   resolution: 0.05
   max_laser_range: 10.0
   minimum_time_interval: 0.10
+  minimum_travel_distance: 0.08
+  minimum_travel_heading: 0.08
   transform_timeout: 0.20
   tf_buffer_duration: 30.0
-  map_update_interval: 2.0
+  map_update_interval: 1.0
   enable_interactive_mode: false
   # Różnice dla wariantów
   baseline:
@@ -170,6 +197,8 @@ slam:
     base_frame: base_link_ai
     odom_frame: odom_ai
     map_frame: map_ai
+    minimum_time_interval: 0.20
+    tf_buffer_duration: 120.0
 
   robak:
     scan_topic: /scan_slam_robak
@@ -191,6 +220,10 @@ evaluation:
   map_topic_ai: "/map_ai"       # Topic mapy AI
   maps_rotate_180: true         # Obrót wizualizacji map (ref + wszystkie metody) o 180 stopni
   maps_max_cols: 3              # Maks. liczba kolumn zanim maps.png przejdzie do 2 wierszy
+  points_min_translation: 0.05  # minimalne przesunięcie pozy do dodania kolejnych punktów fallback mapy [m]
+  points_min_rotation: 0.08     # minimalna zmiana yaw pozy do dodania punktów [rad]
+  points_min_time_gap_sec: 0.0  # opcjonalny minimalny odstęp czasu między stemplowaniami [s]
+  points_filter_mode: "any"     # any = przesunięcie lub obrót wystarczy do stemplowania punktów
   
   # Metryki
   compute_rmse: true            # Oblicz RMSE (xy, theta)

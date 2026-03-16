@@ -16,6 +16,7 @@ Użycie:
 import os
 import yaml
 import math
+import re
 from datetime import datetime
 from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit
@@ -55,6 +56,15 @@ def load_config(config_file: str) -> dict:
     return {}
 
 
+def resolve_config_path(config_file: str) -> str:
+    bringup_share = get_package_share_directory("ai_slam_bringup")
+    if not config_file:
+        return ""
+    if not os.path.isabs(config_file):
+        config_file = os.path.join(bringup_share, "config", config_file)
+    return os.path.abspath(config_file)
+
+
 def get_config_value(config: dict, *keys, default=None):
     """Bezpiecznie pobiera wartość z zagnieżdżonego słownika."""
     value = config
@@ -91,11 +101,26 @@ def merge_params(*param_dicts):
     return merged
 
 
+def extract_world_name(world_path: str) -> str:
+    """Próbuje odczytać nazwę świata z pliku SDF, fallback: nazwa pliku bez rozszerzenia."""
+    fallback = os.path.splitext(os.path.basename(world_path))[0] or "default"
+    try:
+        with open(world_path, "r", encoding="utf-8") as f:
+            txt = f.read(20000)
+        m = re.search(r"<world\s+name\s*=\s*[\"']([^\"']+)[\"']", txt)
+        if m:
+            return str(m.group(1))
+    except Exception:
+        pass
+    return fallback
+
+
 def launch_setup(context, *args, **kwargs):
     """Funkcja setup wywoływana w runtime z dostępem do kontekstu."""
     
     # Pobierz wartości argumentów launch
     config_file = LaunchConfiguration("config").perform(context)
+    resolved_config_path = resolve_config_path(config_file)
     
     # Wczytaj konfigurację z pliku
     cfg = load_config(config_file) if config_file else {}
@@ -114,9 +139,11 @@ def launch_setup(context, *args, **kwargs):
     seed = int(get_param("seed", ["experiment", "seed"], 123))
     gui = str(get_param("gui", ["experiment", "gui"], "false")).lower()
     phase = str(get_param("phase", ["experiment", "phase"], "full")).lower()
-    if phase not in ("full", "train", "test"):
+    if phase not in ("full", "train", "test", "dataset"):
         phase = "full"
-    world_sdf_arg = str(get_param("world_sdf", ["simulation", "world_sdf"], "ai_slam_world.sdf"))
+    world_sdf_arg = str(get_param("world_sdf", ["simulation", "world_sdf"], "__AUTO__"))
+    train_world_sdf = str(get_config_value(cfg, "simulation", "train_world", default="world_train_house.sdf"))
+    test_world_sdf = str(get_config_value(cfg, "simulation", "test_world", default="world_test_house.sdf"))
 
     # === CZASY ===
     eval_duration_sec = float(get_param("eval_duration_sec", ["timing", "eval_duration"], 60.0))
@@ -143,17 +170,27 @@ def launch_setup(context, *args, **kwargs):
     dataset_scan_topic = str(get_config_value(cfg, "dataset", "scan_topic", default="/scan"))
     dataset_odom_topic = str(get_config_value(cfg, "dataset", "odom_topic", default="/odom"))
     dataset_gt_topic = str(get_config_value(cfg, "dataset", "gt_topic", default="/ground_truth_pose"))
+    gt_cfg = get_config_value(cfg, "ground_truth", default={})
+    gt_use_tf_world = parse_bool(gt_cfg.get("use_tf_world", True), default=True)
+    gt_tf_world_topic = str(gt_cfg.get("tf_world_topic", "/tf_world"))
+    gt_tf_world_timeout = float(gt_cfg.get("tf_world_timeout_sec", 0.5))
+    gt_model_name_hint = str(gt_cfg.get("model_name_hint", "diffbot"))
+    gt_base_link_hint = str(gt_cfg.get("base_link_hint", "base_link"))
+    gt_world_frame_hint = str(gt_cfg.get("world_frame_hint", "world"))
+    gt_heuristic_max_score = float(gt_cfg.get("heuristic_max_score", 12.0))
+    gt_heuristic_max_step = float(gt_cfg.get("heuristic_max_step_m", 0.8))
+    gt_debug_every_n = int(gt_cfg.get("debug_every_n", 2000))
     
     # === INFERENCE ===
     model_wait_timeout = float(get_config_value(cfg, "inference", "model_wait_timeout", default=300.0))
-    infer_scan_topic = get_config_value(cfg, "inference", "scan_topic", default="/scan_slam")
+    infer_scan_topic = get_config_value(cfg, "inference", "scan_topic", default="/scan_slam_ai")
     infer_odom_topic = get_config_value(cfg, "inference", "odom_topic", default="/odom")
 
     # UWAGA: mapujemy nazwy z YAML -> nazwy parametrów w infer_node.py
     infer_pose_topic = get_config_value(cfg, "inference", "output_pose_topic", default="/pose_ai")
     infer_odom_ai_topic = get_config_value(cfg, "inference", "output_odom_topic", default="/odom_ai")
     infer_tf_parent = get_config_value(cfg, "inference", "tf_parent_frame", default="odom_ai")
-    infer_tf_child  = get_config_value(cfg, "inference", "tf_child_frame", default="base_link")
+    infer_tf_child  = get_config_value(cfg, "inference", "tf_child_frame", default="base_link_ai")
 
     # === ODOMETRY ===
     rw_sigma_xy = float(get_config_value(cfg, "odometry", "rw_sigma_xy", default=0.005))
@@ -189,6 +226,10 @@ def launch_setup(context, *args, **kwargs):
     robak_max_samples = int(robak_cfg.get("max_samples", dataset_max_samples))
     # Obsługa obu nazw kluczy (stare: offset_steps/max_delta_*, nowe: offsets/max_pair_*)
     robak_offsets = list(robak_cfg.get("offsets", robak_cfg.get("offset_steps", [1, 2, 3, 4, 5, 8, 10])))
+    robak_min_pair_dist = float(robak_cfg.get("min_pair_dist", 0.0))
+    robak_min_pair_dyaw = float(robak_cfg.get("min_pair_dyaw", 0.0))
+    robak_min_pair_dt_sec = float(robak_cfg.get("min_pair_dt_sec", 0.0))
+    robak_pair_filter_mode = str(robak_cfg.get("pair_filter_mode", "any"))
     robak_max_pair_dist = float(robak_cfg.get("max_pair_dist", robak_cfg.get("max_delta_dist", 0.5)))
     robak_max_pair_dyaw = float(robak_cfg.get("max_pair_dyaw", robak_cfg.get("max_delta_yaw", math.pi)))
     robak_label_frame = str(robak_cfg.get("label_frame", "local"))
@@ -203,6 +244,8 @@ def launch_setup(context, *args, **kwargs):
     robak_infer_odom_sync_tolerance = float(robak_cfg.get("infer_odom_sync_tolerance_sec", 0.08))
     robak_infer_odom_delta_xy_alpha = float(robak_cfg.get("infer_odom_delta_xy_alpha", 0.35))
     robak_infer_odom_delta_yaw_alpha = float(robak_cfg.get("infer_odom_delta_yaw_alpha", 0.45))
+    robak_infer_odom_pose_xy_alpha = float(robak_cfg.get("infer_odom_pose_xy_alpha", 0.0))
+    robak_infer_odom_pose_xy_gain = float(robak_cfg.get("infer_odom_pose_xy_gain", 0.0))
     robak_lr = float(robak_cfg.get("lr", learning_rate))
     robak_epochs = int(robak_cfg.get("max_epochs", max_epochs))
     robak_patience = int(robak_cfg.get("patience", patience))
@@ -222,6 +265,11 @@ def launch_setup(context, *args, **kwargs):
     rywak_interpolate_odom = parse_bool(rywak_cfg.get("interpolate_odom", False), default=False)
     rywak_sync_pair_gap = float(rywak_cfg.get("sync_pair_gap_sec", 0.2))
     rywak_delta_scan_clip = float(rywak_cfg.get("delta_scan_clip", 2.0))
+    rywak_min_sample_dist = float(rywak_cfg.get("min_sample_dist", 0.0))
+    rywak_min_sample_dyaw = float(rywak_cfg.get("min_sample_dyaw", 0.0))
+    rywak_min_sample_dt_sec = float(rywak_cfg.get("min_sample_dt_sec", 0.0))
+    rywak_min_delta_scan_rms = float(rywak_cfg.get("min_delta_scan_rms", 0.0))
+    rywak_sample_filter_mode = str(rywak_cfg.get("sample_filter_mode", "any"))
     rywak_hidden_dims = list(rywak_cfg.get("hidden_dims", [192, 96, 48]))
     rywak_dropout = float(rywak_cfg.get("dropout", 0.1))
     rywak_weight_decay = float(rywak_cfg.get("weight_decay", 1e-4))
@@ -238,6 +286,8 @@ def launch_setup(context, *args, **kwargs):
     rywak_fuse_odom_w_gain = float(rywak_cfg.get("fuse_odom_w_gain", 0.35))
     rywak_vel_ema_alpha = float(rywak_cfg.get("vel_ema_alpha", 0.60))
     rywak_anchor_yaw_to_odom = float(rywak_cfg.get("anchor_yaw_to_odom", 0.35))
+    rywak_anchor_xy_to_odom = float(rywak_cfg.get("anchor_xy_to_odom", 0.0))
+    rywak_anchor_xy_to_odom_gain = float(rywak_cfg.get("anchor_xy_to_odom_gain", 0.0))
     rywak_heading_for_xy_odom_weight = float(rywak_cfg.get("heading_for_xy_odom_weight", 0.60))
     rywak_xy_step_odom_weight = float(rywak_cfg.get("xy_step_odom_weight", 0.35))
     rywak_xy_step_odom_gain = float(rywak_cfg.get("xy_step_odom_gain", 0.45))
@@ -296,11 +346,29 @@ def launch_setup(context, *args, **kwargs):
     if world_path_cfg:
         world_path = world_path_cfg if os.path.isabs(world_path_cfg) else os.path.join(gazebo_share, world_path_cfg)
     else:
-        # TU: używamy world_sdf_arg (launch-arg > config > default)
-        if os.path.isabs(world_sdf_arg):
-            world_path = world_sdf_arg
+        # Priorytet: launch-arg/config simulation.world_sdf -> auto wybór wg fazy.
+        if world_sdf_arg and world_sdf_arg != "__AUTO__":
+            selected_world_sdf = world_sdf_arg
         else:
-            world_path = os.path.join(gazebo_share, "worlds", world_sdf_arg)
+            if phase in ("train", "dataset"):
+                selected_world_sdf = train_world_sdf
+            elif phase == "test":
+                selected_world_sdf = test_world_sdf
+            else:
+                # Launch uruchamia jeden świat na cały przebieg; dla full preferuj test_world
+                # aby ewaluacja była zgodna z mapą referencyjną testu.
+                if train_world_sdf != test_world_sdf:
+                    print(
+                        "[WARN] phase=full uses a single world for all steps; "
+                        f"selecting test_world='{test_world_sdf}' (train_world='{train_world_sdf}')."
+                    )
+                selected_world_sdf = test_world_sdf
+
+        if os.path.isabs(selected_world_sdf):
+            world_path = selected_world_sdf
+        else:
+            world_path = os.path.join(gazebo_share, "worlds", selected_world_sdf)
+    world_name = extract_world_name(world_path)
 
     bridge_cfg = os.path.join(gazebo_share, "config", "bridge.yaml")
     model_sdf = os.path.join(desc_share, "models", "diffbot.sdf")
@@ -314,6 +382,10 @@ def launch_setup(context, *args, **kwargs):
     eval_sync_tolerance = float(get_config_value(cfg, "evaluation", "sync_tolerance_sec", default=0.15))
     eval_maps_rotate_180 = parse_bool(get_config_value(cfg, "evaluation", "maps_rotate_180", default=True), default=True)
     eval_maps_max_cols = int(get_config_value(cfg, "evaluation", "maps_max_cols", default=3))
+    eval_points_min_translation = float(get_config_value(cfg, "evaluation", "points_min_translation", default=0.0))
+    eval_points_min_rotation = float(get_config_value(cfg, "evaluation", "points_min_rotation", default=0.0))
+    eval_points_min_time_gap_sec = float(get_config_value(cfg, "evaluation", "points_min_time_gap_sec", default=0.0))
+    eval_points_filter_mode = str(get_config_value(cfg, "evaluation", "points_filter_mode", default="any"))
     
     gz_sim_launch_py = os.path.join(ros_gz_sim_share, "launch", "gz_sim.launch.py")
 
@@ -346,13 +418,16 @@ def launch_setup(context, *args, **kwargs):
     tor6_rywak_enabled = bool(tracks_cfg.get("tor6_rywak", False))
 
     # fazy (zakładam, że zmienną `phase` już wcześniej wyliczysz z get_param)
+    do_dataset_phase = is_ai_mode and (phase in ("full", "train", "dataset"))
     do_train_phase = is_ai_mode and (phase in ("full", "train"))
     do_test_phase  = is_ai_mode and (phase in ("full", "test"))
     do_eval_phase  = (phase in ("full", "test"))
     do_train_only = is_ai_mode and (phase == "train")
     # Robak / Rywak: osobne fazy train/test
+    robak_dataset_enabled = tor5_robak_enabled and do_dataset_phase
     robak_train_enabled = tor5_robak_enabled and do_train_phase
     robak_test_enabled  = tor5_robak_enabled and do_test_phase
+    rywak_dataset_enabled = tor6_rywak_enabled and do_dataset_phase
     rywak_train_enabled = tor6_rywak_enabled and do_train_phase
     rywak_test_enabled  = tor6_rywak_enabled and do_test_phase
     # tracki tylko w test/full (w train oszczędzamy CPU)
@@ -383,6 +458,16 @@ def launch_setup(context, *args, **kwargs):
         parameters=[{"config_file": bridge_cfg}],
         output="screen",
         ros_arguments=["--ros-args", "-p", "log_level:=warn"],
+    )
+    tf_world_gz_topic = f"/world/{world_name}/dynamic_pose/info"
+    bridge_tf_world = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        arguments=[f"{tf_world_gz_topic}@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V"],
+        remappings=[(tf_world_gz_topic, gt_tf_world_topic)],
+        output="screen",
+        ros_arguments=["--ros-args", "-p", "log_level:=warn"],
+        condition=IfCondition(str(gt_use_tf_world).lower()),
     )
 
     spawn = Node(
@@ -505,7 +590,21 @@ def launch_setup(context, *args, **kwargs):
     gt_pose = Node(
         package="ai_slam_bringup",
         executable="gt_pose_publisher",
-        parameters=[{"use_sim_time": True}],
+        parameters=[{
+            "use_sim_time": True,
+            "in_topic": odom_in_topic,
+            "out_topic": dataset_gt_topic,
+            "frame_id": odom_frame_id,
+            "use_tf_world": gt_use_tf_world,
+            "tf_world_topic": gt_tf_world_topic,
+            "tf_world_timeout_sec": gt_tf_world_timeout,
+            "model_name_hint": gt_model_name_hint,
+            "base_link_hint": gt_base_link_hint,
+            "world_frame_hint": gt_world_frame_hint,
+            "heuristic_max_score": gt_heuristic_max_score,
+            "heuristic_max_step_m": gt_heuristic_max_step,
+            "debug_every_n": gt_debug_every_n,
+        }],
         output="screen",
     )
 
@@ -719,7 +818,7 @@ def launch_setup(context, *args, **kwargs):
             "gt_topic": dataset_gt_topic,
         }],
         output="screen",
-        condition=IfCondition(str(do_train_phase).lower()),
+        condition=IfCondition(str(do_dataset_phase).lower()),
     )
 
     trainer = Node(
@@ -778,6 +877,10 @@ def launch_setup(context, *args, **kwargs):
             "gt_topic": dataset_gt_topic,
             "dataset_name": robak_dataset_name,
             "offsets": robak_offsets,
+            "min_pair_dist": robak_min_pair_dist,
+            "min_pair_dyaw": robak_min_pair_dyaw,
+            "min_pair_dt_sec": robak_min_pair_dt_sec,
+            "pair_filter_mode": robak_pair_filter_mode,
             "max_pair_dist": robak_max_pair_dist,
             "max_pair_dyaw": robak_max_pair_dyaw,
             "label_frame": robak_label_frame,
@@ -788,7 +891,7 @@ def launch_setup(context, *args, **kwargs):
             "write_experiment_metadata": False,
         }],
         output="screen",
-        condition=IfCondition(str(robak_train_enabled).lower()),
+        condition=IfCondition(str(robak_dataset_enabled).lower()),
     )
 
     trainer_robak = Node(
@@ -825,7 +928,7 @@ def launch_setup(context, *args, **kwargs):
             "out_dir": out_dir,
             "experiment_id": experiment_id,
             "model_name": robak_model_name,
-            "scan_topic": infer_scan_topic,
+            "scan_topic": "/scan_slam_robak",
             "pose_topic": robak_pose_topic,
             "init_from": "gt",
             "gt_topic": dataset_gt_topic,
@@ -837,6 +940,8 @@ def launch_setup(context, *args, **kwargs):
             "odom_sync_tolerance_sec": robak_infer_odom_sync_tolerance,
             "odom_delta_xy_alpha": robak_infer_odom_delta_xy_alpha,
             "odom_delta_yaw_alpha": robak_infer_odom_delta_yaw_alpha,
+            "odom_pose_xy_alpha": robak_infer_odom_pose_xy_alpha,
+            "odom_pose_xy_gain": robak_infer_odom_pose_xy_gain,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -860,11 +965,16 @@ def launch_setup(context, *args, **kwargs):
             "interpolate_odom": rywak_interpolate_odom,
             "sync_pair_gap_sec": rywak_sync_pair_gap,
             "delta_scan_clip": rywak_delta_scan_clip,
+            "min_sample_dist": rywak_min_sample_dist,
+            "min_sample_dyaw": rywak_min_sample_dyaw,
+            "min_sample_dt_sec": rywak_min_sample_dt_sec,
+            "min_delta_scan_rms": rywak_min_delta_scan_rms,
+            "sample_filter_mode": rywak_sample_filter_mode,
             "dataset_name": rywak_dataset_name,
             "write_experiment_metadata": False,
         }],
         output="screen",
-        condition=IfCondition(str(rywak_train_enabled).lower()),
+        condition=IfCondition(str(rywak_dataset_enabled).lower()),
     )
 
     trainer_rywak = Node(
@@ -909,7 +1019,7 @@ def launch_setup(context, *args, **kwargs):
             "out_dir": out_dir,
             "experiment_id": experiment_id,
             "model_name": rywak_model_name,
-            "scan_topic": infer_scan_topic,
+            "scan_topic": "/scan_slam_rywak",
             "pose_topic": rywak_pose_topic,
             "odom_topic": rywak_odom_label_topic,
             "init_from_odom_topic": odom_in_topic,
@@ -925,6 +1035,8 @@ def launch_setup(context, *args, **kwargs):
             "fuse_odom_w_gain": rywak_fuse_odom_w_gain,
             "vel_ema_alpha": rywak_vel_ema_alpha,
             "anchor_yaw_to_odom": rywak_anchor_yaw_to_odom,
+            "anchor_xy_to_odom": rywak_anchor_xy_to_odom,
+            "anchor_xy_to_odom_gain": rywak_anchor_xy_to_odom_gain,
             "heading_for_xy_odom_weight": rywak_heading_for_xy_odom_weight,
             "xy_step_odom_weight": rywak_xy_step_odom_weight,
             "xy_step_odom_gain": rywak_xy_step_odom_gain,
@@ -944,10 +1056,15 @@ def launch_setup(context, *args, **kwargs):
             "out_dir": out_dir,
             "experiment_id": experiment_id,
             "duration_sec": eval_duration_sec,
+            "config_snapshot_path": resolved_config_path,
             "reference_map_yaml": reference_map_yaml,
             "sync_tolerance_sec": eval_sync_tolerance,
             "maps_rotate_180": eval_maps_rotate_180,
             "maps_max_cols": eval_maps_max_cols,
+            "points_min_translation": eval_points_min_translation,
+            "points_min_rotation": eval_points_min_rotation,
+            "points_min_time_gap_sec": eval_points_min_time_gap_sec,
+            "points_filter_mode": eval_points_filter_mode,
             "pose_topic_ai": infer_pose_topic,
             "pose_topic_scanmatch": "/pose_scanmatch",
             "pose_topic_bruteforce": "/pose_bruteforce",
@@ -1016,6 +1133,43 @@ def launch_setup(context, *args, **kwargs):
                 )
             )
 
+    dataset_targets = []
+    if do_dataset_phase:
+        dataset_targets.append(dataset_rec)
+    if robak_dataset_enabled:
+        dataset_targets.append(dataset_rec_robak)
+    if rywak_dataset_enabled:
+        dataset_targets.append(dataset_rec_rywak)
+
+    _dataset_state = {"done": 0, "total": len(dataset_targets)}
+
+    def _on_dataset_exit(context, *args, **kwargs):
+        _dataset_state["done"] += 1
+        done = _dataset_state["done"]
+        total = _dataset_state["total"]
+
+        if done >= total:
+            return [
+                LogInfo(msg=f"[AUTO] Wszystkie datasety zapisane ({done}/{total}). Zamykanie symulacji..."),
+                EmitEvent(event=Shutdown())
+            ]
+        return [
+            LogInfo(msg=f"[AUTO] Dataset recorder zakończył pracę ({done}/{total}). Czekam na pozostałe...")
+        ]
+
+    auto_shutdown_dataset_handlers = []
+    if phase == "dataset" and _dataset_state["total"] > 0:
+        for target in dataset_targets:
+            auto_shutdown_dataset_handlers.append(
+                RegisterEventHandler(
+                    event_handler=OnProcessExit(
+                        target_action=target,
+                        on_exit=[OpaqueFunction(function=_on_dataset_exit)]
+                    ),
+                    condition=IfCondition(str(phase == "dataset").lower()),
+                )
+            )
+
     auto_shutdown_eval = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=evaluator,
@@ -1031,7 +1185,7 @@ def launch_setup(context, *args, **kwargs):
         gz_launch_headless,
         gz_launch_gui,
 
-        TimerAction(period=bridge_delay, actions=[bridge]),
+        TimerAction(period=bridge_delay, actions=[bridge, bridge_tf_world]),
         TimerAction(period=spawn_delay, actions=[spawn]),
 
         robot_state_pub,
@@ -1084,6 +1238,7 @@ def launch_setup(context, *args, **kwargs):
 
         evaluator,
 
+        *auto_shutdown_dataset_handlers,
         *auto_shutdown_train_handlers,
         auto_shutdown_eval,
     ]
@@ -1096,7 +1251,7 @@ def generate_launch_description():
             description="Config file name (in config/) or full path"
         ),
         DeclareLaunchArgument("mode", default_value="__USE_CONFIG__", description="baseline|ai"),
-        DeclareLaunchArgument("phase", default_value="__USE_CONFIG__", description="full|train|test"),
+        DeclareLaunchArgument("phase", default_value="__USE_CONFIG__", description="full|train|test|dataset"),
         DeclareLaunchArgument("world_sdf", default_value="__USE_CONFIG__", description="Gazebo world SDF (filename in worlds/ or absolute path)"),
         DeclareLaunchArgument("seed", default_value="__USE_CONFIG__", description="Random seed"),
         DeclareLaunchArgument("eval_duration_sec", default_value="__USE_CONFIG__", description="Evaluation duration"),

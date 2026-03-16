@@ -26,6 +26,17 @@ dataset:
   odom_topic: "/odom"
   gt_topic: "/ground_truth_pose"
 
+ground_truth:
+  use_tf_world: true
+  tf_world_topic: "/tf_world"
+  tf_world_timeout_sec: 0.5
+  model_name_hint: "diffbot"
+  base_link_hint: "base_link"
+  world_frame_hint: "world"
+  heuristic_max_score: 12.0
+  heuristic_max_step_m: 0.8
+  debug_every_n: 1000
+
 training:
   max_epochs: 50                # Mniej epok
   patience: 10                  # Szybszy early stopping
@@ -44,6 +55,20 @@ evaluation:
   save_trajectory_plot: true
   save_error_plot: true
   save_map_comparison: true
+  points_min_translation: 0.04
+  points_min_rotation: 0.08
+  points_filter_mode: "any"
+
+robak:
+  min_pair_dist: 0.03
+  min_pair_dyaw: 0.05
+  pair_filter_mode: "any"
+
+rywak:
+  min_sample_dist: 0.03
+  min_sample_dyaw: 0.04
+  min_delta_scan_rms: 0.04
+  sample_filter_mode: "any"
 
 odometry:
   rw_sigma_xy: 0.005

@@ -1,13 +1,18 @@
 #!/bin/bash
-export PYTHONPATH=$PYTHONPATH:$HOME/SLAM_AI/.venv/lib/python3.12/site-packages
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_SITE="$ROOT_DIR/.venv/lib/python3.12/site-packages"
+if [[ -d "$VENV_SITE" ]]; then
+    export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$VENV_SITE"
+fi
 # Run SLAM AI experiment with filtered output (suppresses TF_OLD_DATA spam)
 # Usage:
 #   ./run_experiment.sh                    # Default config
 #   ./run_experiment.sh fast               # Fast test config
 #   ./run_experiment.sh full               # Full experiment config
+#   ./run_experiment.sh dataset            # Tylko zbieranie datasetu
 #   ./run_experiment.sh config:=my.yaml    # Custom config
 
-cd "$(dirname "$0")/.."
+cd "$ROOT_DIR"
 
 # Source ROS2
 source /opt/ros/jazzy/setup.bash
@@ -26,6 +31,10 @@ case "$1" in
         ;;
     train)
         LAUNCH_ARGS+=("config:=experiment_config.yaml" "phase:=train")
+        shift
+        ;;
+    dataset)
+        LAUNCH_ARGS+=("config:=experiment_config.yaml" "phase:=dataset")
         shift
         ;;
     test)

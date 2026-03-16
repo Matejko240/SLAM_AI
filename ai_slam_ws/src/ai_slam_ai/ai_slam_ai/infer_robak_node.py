@@ -99,7 +99,7 @@ class InferRobakNode(Node):
         self.declare_parameter("model_name", "model_robak.pt")
         self.declare_parameter("write_experiment_metadata", False)
 
-        self.declare_parameter("scan_topic", "/scan_slam")
+        self.declare_parameter("scan_topic", "/scan_slam_robak")
         self.declare_parameter("pose_topic", "/pose_robak")
         self.declare_parameter("tf_parent", "odom_robak")
         self.declare_parameter("tf_child", "base_link_robak")
@@ -116,6 +116,8 @@ class InferRobakNode(Node):
         self.declare_parameter("odom_sync_tolerance_sec", 0.08)
         self.declare_parameter("odom_delta_xy_alpha", 0.35)
         self.declare_parameter("odom_delta_yaw_alpha", 0.45)
+        self.declare_parameter("odom_pose_xy_alpha", 0.0)
+        self.declare_parameter("odom_pose_xy_gain", 0.0)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -144,6 +146,8 @@ class InferRobakNode(Node):
         self.odom_sync_tolerance_sec = float(self.get_parameter("odom_sync_tolerance_sec").value)
         self.odom_delta_xy_alpha = float(self.get_parameter("odom_delta_xy_alpha").value)
         self.odom_delta_yaw_alpha = float(self.get_parameter("odom_delta_yaw_alpha").value)
+        self.odom_pose_xy_alpha = float(self.get_parameter("odom_pose_xy_alpha").value)
+        self.odom_pose_xy_gain = float(self.get_parameter("odom_pose_xy_gain").value)
 
         self.prev_scan = None
         self.prev_stamp = None
@@ -186,7 +190,8 @@ class InferRobakNode(Node):
             f"[Robak] infer stabilization: max_step_trans={self.max_step_trans}, "
             f"max_step_yaw={self.max_step_yaw}, ema={self.delta_ema_alpha}, "
             f"odom_heading_alpha={self.odom_heading_alpha}, odom_tol={self.odom_sync_tolerance_sec}, "
-            f"odom_delta_xy_alpha={self.odom_delta_xy_alpha}, odom_delta_yaw_alpha={self.odom_delta_yaw_alpha}"
+            f"odom_delta_xy_alpha={self.odom_delta_xy_alpha}, odom_delta_yaw_alpha={self.odom_delta_yaw_alpha}, "
+            f"odom_pose_xy_alpha={self.odom_pose_xy_alpha}, odom_pose_xy_gain={self.odom_pose_xy_gain}"
         )
 
     def on_gt(self, msg: PoseStamped):
@@ -344,6 +349,16 @@ class InferRobakNode(Node):
 
         if odom_th is not None and self.odom_heading_alpha > 0.0:
             self.th = _interp_angle(self.th, odom_th, min(max(self.odom_heading_alpha, 0.0), 1.0))
+
+        if odom_xyth is not None and (self.odom_pose_xy_alpha > 0.0 or self.odom_pose_xy_gain > 0.0):
+            ox, oy, _ = odom_xyth
+            err_xy = math.hypot(self.x - float(ox), self.y - float(oy))
+            norm = self.max_step_trans if self.max_step_trans > 1e-3 else 0.10
+            w_base = min(max(self.odom_pose_xy_alpha, 0.0), 1.0)
+            w_gain = max(0.0, self.odom_pose_xy_gain)
+            w_xy = min(max(w_base + w_gain * (err_xy / norm), 0.0), 1.0)
+            self.x = (1.0 - w_xy) * self.x + w_xy * float(ox)
+            self.y = (1.0 - w_xy) * self.y + w_xy * float(oy)
 
         ps = PoseStamped()
         ps.header.stamp = msg.header.stamp

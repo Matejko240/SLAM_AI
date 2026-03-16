@@ -1,8 +1,10 @@
 import json
 import math
 import os
+import shutil
 import sys
 import time
+from dataclasses import dataclass
 import numpy as np
 
 import rclpy
@@ -26,6 +28,62 @@ import matplotlib.pyplot as plt
 
 def wrap(a):
     return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def parse_filter_mode(value: str, default: str = "any") -> str:
+    mode = str(value).strip().lower()
+    if mode in {"all", "and"}:
+        return "all"
+    if mode in {"any", "or"}:
+        return "any"
+    return default
+
+
+@dataclass(frozen=True)
+class PoseDelta:
+    dx: float
+    dy: float
+    dtheta: float
+    distance: float
+
+
+def pose_delta(prev_xyth, curr_xyth) -> PoseDelta:
+    dx = float(curr_xyth[0]) - float(prev_xyth[0])
+    dy = float(curr_xyth[1]) - float(prev_xyth[1])
+    dtheta = wrap(float(curr_xyth[2]) - float(prev_xyth[2]))
+    return PoseDelta(
+        dx=dx,
+        dy=dy,
+        dtheta=dtheta,
+        distance=float(math.hypot(dx, dy)),
+    )
+
+
+def passes_motion_filter(
+    prev_xyth,
+    curr_xyth,
+    *,
+    dt_sec: float | None = None,
+    min_translation: float = 0.0,
+    min_rotation: float = 0.0,
+    min_time_gap_sec: float = 0.0,
+    mode: str = "any",
+) -> tuple[bool, PoseDelta]:
+    delta = pose_delta(prev_xyth, curr_xyth)
+    checks = []
+
+    if min_translation > 0.0:
+        checks.append(delta.distance >= float(min_translation))
+    if min_rotation > 0.0:
+        checks.append(abs(delta.dtheta) >= float(min_rotation))
+    if min_time_gap_sec > 0.0:
+        checks.append(dt_sec is not None and float(dt_sec) >= float(min_time_gap_sec))
+
+    if not checks:
+        return True, delta
+
+    filt_mode = parse_filter_mode(mode)
+    return (all(checks) if filt_mode == "all" else any(checks)), delta
 
 
 def yaw_from_quat(q):
@@ -214,6 +272,7 @@ class EvalNode(Node):
         self.declare_parameter("experiment_id", "")
         self.declare_parameter("duration_sec", 120.0)
         self.declare_parameter("reference_map_yaml", "")
+        self.declare_parameter("config_snapshot_path", "")
         # --- tematy (żeby launch mógł przekazać inne nazwy bez edycji kodu)
         self.declare_parameter("gt_topic", "/ground_truth_pose")
         self.declare_parameter("odom_topic", "/odom")
@@ -225,6 +284,10 @@ class EvalNode(Node):
         self.declare_parameter("scan_topic_points", "/scan_slam")
         self.declare_parameter("points_max_range", 8.0)
         self.declare_parameter("points_beam_step", 6)
+        self.declare_parameter("points_min_translation", 0.0)
+        self.declare_parameter("points_min_rotation", 0.0)
+        self.declare_parameter("points_min_time_gap_sec", 0.0)
+        self.declare_parameter("points_filter_mode", "any")
         self.declare_parameter("sync_tolerance_sec", 0.15)
         self.declare_parameter("maps_rotate_180", True)
         self.declare_parameter("maps_max_cols", 3)
@@ -241,6 +304,8 @@ class EvalNode(Node):
         experiment_id = str(self.get_parameter("experiment_id").value) or None
         self.duration_sec = float(self.get_parameter("duration_sec").value)
         self.ref_yaml = str(self.get_parameter("reference_map_yaml").value)
+        self.config_snapshot_path = str(self.get_parameter("config_snapshot_path").value)
+        self.config_snapshot_out = ""
 
         # Inicjalizacja loggera eksperymentu (używa istniejącego podfolderu)
         self.exp_logger = None
@@ -254,6 +319,13 @@ class EvalNode(Node):
         self.get_logger().info(f"Output directory: {self.out_dir}")
         if self.exp_logger:
             self.get_logger().info(f"Experiment ID: {self.exp_logger.experiment_id}")
+        if self.config_snapshot_path and os.path.exists(self.config_snapshot_path):
+            try:
+                self.config_snapshot_out = os.path.join(self.out_dir, "config_snapshot.yaml")
+                shutil.copyfile(self.config_snapshot_path, self.config_snapshot_out)
+            except Exception as exc:
+                self.config_snapshot_out = ""
+                self.get_logger().warn(f"Could not copy config snapshot: {exc}")
 
         self.gt = None
         self.odom = None
@@ -312,6 +384,10 @@ class EvalNode(Node):
         self.scan_topic_points = str(self.get_parameter("scan_topic_points").value)
         self.points_max_range = float(self.get_parameter("points_max_range").value)
         self.points_beam_step = int(self.get_parameter("points_beam_step").value)
+        self.points_min_translation = float(self.get_parameter("points_min_translation").value)
+        self.points_min_rotation = float(self.get_parameter("points_min_rotation").value)
+        self.points_min_time_gap_sec = float(self.get_parameter("points_min_time_gap_sec").value)
+        self.points_filter_mode = parse_filter_mode(str(self.get_parameter("points_filter_mode").value))
         self.sync_tolerance_sec = float(self.get_parameter("sync_tolerance_sec").value)
         self.maps_rotate_180 = bool(self.get_parameter("maps_rotate_180").value)
         self.maps_max_cols = max(1, int(self.get_parameter("maps_max_cols").value))
@@ -368,14 +444,38 @@ class EvalNode(Node):
         self.ref_occ = None
         self.points_map_robak = None
         self.points_map_rywak = None
+        self.points_stamp_state = {
+            "robak": {
+                "last_pose": None,
+                "last_time": None,
+                "stamped_scans": 0,
+                "skipped_scans": 0,
+                "stamped_points": 0,
+            },
+            "rywak": {
+                "last_pose": None,
+                "last_time": None,
+                "stamped_scans": 0,
+                "skipped_scans": 0,
+                "stamped_points": 0,
+            },
+        }
 
+        if self.ref_yaml:
+            self.ref_info = self._load_ref_info(self.ref_yaml)
+            self.ref_occ = self._load_ref_occ(self.ref_yaml, self.ref_info)
         if self.ref_occ is not None:
             h, w = self.ref_occ.shape
             self.points_map_robak = np.zeros((h, w), dtype=np.uint8)
             self.points_map_rywak = np.zeros((h, w), dtype=np.uint8)
-        if self.ref_yaml:
-            self.ref_info = self._load_ref_info(self.ref_yaml)
-            self.ref_occ = self._load_ref_occ(self.ref_yaml, self.ref_info)
+
+        self.get_logger().info(
+            "[Eval] points filter: "
+            f"min_translation={self.points_min_translation}, "
+            f"min_rotation={self.points_min_rotation:.3f}, "
+            f"min_dt={self.points_min_time_gap_sec:.3f}, "
+            f"mode={self.points_filter_mode}"
+        )
         
         # Logowanie startu ewaluacji
         if self.exp_logger is not None:
@@ -441,11 +541,34 @@ class EvalNode(Node):
         if self.map_ai is not None and not hasattr(self, '_map_ai_logged'):
             self._map_ai_logged = True
             self.get_logger().info(f"Received /map_ai: {msg.info.width}x{msg.info.height}, res={msg.info.resolution}")
-    def _stamp_points_to_ref_grid(self, out_grid: np.ndarray, pose_msg: PoseStamped, scan_msg: LaserScan):
+    def _stamp_points_to_ref_grid(
+        self,
+        out_grid: np.ndarray,
+        pose_msg: PoseStamped,
+        scan_msg: LaserScan,
+        state_key: str,
+    ):
         if out_grid is None or self.ref_info is None:
             return
 
         x, y, th = xytheta_from_pose(pose_msg)
+        t_scan = self._stamp_to_sec(scan_msg.header.stamp)
+        state = self.points_stamp_state.get(state_key)
+        curr_pose = (x, y, th)
+
+        if state is not None and state["last_pose"] is not None:
+            keep_scan, _delta = passes_motion_filter(
+                state["last_pose"],
+                curr_pose,
+                dt_sec=None if state["last_time"] is None else max(0.0, float(t_scan - state["last_time"])),
+                min_translation=self.points_min_translation,
+                min_rotation=self.points_min_rotation,
+                min_time_gap_sec=self.points_min_time_gap_sec,
+                mode=self.points_filter_mode,
+            )
+            if not keep_scan:
+                state["skipped_scans"] += 1
+                return
 
         res = float(self.ref_info["resolution"])
         ox = float(self.ref_info["origin"][0])
@@ -457,6 +580,7 @@ class EvalNode(Node):
 
         a0 = float(scan_msg.angle_min)
         da = float(scan_msg.angle_increment)
+        stamped_points = 0
 
         for k in range(0, len(scan_msg.ranges), step):
             r = float(scan_msg.ranges[k])
@@ -474,7 +598,15 @@ class EvalNode(Node):
             j = int((px - ox) / res)
             i = int((py - oy) / res)
             if 0 <= i < h and 0 <= j < w:
+                if out_grid[i, j] == 0:
+                    stamped_points += 1
                 out_grid[i, j] = 1
+
+        if state is not None:
+            state["last_pose"] = curr_pose
+            state["last_time"] = t_scan
+            state["stamped_scans"] += 1
+            state["stamped_points"] += stamped_points
 
 
     def on_scan_points(self, msg: LaserScan):
@@ -483,10 +615,10 @@ class EvalNode(Node):
             return
 
         if self.pose_robak is not None and self.points_map_robak is not None:
-            self._stamp_points_to_ref_grid(self.points_map_robak, self.pose_robak, msg)
+            self._stamp_points_to_ref_grid(self.points_map_robak, self.pose_robak, msg, "robak")
 
         if self.pose_rywak is not None and self.points_map_rywak is not None:
-            self._stamp_points_to_ref_grid(self.points_map_rywak, self.pose_rywak, msg)
+            self._stamp_points_to_ref_grid(self.points_map_rywak, self.pose_rywak, msg, "rywak")
 
     def _stamp_to_sec(self, stamp) -> float:
         return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
@@ -792,12 +924,23 @@ class EvalNode(Node):
                 "rmse_xy_rywak": rmse_xy_rywak,
                 "rmse_theta_rywak": rmse_th_rywak,                
             },
+            "diagnostics": {
+                "point_map_filter": {
+                    key: {
+                        "stamped_scans": int(state["stamped_scans"]),
+                        "skipped_scans": int(state["skipped_scans"]),
+                        "stamped_points": int(state["stamped_points"]),
+                    }
+                    for key, state in self.points_stamp_state.items()
+                }
+            },
             "artifacts": {
                 "trajectory_png": traj_path,
                 "trajectory_data_npz": traj_data_path,
                 "errors_png": err_path,
                 "maps_png": maps_path,
                 "reference_map_yaml": self.ref_yaml,
+                "config_snapshot_yaml": self.config_snapshot_out,
                 "map_topic_baseline": "/map",
                 "map_topic_ai": "/map_ai",
                 "map_topic_robak": "/map_robak",
@@ -859,21 +1002,47 @@ class EvalNode(Node):
                 return np.zeros((0, 3), dtype=np.float32)
             return arr.reshape((-1, 3))
 
+        def _as_err_xy_array(samples):
+            arr = np.asarray(samples, dtype=np.float32)
+            if arr.size == 0:
+                return np.zeros((0, 2), dtype=np.float32)
+            return arr.reshape((-1, 2))
+
+        def _as_err_theta_array(samples):
+            arr = np.asarray(samples, dtype=np.float32)
+            if arr.size == 0:
+                return np.zeros((0,), dtype=np.float32)
+            return arr.reshape((-1,))
+
         np.savez_compressed(
             path,
             time_s=np.asarray(self.ts, dtype=np.float32),
             gt_xytheta=_as_xytheta_array(self.gt_xy),
             baseline_xytheta=_as_xytheta_array(self.odom_xy),
+            baseline_err_xy=_as_err_xy_array(self.err_xy),
+            baseline_err_theta=_as_err_theta_array(self.err_th),
             ai_time_s=np.asarray(self.ts_ai, dtype=np.float32),
             ai_xytheta=_as_xytheta_array(self.ai_xy),
+            ai_err_xy=_as_err_xy_array(self.err_xy_ai),
+            ai_err_theta=_as_err_theta_array(self.err_th_ai),
             scanmatch_time_s=np.asarray(self.ts_sm, dtype=np.float32),
             scanmatch_xytheta=_as_xytheta_array(self.sm_xy),
+            scanmatch_err_xy=_as_err_xy_array(self.err_xy_sm),
+            scanmatch_err_theta=_as_err_theta_array(self.err_th_sm),
             bruteforce_time_s=np.asarray(self.ts_bf, dtype=np.float32),
             bruteforce_xytheta=_as_xytheta_array(self.bf_xy),
+            bruteforce_err_xy=_as_err_xy_array(self.err_xy_bf),
+            bruteforce_err_theta=_as_err_theta_array(self.err_th_bf),
             robak_time_s=np.asarray(self.ts_robak, dtype=np.float32),
             robak_xytheta=_as_xytheta_array(self.robak_xy),
+            robak_err_xy=_as_err_xy_array(self.err_xy_robak),
+            robak_err_theta=_as_err_theta_array(self.err_th_robak),
             rywak_time_s=np.asarray(self.ts_rywak, dtype=np.float32),
             rywak_xytheta=_as_xytheta_array(self.rywak_xy),
+            rywak_err_xy=_as_err_xy_array(self.err_xy_rywak),
+            rywak_err_theta=_as_err_theta_array(self.err_th_rywak),
+            position_error_unit=np.asarray(["m"], dtype=object),
+            orientation_error_unit=np.asarray(["rad"], dtype=object),
         )
 
     def _reference_bounds_polygon(self):
@@ -916,15 +1085,43 @@ class EvalNode(Node):
         ymax = float(np.max(corners[:, 1]))
         return corners, xmin, ymin, xmax, ymax
 
+    def _reference_walls_world_points(self, max_points: int = 50000):
+        """Zwraca punkty zajętych komórek mapy referencyjnej w układzie world."""
+        if self.ref_info is None or self.ref_occ is None:
+            return None
+
+        occ = self.ref_occ.astype(np.bool_)
+        ii, jj = np.nonzero(occ)
+        if ii.size == 0:
+            return None
+
+        if ii.size > max_points:
+            step = int(math.ceil(float(ii.size) / float(max_points)))
+            ii = ii[::step]
+            jj = jj[::step]
+
+        res = float(self.ref_info["resolution"])
+        ox = float(self.ref_info["origin"][0])
+        oy = float(self.ref_info["origin"][1])
+        oyaw = float(self.ref_info["origin"][2]) if len(self.ref_info["origin"]) >= 3 else 0.0
+        c = math.cos(oyaw)
+        s = math.sin(oyaw)
+
+        x_local = (jj.astype(np.float32) + 0.5) * res
+        y_local = (ii.astype(np.float32) + 0.5) * res
+
+        x_world = ox + c * x_local - s * y_local
+        y_world = oy + s * x_local + c * y_local
+        return np.column_stack([x_world, y_world]).astype(np.float32)
+
     def _plot_trajectories(self, path):
         gt = np.asarray(self.gt_xy, dtype=np.float32)
         od = np.asarray(self.odom_xy, dtype=np.float32)
 
-        ref_poly, xmin, ymin, xmax, ymax = self._reference_bounds_polygon()
+        ref_poly, _, _, _, _ = self._reference_bounds_polygon()
+        ref_walls = self._reference_walls_world_points()
 
-        margin = 0.5
-
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        fig, ax1 = plt.subplots(1, 1, figsize=(9, 6))
         from matplotlib.patches import Polygon
         label_gt = "GT (trajektoria rzeczywista)"
         label_baseline = "baseline (SLAM)"
@@ -934,8 +1131,18 @@ class EvalNode(Node):
         label_scanmatch = "scanmatch"
         label_bruteforce = "bruteforce"
 
-        # Left: full view with all trajectories
-        ax1 = axes[0]
+        # Single view with all trajectories
+        if ref_walls is not None and ref_walls.size > 0:
+            ax1.scatter(
+                ref_walls[:, 0],
+                ref_walls[:, 1],
+                s=0.8,
+                c="0.75",
+                alpha=0.35,
+                marker="s",
+                linewidths=0,
+                label="ref walls",
+            )
         ax1.plot(gt[:, 0], gt[:, 1], color="tab:blue", label=label_gt, linewidth=1.8)
         ax1.plot(od[:, 0], od[:, 1], color="tab:orange", label=label_baseline, linewidth=1.0, alpha=0.7)
 
@@ -970,49 +1177,33 @@ class EvalNode(Node):
         ax1.add_patch(poly1)
 
         ax1.set_aspect("equal")
-        ax1.legend(loc="best")
+        ax1.legend(
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+        )
         ax1.set_xlabel("x [m]")
         ax1.set_ylabel("y [m]")
         ax1.set_title("Trajektorie (pełny widok)")
         ax1.grid(True, alpha=0.3)
 
-        # Right: zoom to reference map bounds
-        ax2 = axes[1]
-        ax2.plot(gt[:, 0], gt[:, 1], color="tab:blue", label=label_gt, linewidth=1.8)
-        ax2.plot(od[:, 0], od[:, 1], color="tab:orange", label=label_baseline, linewidth=1.0, alpha=0.7)
-
-        if len(self.ai_xy) > 0:
-            ai = np.asarray(self.ai_xy, dtype=np.float32)
-            ax2.plot(ai[:, 0], ai[:, 1], color="tab:green", label=label_ai, linewidth=1.5)
-
-        if len(self.robak_xy) > 0:
-            rb = np.asarray(self.robak_xy, dtype=np.float32)
-            ax2.plot(rb[:, 0], rb[:, 1], color="tab:red", label=label_robak, linewidth=1.0, alpha=0.8)
-
-        if len(self.rywak_xy) > 0:
-            ry = np.asarray(self.rywak_xy, dtype=np.float32)
-            ax2.plot(ry[:, 0], ry[:, 1], color="tab:purple", label=label_rywak, linewidth=1.0, alpha=0.8)
-
-        ax2.set_xlim(xmin - margin, xmax + margin)
-        ax2.set_ylim(ymin - margin, ymax + margin)
-        ax2.set_aspect("equal")
-        ax2.legend(loc="best")
-        ax2.set_xlabel("x [m]")
-        ax2.set_ylabel("y [m]")
-        ax2.set_title("Metody vs GT (widok wg mapy referencyjnej)")
-        ax2.grid(True, alpha=0.3)
-
-        poly2 = Polygon(ref_poly, fill=False, edgecolor="gray", linestyle="--", linewidth=2)
-        ax2.add_patch(poly2)
-
-        plt.tight_layout()
-        plt.savefig(path, dpi=150)
+        fig.tight_layout(rect=[0.0, 0.0, 0.80, 1.0])
+        fig.savefig(path, dpi=150)
         plt.close()
 
     def _plot_errors(self, path):
         t = np.asarray(self.ts, dtype=np.float32)
         err = np.asarray(self.err_xy, dtype=np.float32)
         eth = np.asarray(self.err_th, dtype=np.float32)
+
+        if t.size == 0 or err.size == 0 or eth.size == 0:
+            plt.figure()
+            plt.text(0.5, 0.5, "No error data available", ha="center", va="center")
+            plt.axis("off")
+            plt.tight_layout()
+            plt.savefig(path, dpi=150)
+            plt.close()
+            return
 
         plt.figure(figsize=(12, 5))
 
@@ -1071,7 +1262,7 @@ class EvalNode(Node):
         ref = self.ref_occ.astype(np.uint8)
         ref_name = "ref"
         if self.maps_rotate_180:
-            ref_name = "ref (rot180)"
+            ref_name = "ref"
         maps = [(ref_name, ref)]
 
         def _append_occ(name, msg):
@@ -1125,7 +1316,7 @@ class EvalNode(Node):
             axes_flat[j].axis("off")
 
         if self.maps_rotate_180:
-            fig.suptitle("Porownanie map (widok obrocony o 180 stopni)", fontsize=12)
+            fig.suptitle("Porownanie map", fontsize=12)
             fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
         else:
             fig.suptitle("Porownanie map", fontsize=12)

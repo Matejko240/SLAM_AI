@@ -45,6 +45,25 @@ cd ~/SLAM_AI
 ./scripts/run_all.sh
 ```
 
+## Dashboard
+
+Lokalny dashboard HTTP pozwala:
+- wybierać istniejące eksperymenty i datasety z `out/`
+- odpalać `run_all.sh`, `run_full_cycle.sh`, `run_experiment.sh`
+- trenować `AI`, `robak`, `rywak` na wybranym eksperymencie
+- generować wykres trajektorii i błędu z własnym zakresem czasu oraz osi
+- przeglądać artefakty i logi zadań
+- otwierać automatycznie generowany indeks funkcji
+
+Uruchomienie:
+
+```bash
+cd ~/SLAM_AI
+./scripts/run_dashboard.sh
+```
+
+Domyślny adres: `http://127.0.0.1:8765`
+
 ## Najważniejsze pliki
 
 - Konfiguracja eksperymentu: `ai_slam_ws/src/ai_slam_bringup/config/experiment_config.yaml`
@@ -63,6 +82,8 @@ Po zakończeniu eksperymentu katalog `out/exp_*` zawiera m.in.:
 - `scripts/run_all.sh` – pełny pipeline (build + train + test)
 - `scripts/run_full_cycle.sh` – train + test na istniejącym środowisku
 - `scripts/run_experiment.sh` – pojedyncze launchowanie (`fast`, `full`, `train`, `test`)
+- `scripts/run_dashboard.sh` – dashboard WWW nad eksperymentami, datasetami i wykresami
+- `scripts/generate_function_index.py` – generator `docs/function_index.{md,json}`
 - `scripts/cleanup.sh` – ubijanie zaległych procesów ROS/Gazebo
 - `scripts/generate_thesis_report.py` – wykresy i tabele do pracy (CSV/MD/LaTeX + PNG) z `results.json`
 

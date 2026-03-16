@@ -1,0 +1,3997 @@
+{
+  "generated_at_repo": "/home/matejko/SLAM_AI",
+  "count": 333,
+  "functions": [
+    {
+      "name": "seed_all",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 8,
+      "kind": "function",
+      "inputs": [
+        "seed: int"
+      ],
+      "returns": "brak",
+      "description": "Ustawia ziarno dla all. Korzysta m.in. z: seed, manual_seed, manual_seed_all."
+    },
+    {
+      "name": "ensure_dir",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 26,
+      "kind": "function",
+      "inputs": [
+        "path: str"
+      ],
+      "returns": "brak",
+      "description": "Zapewnia dir. Korzysta m.in. z: makedirs."
+    },
+    {
+      "name": "wrap",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 30,
+      "kind": "function",
+      "inputs": [
+        "a: float"
+      ],
+      "returns": "float",
+      "description": "Normalizuje wrap."
+    },
+    {
+      "name": "parse_filter_mode",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 34,
+      "kind": "function",
+      "inputs": [
+        "value: str",
+        "default: str = 'any'"
+      ],
+      "returns": "str",
+      "description": "Parsuje filter mode. Korzysta m.in. z: lower, strip, str."
+    },
+    {
+      "name": "pose_delta",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 51,
+      "kind": "function",
+      "inputs": [
+        "prev_xyth",
+        "curr_xyth"
+      ],
+      "returns": "PoseDelta",
+      "description": "Obsługuje delta. Korzysta m.in. z: wrap, PoseDelta, float."
+    },
+    {
+      "name": "scan_delta_rms",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 63,
+      "kind": "function",
+      "inputs": [
+        "scan_prev: np.ndarray",
+        "scan_curr: np.ndarray"
+      ],
+      "returns": "float",
+      "description": "Obsługuje delta rms. Korzysta m.in. z: float, asarray, sqrt."
+    },
+    {
+      "name": "passes_motion_filter",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 72,
+      "kind": "function",
+      "inputs": [
+        "prev_xyth",
+        "curr_xyth",
+        "dt_sec: float | None = None",
+        "min_translation: float = 0.0",
+        "min_rotation: float = 0.0",
+        "min_time_gap_sec: float = 0.0",
+        "min_scan_delta_rms: float = 0.0",
+        "scan_delta_rms_value: float | None = None",
+        "mode: str = 'any'"
+      ],
+      "returns": "tuple[bool, PoseDelta]",
+      "description": "Weryfikuje motion filter. Korzysta m.in. z: pose_delta, parse_filter_mode, append."
+    },
+    {
+      "name": "yaw_from_quat",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 106,
+      "kind": "function",
+      "inputs": [
+        "q"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from quat. Korzysta m.in. z: atan2."
+    },
+    {
+      "name": "quat_from_yaw",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 112,
+      "kind": "function",
+      "inputs": [
+        "yaw"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from yaw. Korzysta m.in. z: sin, cos."
+    },
+    {
+      "name": "xytheta_from_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 118,
+      "kind": "function",
+      "inputs": [
+        "odom_msg"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from odometrię. Korzysta m.in. z: float, yaw_from_quat."
+    },
+    {
+      "name": "xytheta_from_pose_stamped",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 125,
+      "kind": "function",
+      "inputs": [
+        "ps"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from pozę stamped. Korzysta m.in. z: float, yaw_from_quat."
+    },
+    {
+      "name": "Normalizer.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 133,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "mean: np.ndarray",
+        "std: np.ndarray"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: astype, maximum."
+    },
+    {
+      "name": "Normalizer.apply",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/common.py",
+      "line": 137,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "x: np.ndarray"
+      ],
+      "returns": "np.ndarray",
+      "description": "Obsługuje apply."
+    },
+    {
+      "name": "DatasetRecorder.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 18,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "DatasetRecorder.wait_for_topics",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 86,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Czeka na for topics. Korzysta m.in. z: info, now, time."
+    },
+    {
+      "name": "DatasetRecorder.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 103,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię."
+    },
+    {
+      "name": "DatasetRecorder.on_gt",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 107,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje ground truth."
+    },
+    {
+      "name": "DatasetRecorder.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 111,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: asarray, astype, xytheta_from_odom."
+    },
+    {
+      "name": "DatasetRecorder.check_done",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 147,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Sprawdza done. Korzysta m.in. z: save_and_exit, warn, now."
+    },
+    {
+      "name": "DatasetRecorder.save_and_exit",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 158,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Zapisuje and exit. Korzysta m.in. z: info, astype, asarray."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder.py",
+      "line": 225,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, DatasetRecorder, spin."
+    },
+    {
+      "name": "_stamp_to_sec",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 27,
+      "kind": "function",
+      "inputs": [
+        "stamp"
+      ],
+      "returns": "float",
+      "description": "Stempluje to sec. Korzysta m.in. z: float."
+    },
+    {
+      "name": "_resample_to_360",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 31,
+      "kind": "function",
+      "inputs": [
+        "ranges: np.ndarray"
+      ],
+      "returns": "np.ndarray",
+      "description": "Resample dowolnego N do 360 przez interpolację po kącie."
+    },
+    {
+      "name": "_sanitize_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 44,
+      "kind": "function",
+      "inputs": [
+        "msg: LaserScan"
+      ],
+      "returns": "np.ndarray",
+      "description": "Czyści skan. Korzysta m.in. z: asarray, astype, clip."
+    },
+    {
+      "name": "_augment_scan_pair",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 61,
+      "kind": "function",
+      "inputs": [
+        "scan_prev: np.ndarray",
+        "scan_curr: np.ndarray",
+        "rng: np.random.Generator",
+        "noise_std_scale: float",
+        "cut_fraction: float",
+        "cut_max_points: int",
+        "range_min: float = 0.08",
+        "range_max: float = 10.0"
+      ],
+      "returns": "brak",
+      "description": "Augmentacja inspirowana ALSAI: szum Gaussa + losowe maskowanie fragmentu skanu."
+    },
+    {
+      "name": "_delta_pose",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 98,
+      "kind": "function",
+      "inputs": [
+        "prev_xyth: Tuple[float, float, float]",
+        "curr_xyth: Tuple[float, float, float]",
+        "label_frame: str"
+      ],
+      "returns": "Tuple[float, float, float]",
+      "description": "Delta między dwoma pozami GT."
+    },
+    {
+      "name": "DatasetRecorderRobak.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 128,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "DatasetRecorderRobak.on_gt",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 242,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje ground truth. Korzysta m.in. z: _stamp_to_sec, append, xytheta_from_pose_stamped."
+    },
+    {
+      "name": "DatasetRecorderRobak._nearest_gt",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 247,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje ground truth. Korzysta m.in. z: min, popleft, abs."
+    },
+    {
+      "name": "DatasetRecorderRobak.wait_for_topics",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 260,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Czeka na for topics. Korzysta m.in. z: len, now, info."
+    },
+    {
+      "name": "DatasetRecorderRobak.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 273,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: _sanitize_scan, _stamp_to_sec, _nearest_gt."
+    },
+    {
+      "name": "DatasetRecorderRobak.check_done",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 348,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Sprawdza done. Korzysta m.in. z: save_and_exit, now, get_clock."
+    },
+    {
+      "name": "DatasetRecorderRobak.save_and_exit",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 355,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Zapisuje and exit. Korzysta m.in. z: astype, ensure_dir, info."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_robak.py",
+      "line": 424,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, DatasetRecorderRobak, spin."
+    },
+    {
+      "name": "_stamp_to_sec",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 26,
+      "kind": "function",
+      "inputs": [
+        "stamp"
+      ],
+      "returns": "float",
+      "description": "Stempluje to sec. Korzysta m.in. z: float."
+    },
+    {
+      "name": "_resample_to_360",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 30,
+      "kind": "function",
+      "inputs": [
+        "ranges: np.ndarray"
+      ],
+      "returns": "np.ndarray",
+      "description": "Przeskalowuje to 360. Korzysta m.in. z: int, linspace, astype."
+    },
+    {
+      "name": "_sanitize_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 41,
+      "kind": "function",
+      "inputs": [
+        "msg: LaserScan"
+      ],
+      "returns": "np.ndarray",
+      "description": "Czyści skan. Korzysta m.in. z: asarray, astype, clip."
+    },
+    {
+      "name": "_interp_angle",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 58,
+      "kind": "function",
+      "inputs": [
+        "th0: float",
+        "th1: float",
+        "alpha: float"
+      ],
+      "returns": "float",
+      "description": "Interpoluje angle. Korzysta m.in. z: wrap, float."
+    },
+    {
+      "name": "DatasetRecorderRywak.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 64,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "DatasetRecorderRywak.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 160,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: _stamp_to_sec, xytheta_from_odom, float."
+    },
+    {
+      "name": "DatasetRecorderRywak._nearest_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 168,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: min, popleft, abs."
+    },
+    {
+      "name": "DatasetRecorderRywak._interpolated_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 182,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: len, float, _interp_angle."
+    },
+    {
+      "name": "DatasetRecorderRywak._odom_at",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 220,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje at. Korzysta m.in. z: _nearest_odom, _interpolated_odom."
+    },
+    {
+      "name": "DatasetRecorderRywak.wait_for_topics",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 232,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Czeka na for topics. Korzysta m.in. z: len, now, info."
+    },
+    {
+      "name": "DatasetRecorderRywak.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 242,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: _sanitize_scan, _stamp_to_sec, _odom_at."
+    },
+    {
+      "name": "DatasetRecorderRywak.check_done",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 312,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Sprawdza done. Korzysta m.in. z: save_and_exit, now, get_clock."
+    },
+    {
+      "name": "DatasetRecorderRywak.save_and_exit",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 319,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Zapisuje and exit. Korzysta m.in. z: astype, ensure_dir, info."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/dataset_recorder_rywak.py",
+      "line": 389,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, DatasetRecorderRywak, spin."
+    },
+    {
+      "name": "get_system_info",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 21,
+      "kind": "function",
+      "inputs": [],
+      "returns": "Dict[str, Any]",
+      "description": "Pobiera informacje o systemie."
+    },
+    {
+      "name": "TimingInfo.start",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 62,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Rozpoczyna pomiar czasu tylko jeśli nie był już rozpoczęty."
+    },
+    {
+      "name": "TimingInfo.end",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 68,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Kończy pomiar czasu tylko jeśli nie był już zakończony."
+    },
+    {
+      "name": "TimingInfo.is_completed",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 75,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "bool",
+      "description": "Sprawdza czy pomiar został zakończony."
+    },
+    {
+      "name": "DatasetMetadata.set_parameters",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 89,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "duration_sec: float",
+        "max_samples: int",
+        "scan_topic: str",
+        "odom_topic: str",
+        "gt_topic: str"
+      ],
+      "returns": "brak",
+      "description": "Ustawia parameters."
+    },
+    {
+      "name": "DatasetMetadata.set_statistics",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 100,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "n_samples: int",
+        "scan_dim: int",
+        "actual_duration_sec: float",
+        "samples_per_second: float"
+      ],
+      "returns": "brak",
+      "description": "Ustawia statistics."
+    },
+    {
+      "name": "TrainingMetadata.set_parameters",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 121,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "max_epochs: int",
+        "patience: int",
+        "min_delta: float",
+        "lr: float",
+        "val_ratio: float",
+        "batch_size: int"
+      ],
+      "returns": "brak",
+      "description": "Ustawia parameters."
+    },
+    {
+      "name": "TrainingMetadata.set_dataset_info",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 133,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "n_total: int",
+        "n_train: int",
+        "n_val: int",
+        "input_dim: int",
+        "output_dim: int"
+      ],
+      "returns": "brak",
+      "description": "Ustawia dataset info."
+    },
+    {
+      "name": "TrainingMetadata.set_model_info",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 143,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "architecture: str",
+        "total_params: int",
+        "trainable_params: int"
+      ],
+      "returns": "brak",
+      "description": "Ustawia model info."
+    },
+    {
+      "name": "TrainingMetadata.set_training_results",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 150,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "epochs_run: int",
+        "best_epoch: int",
+        "best_val_loss: float",
+        "final_train_loss: float",
+        "early_stopped: bool"
+      ],
+      "returns": "brak",
+      "description": "Ustawia training results."
+    },
+    {
+      "name": "InferenceMetadata.set_parameters",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 170,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "scan_topic: str",
+        "odom_topic: str",
+        "pose_topic: str",
+        "tf_parent: str",
+        "tf_child: str"
+      ],
+      "returns": "brak",
+      "description": "Ustawia parameters."
+    },
+    {
+      "name": "InferenceMetadata.set_statistics",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 181,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "n_predictions: int",
+        "total_duration_sec: float",
+        "avg_inference_time_ms: float"
+      ],
+      "returns": "brak",
+      "description": "Ustawia statistics."
+    },
+    {
+      "name": "EvaluationMetadata.set_parameters",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 199,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "mode: str",
+        "duration_sec: float",
+        "reference_map_yaml: str"
+      ],
+      "returns": "brak",
+      "description": "Ustawia parameters."
+    },
+    {
+      "name": "EvaluationMetadata.set_metrics",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 208,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "rmse_xy_baseline: float",
+        "rmse_theta_baseline: float",
+        "rmse_xy_ai: Optional[float]",
+        "rmse_theta_ai: Optional[float]",
+        "iou_map_baseline: Optional[float]",
+        "iou_map_ai: Optional[float]",
+        "n_samples: int",
+        "iou_map_robak: Optional[float] = None",
+        "iou_map_rywak: Optional[float] = None"
+      ],
+      "returns": "brak",
+      "description": "Ustawia metrics. Korzysta m.in. z: round."
+    },
+    {
+      "name": "ExperimentLog.to_dict",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 252,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "Dict[str, Any]",
+      "description": "Konwertuje log do słownika."
+    },
+    {
+      "name": "ExperimentLog.add_note",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 266,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "note: str"
+      ],
+      "returns": "brak",
+      "description": "Dodaje notatkę do logu."
+    },
+    {
+      "name": "generate_experiment_id",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 272,
+      "kind": "function",
+      "inputs": [],
+      "returns": "str",
+      "description": "Generuje unikalny identyfikator eksperymentu z timestampem (jako string z prefiksem)."
+    },
+    {
+      "name": "get_experiment_dir",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 277,
+      "kind": "function",
+      "inputs": [
+        "base_out_dir: str",
+        "experiment_id: str"
+      ],
+      "returns": "str",
+      "description": "Zwraca ścieżkę do katalogu eksperymentu."
+    },
+    {
+      "name": "ExperimentLogger.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 317,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "base_out_dir: str",
+        "experiment_id: Optional[str] = None",
+        "create_subdir: bool = True"
+      ],
+      "returns": "brak",
+      "description": "Inicjalizuje logger eksperymentu."
+    },
+    {
+      "name": "ExperimentLogger._find_or_create_experiment_id",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 355,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "str",
+      "description": "Szuka aktywnego eksperymentu w katalogu bazowym lub tworzy nowy ID."
+    },
+    {
+      "name": "ExperimentLogger.get_output_dir",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 387,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "str",
+      "description": "Zwraca ścieżkę do katalogu wyjściowego eksperymentu."
+    },
+    {
+      "name": "ExperimentLogger._load_existing",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 391,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "ExperimentLog",
+      "description": "Wczytuje istniejący log (do kontynuacji eksperymentu)."
+    },
+    {
+      "name": "ExperimentLogger.start_dataset_collection",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 472,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "duration_sec: float",
+        "max_samples: int",
+        "scan_topic: str",
+        "odom_topic: str",
+        "gt_topic: str"
+      ],
+      "returns": "brak",
+      "description": "Rozpoczyna logowanie zbierania datasetu."
+    },
+    {
+      "name": "ExperimentLogger.end_dataset_collection",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 486,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "n_samples: int",
+        "scan_dim: int",
+        "actual_duration_sec: float",
+        "file_path: str"
+      ],
+      "returns": "brak",
+      "description": "Kończy logowanie zbierania datasetu."
+    },
+    {
+      "name": "ExperimentLogger.start_training",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 510,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "max_epochs: int",
+        "patience: int",
+        "min_delta: float",
+        "lr: float",
+        "val_ratio: float",
+        "batch_size: int"
+      ],
+      "returns": "brak",
+      "description": "Rozpoczyna logowanie treningu."
+    },
+    {
+      "name": "ExperimentLogger.set_training_dataset_info",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 524,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "n_total: int",
+        "n_train: int",
+        "n_val: int",
+        "input_dim: int",
+        "output_dim: int = 3"
+      ],
+      "returns": "brak",
+      "description": "Ustawia informacje o datasecie użytym do treningu."
+    },
+    {
+      "name": "ExperimentLogger.set_training_model_info",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 533,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "architecture: str",
+        "model"
+      ],
+      "returns": "brak",
+      "description": "Ustawia informacje o architekturze modelu."
+    },
+    {
+      "name": "ExperimentLogger.end_training",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 544,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "epochs_run: int",
+        "best_epoch: int",
+        "best_val_loss: float",
+        "final_train_loss: float",
+        "early_stopped: bool",
+        "model_path: str",
+        "history_path: str"
+      ],
+      "returns": "brak",
+      "description": "Kończy logowanie treningu."
+    },
+    {
+      "name": "ExperimentLogger.start_inference",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 561,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "scan_topic: str",
+        "odom_topic: str",
+        "pose_topic: str",
+        "tf_parent: str",
+        "tf_child: str",
+        "model_path: str"
+      ],
+      "returns": "brak",
+      "description": "Rozpoczyna logowanie inferencji."
+    },
+    {
+      "name": "ExperimentLogger.end_inference",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 573,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "n_predictions: int",
+        "total_duration_sec: float",
+        "avg_inference_time_ms: float"
+      ],
+      "returns": "brak",
+      "description": "Kończy logowanie inferencji."
+    },
+    {
+      "name": "ExperimentLogger.update_inference_statistics",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 585,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "n_predictions: int",
+        "total_duration_sec: float",
+        "avg_inference_time_ms: float"
+      ],
+      "returns": "brak",
+      "description": "Aktualizuje statystyki inferencji bez oznaczania etapu jako zakończonego."
+    },
+    {
+      "name": "ExperimentLogger.start_evaluation",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 597,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "seed: int",
+        "mode: str",
+        "duration_sec: float",
+        "reference_map_yaml: str"
+      ],
+      "returns": "brak",
+      "description": "Rozpoczyna logowanie ewaluacji."
+    },
+    {
+      "name": "ExperimentLogger.end_evaluation",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 608,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "rmse_xy_baseline: float",
+        "rmse_theta_baseline: float",
+        "rmse_xy_ai: Optional[float]",
+        "rmse_theta_ai: Optional[float]",
+        "iou_map_baseline: Optional[float]",
+        "iou_map_ai: Optional[float]",
+        "n_samples: int",
+        "artifacts: Dict[str, str]",
+        "iou_map_robak: Optional[float] = None",
+        "iou_map_rywak: Optional[float] = None"
+      ],
+      "returns": "brak",
+      "description": "Kończy logowanie ewaluacji."
+    },
+    {
+      "name": "ExperimentLogger.add_note",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 630,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "note: str"
+      ],
+      "returns": "brak",
+      "description": "Dodaje notatkę do logu."
+    },
+    {
+      "name": "ExperimentLogger.finalize",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 635,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Finalizuje eksperyment i zapisuje całkowity czas."
+    },
+    {
+      "name": "ExperimentLogger._merge_timing",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 644,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "current: dict",
+        "saved: dict"
+      ],
+      "returns": "dict",
+      "description": "Scala timing - zachowuje istniejące wartości, dodaje brakujące."
+    },
+    {
+      "name": "ExperimentLogger._merge_dict",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 652,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "current: dict",
+        "saved: dict"
+      ],
+      "returns": "dict",
+      "description": "Scala słowniki - zachowuje istniejące wartości, dodaje brakujące."
+    },
+    {
+      "name": "ExperimentLogger.save",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 666,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Zapisuje log do pliku JSON w sposób bezpieczny dla wielu procesów (wiele node'ów)."
+    },
+    {
+      "name": "ExperimentLogger.get_summary",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 744,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "str",
+      "description": "Zwraca czytelne podsumowanie eksperymentu."
+    },
+    {
+      "name": "ExperimentLogger.append_to_summary",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
+      "line": 803,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Dodaje podsumowanie eksperymentu do pliku CSV w katalogu bazowym."
+    },
+    {
+      "name": "MLP.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 22,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "in_dim: int",
+        "out_dim: int"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, Sequential, Linear."
+    },
+    {
+      "name": "MLP.forward",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 34,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "x"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje forward. Korzysta m.in. z: net."
+    },
+    {
+      "name": "InferNode.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 39,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "InferNode.periodic_save_stats",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 103,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Okresowo zapisuje statystyki inferencji do metadata.json."
+    },
+    {
+      "name": "InferNode.try_load_model",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 116,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje load model. Korzysta m.in. z: load, int, MLP."
+    },
+    {
+      "name": "InferNode._publish_passthrough_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 160,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Publikuje oryginalną odometrię jako odom_ai (passthrough mode przed załadowaniem modelu)."
+    },
+    {
+      "name": "InferNode.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 181,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: _publish_passthrough_odom."
+    },
+    {
+      "name": "InferNode.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 188,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: asarray, astype, clip."
+    },
+    {
+      "name": "InferNode.log_inference_stats",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 255,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Loguje statystyki inferencji przy zamykaniu node'a."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_node.py",
+      "line": 282,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, InferNode, spin."
+    },
+    {
+      "name": "_stamp_to_sec",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 22,
+      "kind": "function",
+      "inputs": [
+        "stamp"
+      ],
+      "returns": "float",
+      "description": "Stempluje to sec. Korzysta m.in. z: float."
+    },
+    {
+      "name": "_interp_angle",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 26,
+      "kind": "function",
+      "inputs": [
+        "th0: float",
+        "th1: float",
+        "alpha: float"
+      ],
+      "returns": "float",
+      "description": "Interpoluje angle. Korzysta m.in. z: wrap, float."
+    },
+    {
+      "name": "_delta_local",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 31,
+      "kind": "function",
+      "inputs": [
+        "prev_xyth",
+        "cur_xyth"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje local. Korzysta m.in. z: cos, sin, wrap."
+    },
+    {
+      "name": "_resample_to_360",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 44,
+      "kind": "function",
+      "inputs": [
+        "ranges: np.ndarray"
+      ],
+      "returns": "np.ndarray",
+      "description": "Przeskalowuje to 360. Korzysta m.in. z: int, linspace, astype."
+    },
+    {
+      "name": "_sanitize_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 55,
+      "kind": "function",
+      "inputs": [
+        "msg: LaserScan"
+      ],
+      "returns": "np.ndarray",
+      "description": "Czyści skan. Korzysta m.in. z: asarray, astype, clip."
+    },
+    {
+      "name": "RobakConv1D.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 70,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, Sequential, Conv1d."
+    },
+    {
+      "name": "RobakConv1D.forward",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 88,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "x"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje forward. Korzysta m.in. z: head, feat."
+    },
+    {
+      "name": "InferRobakNode.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 93,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "InferRobakNode.on_gt",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 197,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje ground truth. Korzysta m.in. z: xytheta_from_pose_stamped."
+    },
+    {
+      "name": "InferRobakNode.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 203,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: _stamp_to_sec, xytheta_from_odom, append."
+    },
+    {
+      "name": "InferRobakNode._nearest_odom_xyth",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 212,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię xyth. Korzysta m.in. z: min, popleft, abs."
+    },
+    {
+      "name": "InferRobakNode.try_load_model",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 224,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje load model. Korzysta m.in. z: load, RobakConv1D, load_state_dict."
+    },
+    {
+      "name": "InferRobakNode.periodic_save_stats",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 255,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje save stats. Korzysta m.in. z: time, float, end_inference."
+    },
+    {
+      "name": "InferRobakNode.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 267,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: _sanitize_scan, _stamp_to_sec, max."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_robak_node.py",
+      "line": 395,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, InferRobakNode, spin."
+    },
+    {
+      "name": "_stamp_to_sec",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 23,
+      "kind": "function",
+      "inputs": [
+        "stamp"
+      ],
+      "returns": "float",
+      "description": "Stempluje to sec. Korzysta m.in. z: float."
+    },
+    {
+      "name": "_resample_to_360",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 27,
+      "kind": "function",
+      "inputs": [
+        "ranges: np.ndarray"
+      ],
+      "returns": "np.ndarray",
+      "description": "Przeskalowuje to 360. Korzysta m.in. z: int, linspace, astype."
+    },
+    {
+      "name": "_sanitize_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 38,
+      "kind": "function",
+      "inputs": [
+        "msg: LaserScan"
+      ],
+      "returns": "np.ndarray",
+      "description": "Czyści skan. Korzysta m.in. z: asarray, astype, clip."
+    },
+    {
+      "name": "_interp_angle",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 52,
+      "kind": "function",
+      "inputs": [
+        "th0: float",
+        "th1: float",
+        "alpha: float"
+      ],
+      "returns": "float",
+      "description": "Interpoluje angle. Korzysta m.in. z: wrap, float."
+    },
+    {
+      "name": "_parse_hidden_dims",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 57,
+      "kind": "function",
+      "inputs": [
+        "value"
+      ],
+      "returns": "List[int]",
+      "description": "Parsuje hidden dims. Korzysta m.in. z: int, list."
+    },
+    {
+      "name": "MLP2.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 65,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "in_dim: int",
+        "out_dim: int = 2",
+        "hidden_dims: List[int] = None",
+        "dropout: float = 0.0"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, int, append."
+    },
+    {
+      "name": "MLP2.forward",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 82,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "x"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje forward. Korzysta m.in. z: net."
+    },
+    {
+      "name": "InferRywakNode.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 87,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "InferRywakNode.on_init_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 214,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init odometrię. Korzysta m.in. z: xytheta_from_odom."
+    },
+    {
+      "name": "InferRywakNode.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 220,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: _stamp_to_sec, xytheta_from_odom, float."
+    },
+    {
+      "name": "InferRywakNode._nearest_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 230,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: min, popleft, abs."
+    },
+    {
+      "name": "InferRywakNode._interpolated_odom",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 242,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: len, float, _interp_angle."
+    },
+    {
+      "name": "InferRywakNode._odom_at",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 280,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "t_scan: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje at. Korzysta m.in. z: _nearest_odom, _interpolated_odom."
+    },
+    {
+      "name": "InferRywakNode.try_load_model",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 291,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje load model. Korzysta m.in. z: load, int, _parse_hidden_dims."
+    },
+    {
+      "name": "InferRywakNode.periodic_save_stats",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 325,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje save stats. Korzysta m.in. z: time, float, end_inference."
+    },
+    {
+      "name": "InferRywakNode.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 337,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: _sanitize_scan, _stamp_to_sec, _odom_at."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/infer_rywak_node.py",
+      "line": 487,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, InferRywakNode, spin."
+    },
+    {
+      "name": "MLP.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model.py",
+      "line": 18,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "in_dim: int",
+        "out_dim: int"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, Sequential, Linear."
+    },
+    {
+      "name": "MLP.forward",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model.py",
+      "line": 30,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "x"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje forward. Korzysta m.in. z: net."
+    },
+    {
+      "name": "TrainModel.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model.py",
+      "line": 35,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "TrainModel.run_once",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model.py",
+      "line": 84,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Uruchamia once. Korzysta m.in. z: time, info, start_training."
+    },
+    {
+      "name": "TrainModel._save_zero_model",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model.py",
+      "line": 261,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Zapisuje zero model. Korzysta m.in. z: MLP, zeros, ones."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model.py",
+      "line": 282,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, TrainModel, spin."
+    },
+    {
+      "name": "RobakConv1D.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_robak.py",
+      "line": 19,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, Sequential, Conv1d."
+    },
+    {
+      "name": "RobakConv1D.forward",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_robak.py",
+      "line": 37,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "x"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje forward. Korzysta m.in. z: feat, head."
+    },
+    {
+      "name": "TrainModelRobak.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_robak.py",
+      "line": 44,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "TrainModelRobak.run_once",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_robak.py",
+      "line": 91,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Uruchamia once. Korzysta m.in. z: time, info, load."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_robak.py",
+      "line": 258,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, TrainModelRobak, spin."
+    },
+    {
+      "name": "_parse_hidden_dims",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_rywak.py",
+      "line": 18,
+      "kind": "function",
+      "inputs": [
+        "value"
+      ],
+      "returns": "List[int]",
+      "description": "Parsuje hidden dims. Korzysta m.in. z: int, list."
+    },
+    {
+      "name": "MLP2.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_rywak.py",
+      "line": 26,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "in_dim: int",
+        "out_dim: int = 2",
+        "hidden_dims: List[int] = None",
+        "dropout: float = 0.0"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, int, append."
+    },
+    {
+      "name": "MLP2.forward",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_rywak.py",
+      "line": 43,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "x"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje forward. Korzysta m.in. z: net."
+    },
+    {
+      "name": "TrainModelRywak.__init__",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_rywak.py",
+      "line": 48,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "TrainModelRywak.run_once",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_rywak.py",
+      "line": 111,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Uruchamia once. Korzysta m.in. z: time, info, load."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/train_model_rywak.py",
+      "line": 301,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, TrainModelRywak, spin."
+    },
+    {
+      "name": "parse_bool",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/auto_driver.py",
+      "line": 13,
+      "kind": "function",
+      "inputs": [
+        "value",
+        "default = False"
+      ],
+      "returns": "brak",
+      "description": "Konwertuje parametr ROS (bool/str/int) do bool w przewidywalny sposób."
+    },
+    {
+      "name": "AutoDriver.__init__",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/auto_driver.py",
+      "line": 30,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "AutoDriver.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/auto_driver.py",
+      "line": 137,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: sqrt, len, append."
+    },
+    {
+      "name": "AutoDriver._sector_stats",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/auto_driver.py",
+      "line": 179,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "ranges: np.ndarray",
+        "angles: np.ndarray",
+        "a0: float",
+        "a1: float"
+      ],
+      "returns": "brak",
+      "description": "Zwraca (min_robust, mean) w sektorze [a0, a1] (radiany), angle=0 przód, +pi/2 lewo, -pi/2 prawo."
+    },
+    {
+      "name": "AutoDriver.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/auto_driver.py",
+      "line": 201,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: now, asarray, int."
+    },
+    {
+      "name": "AutoDriver.on_timer",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/auto_driver.py",
+      "line": 247,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje timer. Korzysta m.in. z: Twist, publish, warn."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/auto_driver.py",
+      "line": 473,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, AutoDriver, spin."
+    },
+    {
+      "name": "_stamp_to_sec",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 10,
+      "kind": "function",
+      "inputs": [
+        "stamp"
+      ],
+      "returns": "float",
+      "description": "Stempluje to sec. Korzysta m.in. z: float."
+    },
+    {
+      "name": "GTPosePublisher.__init__",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 15,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, str."
+    },
+    {
+      "name": "GTPosePublisher._frame_tokens",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 64,
+      "kind": "method",
+      "inputs": [
+        "frame_id: str"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje tokens. Korzysta m.in. z: lower, replace, strip."
+    },
+    {
+      "name": "GTPosePublisher._tokens_match_hint",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 72,
+      "kind": "method",
+      "inputs": [
+        "tokens",
+        "hint: str"
+      ],
+      "returns": "bool",
+      "description": "Obsługuje match hint. Korzysta m.in. z: lower, any, strip."
+    },
+    {
+      "name": "GTPosePublisher._is_world_parent",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 78,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "parent_tokens"
+      ],
+      "returns": "bool",
+      "description": "Obsługuje world parent. Korzysta m.in. z: _tokens_match_hint."
+    },
+    {
+      "name": "GTPosePublisher._match_score",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 87,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "tr"
+      ],
+      "returns": "int",
+      "description": "Obsługuje score. Korzysta m.in. z: _frame_tokens, _is_world_parent, _tokens_match_hint."
+    },
+    {
+      "name": "GTPosePublisher._tf_brief",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 121,
+      "kind": "method",
+      "inputs": [
+        "msg: TFMessage",
+        "max_items: int = 8"
+      ],
+      "returns": "str",
+      "description": "Obsługuje brief. Korzysta m.in. z: join, list, str."
+    },
+    {
+      "name": "GTPosePublisher._select_unnamed_transform_by_odom",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 129,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: TFMessage"
+      ],
+      "returns": "brak",
+      "description": "Fallback gdy bridge nie niesie nazw ramek (puste parent/child)."
+    },
+    {
+      "name": "GTPosePublisher._remember_last_world_pose",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 199,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "stamp",
+        "pos"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje last world pozę. Korzysta m.in. z: _stamp_to_sec, float."
+    },
+    {
+      "name": "GTPosePublisher._publish_pose",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 213,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "stamp",
+        "frame_id: str",
+        "pos",
+        "quat"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje pozę. Korzysta m.in. z: PoseStamped, float, publish."
+    },
+    {
+      "name": "GTPosePublisher.on_tf_world",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 226,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: TFMessage"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje TF world. Korzysta m.in. z: _publish_pose, _stamp_to_sec, _remember_last_world_pose."
+    },
+    {
+      "name": "GTPosePublisher.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 321,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: _publish_pose, float, _stamp_to_sec."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/gt_pose_publisher.py",
+      "line": 350,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, GTPosePublisher, spin."
+    },
+    {
+      "name": "LifecycleManager.__init__",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/lifecycle_manager.py",
+      "line": 11,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, list, create_timer."
+    },
+    {
+      "name": "LifecycleManager._srv_name",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/lifecycle_manager.py",
+      "line": 26,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "node",
+        "suffix"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje name. Korzysta m.in. z: startswith."
+    },
+    {
+      "name": "LifecycleManager._wait_service",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/lifecycle_manager.py",
+      "line": 31,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "client",
+        "timeout_sec"
+      ],
+      "returns": "brak",
+      "description": "Czeka na service. Korzysta m.in. z: time, wait_for_service."
+    },
+    {
+      "name": "LifecycleManager._get_state",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/lifecycle_manager.py",
+      "line": 38,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "node_name"
+      ],
+      "returns": "brak",
+      "description": "Zwraca state. Korzysta m.in. z: create_client, Request, call_async."
+    },
+    {
+      "name": "LifecycleManager._change_state",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/lifecycle_manager.py",
+      "line": 51,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "node_name",
+        "transition_id"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje state. Korzysta m.in. z: create_client, Request, int."
+    },
+    {
+      "name": "LifecycleManager.tick",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/lifecycle_manager.py",
+      "line": 65,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Wykonuje cykliczny krok dla tick. Korzysta m.in. z: _get_state, add, len."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/lifecycle_manager.py",
+      "line": 106,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, LifecycleManager, spin."
+    },
+    {
+      "name": "yaw_from_quat",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/odom_corruptor.py",
+      "line": 13,
+      "kind": "function",
+      "inputs": [
+        "q"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from quat. Korzysta m.in. z: atan2."
+    },
+    {
+      "name": "quat_from_yaw",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/odom_corruptor.py",
+      "line": 19,
+      "kind": "function",
+      "inputs": [
+        "yaw"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from yaw. Korzysta m.in. z: sin, cos."
+    },
+    {
+      "name": "wrap",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/odom_corruptor.py",
+      "line": 25,
+      "kind": "function",
+      "inputs": [
+        "a"
+      ],
+      "returns": "brak",
+      "description": "Normalizuje wrap."
+    },
+    {
+      "name": "OdomCorruptor.__init__",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/odom_corruptor.py",
+      "line": 30,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "OdomCorruptor.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/odom_corruptor.py",
+      "line": 57,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię. Korzysta m.in. z: max, yaw_from_quat, float."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/odom_corruptor.py",
+      "line": 110,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, OdomCorruptor, spin."
+    },
+    {
+      "name": "ScanFix.__init__",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_fix.py",
+      "line": 8,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, str."
+    },
+    {
+      "name": "ScanFix.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_fix.py",
+      "line": 37,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: LaserScan, publish."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_fix.py",
+      "line": 57,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, ScanFix, spin."
+    },
+    {
+      "name": "wrap",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 15,
+      "kind": "function",
+      "inputs": [
+        "a: float"
+      ],
+      "returns": "float",
+      "description": "Normalizuje wrap."
+    },
+    {
+      "name": "quat_from_yaw",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 19,
+      "kind": "function",
+      "inputs": [
+        "yaw: float"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from yaw. Korzysta m.in. z: sin, cos."
+    },
+    {
+      "name": "scan_to_points",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 25,
+      "kind": "function",
+      "inputs": [
+        "scan: LaserScan",
+        "max_use_range: float",
+        "max_points: int"
+      ],
+      "returns": "brak",
+      "description": "LaserScan -> Nx2 points in laser frame."
+    },
+    {
+      "name": "ScanMatcher.__init__",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 64,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, str."
+    },
+    {
+      "name": "ScanMatcher._make_grid",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 179,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "pts_prev: np.ndarray"
+      ],
+      "returns": "brak",
+      "description": "Buduje siatkę bool dla poprzedniego skanu."
+    },
+    {
+      "name": "ScanMatcher._score",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 192,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "grid",
+        "size",
+        "pts_curr",
+        "dx",
+        "dy",
+        "dth"
+      ],
+      "returns": "brak",
+      "description": "Score = hits - lambda * (dx^2 + dy^2 + (scale*dth)^2) Ruch (dx,dy,dth) jest rozumiany jako delta w układzie poprzedniej klatki."
+    },
+    {
+      "name": "ScanMatcher._grid_search",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 220,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "grid",
+        "size",
+        "pts_curr",
+        "center",
+        "win_xy",
+        "win_th",
+        "step_xy",
+        "step_th"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje search. Korzysta m.in. z: arange, _score, float."
+    },
+    {
+      "name": "ScanMatcher._estimate_delta_local",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 241,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "grid",
+        "size",
+        "pts_curr",
+        "center = None"
+      ],
+      "returns": "brak",
+      "description": "3-poziomowe przeszukiwanie wokół poprzedniej delty (albo 0)."
+    },
+    {
+      "name": "ScanMatcher._estimate_delta_bruteforce",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 271,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "grid",
+        "size",
+        "pts_curr"
+      ],
+      "returns": "brak",
+      "description": "Jedno duże przeszukanie (wolne)."
+    },
+    {
+      "name": "ScanMatcher._integrate_pose",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 282,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "dx",
+        "dy",
+        "dth"
+      ],
+      "returns": "brak",
+      "description": "SE2 compose: world_pose = world_pose ⊕ delta(prev_frame)."
+    },
+    {
+      "name": "ScanMatcher._local_to_world",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 289,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "pts_local: np.ndarray",
+        "x: float",
+        "y: float",
+        "th: float"
+      ],
+      "returns": "np.ndarray",
+      "description": "Obsługuje to world. Korzysta m.in. z: cos, sin, astype."
+    },
+    {
+      "name": "ScanMatcher._world_to_local",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 296,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "pts_world: np.ndarray",
+        "x: float",
+        "y: float",
+        "th: float"
+      ],
+      "returns": "np.ndarray",
+      "description": "Obsługuje to local. Korzysta m.in. z: cos, sin, astype."
+    },
+    {
+      "name": "ScanMatcher._estimate_delta_localmap",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 304,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "pts_curr_local: np.ndarray"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje delta localmap. Korzysta m.in. z: concatenate, _world_to_local, _make_grid."
+    },
+    {
+      "name": "ScanMatcher.on_scan",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 326,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan. Korzysta m.in. z: perf_counter, scan_to_points, float."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_bringup/ai_slam_bringup/scan_matcher.py",
+      "line": 433,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, ScanMatcher, spin."
+    },
+    {
+      "name": "generate_experiment_id",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 40,
+      "kind": "function",
+      "inputs": [],
+      "returns": "str",
+      "description": "Generuje unikalny identyfikator eksperymentu."
+    },
+    {
+      "name": "load_config",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 45,
+      "kind": "function",
+      "inputs": [
+        "config_file: str"
+      ],
+      "returns": "dict",
+      "description": "Wczytuje konfigurację z pliku YAML."
+    },
+    {
+      "name": "get_config_value",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 59,
+      "kind": "function",
+      "inputs": [
+        "config: dict",
+        "*keys",
+        "default = None"
+      ],
+      "returns": "brak",
+      "description": "Bezpiecznie pobiera wartość z zagnieżdżonego słownika."
+    },
+    {
+      "name": "parse_bool",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 70,
+      "kind": "function",
+      "inputs": [
+        "value",
+        "default = False"
+      ],
+      "returns": "brak",
+      "description": "Konwertuje bool/str/int na bool w sposób odporny na 'false' jako string."
+    },
+    {
+      "name": "merge_params",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 86,
+      "kind": "function",
+      "inputs": [
+        "*param_dicts"
+      ],
+      "returns": "brak",
+      "description": "Łączy słowniki parametrów, ignorując wartości niebędące dict."
+    },
+    {
+      "name": "extract_world_name",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 95,
+      "kind": "function",
+      "inputs": [
+        "world_path: str"
+      ],
+      "returns": "str",
+      "description": "Próbuje odczytać nazwę świata z pliku SDF, fallback: nazwa pliku bez rozszerzenia."
+    },
+    {
+      "name": "launch_setup",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 109,
+      "kind": "function",
+      "inputs": [
+        "context",
+        "*args",
+        "**kwargs"
+      ],
+      "returns": "brak",
+      "description": "Funkcja setup wywoływana w runtime z dostępem do kontekstu."
+    },
+    {
+      "name": "generate_launch_description",
+      "file": "ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py",
+      "line": 1194,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Generuje launch description. Korzysta m.in. z: LaunchDescription, DeclareLaunchArgument, OpaqueFunction."
+    },
+    {
+      "name": "wrap",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 28,
+      "kind": "function",
+      "inputs": [
+        "a"
+      ],
+      "returns": "brak",
+      "description": "Normalizuje wrap."
+    },
+    {
+      "name": "parse_filter_mode",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 32,
+      "kind": "function",
+      "inputs": [
+        "value: str",
+        "default: str = 'any'"
+      ],
+      "returns": "str",
+      "description": "Parsuje filter mode. Korzysta m.in. z: lower, strip, str."
+    },
+    {
+      "name": "pose_delta",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 49,
+      "kind": "function",
+      "inputs": [
+        "prev_xyth",
+        "curr_xyth"
+      ],
+      "returns": "PoseDelta",
+      "description": "Obsługuje delta. Korzysta m.in. z: wrap, PoseDelta, float."
+    },
+    {
+      "name": "passes_motion_filter",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 61,
+      "kind": "function",
+      "inputs": [
+        "prev_xyth",
+        "curr_xyth",
+        "dt_sec: float | None = None",
+        "min_translation: float = 0.0",
+        "min_rotation: float = 0.0",
+        "min_time_gap_sec: float = 0.0",
+        "mode: str = 'any'"
+      ],
+      "returns": "tuple[bool, PoseDelta]",
+      "description": "Weryfikuje motion filter. Korzysta m.in. z: pose_delta, parse_filter_mode, append."
+    },
+    {
+      "name": "yaw_from_quat",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 88,
+      "kind": "function",
+      "inputs": [
+        "q"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from quat. Korzysta m.in. z: atan2."
+    },
+    {
+      "name": "xytheta_from_pose",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 94,
+      "kind": "function",
+      "inputs": [
+        "ps: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from pozę. Korzysta m.in. z: float, yaw_from_quat."
+    },
+    {
+      "name": "xytheta_from_odom",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 101,
+      "kind": "function",
+      "inputs": [
+        "od: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje from odometrię. Korzysta m.in. z: float, yaw_from_quat."
+    },
+    {
+      "name": "load_yaml_simple",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 108,
+      "kind": "function",
+      "inputs": [
+        "path: str"
+      ],
+      "returns": "dict",
+      "description": "Wczytuje plik YAML simple. Korzysta m.in. z: open, strip, split."
+    },
+    {
+      "name": "_read_token",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 121,
+      "kind": "function",
+      "inputs": [
+        "f"
+      ],
+      "returns": "brak",
+      "description": "Czyta kolejny token z pliku PGM, pomija whitespace i komentarze #..."
+    },
+    {
+      "name": "load_pgm",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 143,
+      "kind": "function",
+      "inputs": [
+        "path: str"
+      ],
+      "returns": "np.ndarray",
+      "description": "Wczytuje plik PGM. Korzysta m.in. z: open, _read_token, int."
+    },
+    {
+      "name": "occgrid_to_array",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 183,
+      "kind": "function",
+      "inputs": [
+        "msg: OccupancyGrid"
+      ],
+      "returns": "np.ndarray",
+      "description": "Obsługuje to array. Korzysta m.in. z: reshape, array."
+    },
+    {
+      "name": "project_map_to_ref_grid",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 190,
+      "kind": "function",
+      "inputs": [
+        "ref_info: dict",
+        "ref_shape: tuple[int, int]",
+        "slam_msg: OccupancyGrid"
+      ],
+      "returns": "brak",
+      "description": "Rzutuje OccupancyGrid SLAM do siatki mapy referencyjnej (z orientacją obu map)."
+    },
+    {
+      "name": "map_iou",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 242,
+      "kind": "function",
+      "inputs": [
+        "ref_occ: np.ndarray",
+        "ref_info: dict",
+        "slam_msg: OccupancyGrid"
+      ],
+      "returns": "float",
+      "description": "Mapuje IoU. Korzysta m.in. z: project_map_to_ref_grid, map_iou_binary."
+    },
+    {
+      "name": "map_iou_binary",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 247,
+      "kind": "function",
+      "inputs": [
+        "ref_occ: np.ndarray",
+        "occ_s: np.ndarray",
+        "known: np.ndarray | None = None"
+      ],
+      "returns": "float",
+      "description": "Mapuje IoU binary. Korzysta m.in. z: astype, int, ones_like."
+    },
+    {
+      "name": "EvalNode.__init__",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 266,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: __init__, declare_parameter, int."
+    },
+    {
+      "name": "EvalNode._load_ref_info",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 478,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "yaml_path"
+      ],
+      "returns": "brak",
+      "description": "Wczytuje mapę referencyjną info. Korzysta m.in. z: load_yaml_simple, strip, float."
+    },
+    {
+      "name": "EvalNode._load_ref_occ",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 487,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "yaml_path",
+        "info"
+      ],
+      "returns": "brak",
+      "description": "Wczytuje mapę referencyjną occupancy grid. Korzysta m.in. z: dirname, join, load_pgm."
+    },
+    {
+      "name": "EvalNode.on_gt",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 494,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje ground truth."
+    },
+    {
+      "name": "EvalNode.on_odom",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 497,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: Odometry"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje odometrię."
+    },
+    {
+      "name": "EvalNode.on_ai",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 500,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje AI. Korzysta m.in. z: len, info, get_logger."
+    },
+    {
+      "name": "EvalNode.on_sm",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 508,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje sm."
+    },
+    {
+      "name": "EvalNode.on_bf",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 511,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje bruteforce."
+    },
+    {
+      "name": "EvalNode.on_robak",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 513,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje Robaka."
+    },
+    {
+      "name": "EvalNode.on_rywak",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 516,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: PoseStamped"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje Rywaka."
+    },
+    {
+      "name": "EvalNode.on_map",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 518,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: OccupancyGrid"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje mapę. Korzysta m.in. z: info, hasattr, get_logger."
+    },
+    {
+      "name": "EvalNode.on_map_robak",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 523,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: OccupancyGrid"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje mapę Robaka."
+    },
+    {
+      "name": "EvalNode.on_map_rywak",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 526,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: OccupancyGrid"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje mapę Rywaka."
+    },
+    {
+      "name": "EvalNode.on_map_ai",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 528,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: OccupancyGrid"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje mapę AI. Korzysta m.in. z: info, hasattr, get_logger."
+    },
+    {
+      "name": "EvalNode._stamp_points_to_ref_grid",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 533,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "out_grid: np.ndarray",
+        "pose_msg: PoseStamped",
+        "scan_msg: LaserScan",
+        "state_key: str"
+      ],
+      "returns": "brak",
+      "description": "Stempluje points to mapę referencyjną grid. Korzysta m.in. z: xytheta_from_pose, _stamp_to_sec, get."
+    },
+    {
+      "name": "EvalNode.on_scan_points",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 601,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg: LaserScan"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje skan points. Korzysta m.in. z: _stamp_points_to_ref_grid."
+    },
+    {
+      "name": "EvalNode._stamp_to_sec",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 612,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "stamp"
+      ],
+      "returns": "float",
+      "description": "Stempluje to sec. Korzysta m.in. z: float."
+    },
+    {
+      "name": "EvalNode._is_time_synced",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 615,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "msg_a",
+        "msg_b"
+      ],
+      "returns": "bool",
+      "description": "Obsługuje time synced. Korzysta m.in. z: _stamp_to_sec, abs."
+    },
+    {
+      "name": "EvalNode.tick",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 625,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Wykonuje cykliczny krok dla tick. Korzysta m.in. z: xytheta_from_pose, xytheta_from_odom, append."
+    },
+    {
+      "name": "EvalNode._request_maps_via_service",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 716,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Request maps via service call - more reliable than topic subscription."
+    },
+    {
+      "name": "EvalNode._on_map_service_response",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 738,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "future"
+      ],
+      "returns": "brak",
+      "description": "Handle response from /slam_toolbox/dynamic_map service."
+    },
+    {
+      "name": "EvalNode._on_map_ai_service_response",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 750,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "future"
+      ],
+      "returns": "brak",
+      "description": "Handle response from /slam_toolbox_ai/dynamic_map service."
+    },
+    {
+      "name": "EvalNode.finish",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 762,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Domyka finish. Korzysta m.in. z: asarray, float, info."
+    },
+    {
+      "name": "EvalNode._save_trajectory_data",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 986,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "path"
+      ],
+      "returns": "brak",
+      "description": "Zapisuje trajektorię data. Korzysta m.in. z: savez_compressed, asarray, reshape."
+    },
+    {
+      "name": "EvalNode._reference_bounds_polygon",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 1036,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje bounds polygon. Korzysta m.in. z: float, array, cos."
+    },
+    {
+      "name": "EvalNode._reference_walls_world_points",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 1076,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "max_points: int = 50000"
+      ],
+      "returns": "brak",
+      "description": "Zwraca punkty zajętych komórek mapy referencyjnej w układzie world."
+    },
+    {
+      "name": "EvalNode._plot_trajectories",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 1105,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "path"
+      ],
+      "returns": "brak",
+      "description": "Rysuje trajectories. Korzysta m.in. z: asarray, _reference_bounds_polygon, _reference_walls_world_points."
+    },
+    {
+      "name": "EvalNode._plot_errors",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 1182,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "path"
+      ],
+      "returns": "brak",
+      "description": "Rysuje errors. Korzysta m.in. z: asarray, figure, plot."
+    },
+    {
+      "name": "EvalNode._plot_maps",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 1240,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "path"
+      ],
+      "returns": "brak",
+      "description": "Rysuje maps. Korzysta m.in. z: astype, _append_occ, len."
+    },
+    {
+      "name": "main",
+      "file": "ai_slam_ws/src/ai_slam_eval/ai_slam_eval/eval_node.py",
+      "line": 1316,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: init, EvalNode, spin."
+    },
+    {
+      "name": "rel_path",
+      "file": "scripts/generate_function_index.py",
+      "line": 112,
+      "kind": "function",
+      "inputs": [
+        "path: Path"
+      ],
+      "returns": "str",
+      "description": "Obsługuje path. Korzysta m.in. z: str, relative_to, resolve."
+    },
+    {
+      "name": "should_skip",
+      "file": "scripts/generate_function_index.py",
+      "line": 116,
+      "kind": "function",
+      "inputs": [
+        "path: Path"
+      ],
+      "returns": "bool",
+      "description": "Obsługuje skip. Korzysta m.in. z: any."
+    },
+    {
+      "name": "format_annotation",
+      "file": "scripts/generate_function_index.py",
+      "line": 120,
+      "kind": "function",
+      "inputs": [
+        "node: ast.AST | None"
+      ],
+      "returns": "str",
+      "description": "Obsługuje annotation. Korzysta m.in. z: unparse."
+    },
+    {
+      "name": "format_arg",
+      "file": "scripts/generate_function_index.py",
+      "line": 129,
+      "kind": "function",
+      "inputs": [
+        "arg: ast.arg",
+        "default_index: int | None = None",
+        "defaults: list[ast.AST] | None = None"
+      ],
+      "returns": "str",
+      "description": "Obsługuje arg. Korzysta m.in. z: format_annotation, unparse."
+    },
+    {
+      "name": "first_sentence",
+      "file": "scripts/generate_function_index.py",
+      "line": 141,
+      "kind": "function",
+      "inputs": [
+        "text: str"
+      ],
+      "returns": "str",
+      "description": "Obsługuje sentence. Korzysta m.in. z: join, endswith, strip."
+    },
+    {
+      "name": "get_call_names",
+      "file": "scripts/generate_function_index.py",
+      "line": 151,
+      "kind": "function",
+      "inputs": [
+        "node: ast.AST"
+      ],
+      "returns": "list[str]",
+      "description": "Zwraca call names. Korzysta m.in. z: walk, isinstance, append."
+    },
+    {
+      "name": "describe_from_name",
+      "file": "scripts/generate_function_index.py",
+      "line": 169,
+      "kind": "function",
+      "inputs": [
+        "name: str",
+        "node: ast.AST"
+      ],
+      "returns": "str",
+      "description": "Obsługuje from name. Korzysta m.in. z: lstrip, get, strip."
+    },
+    {
+      "name": "FunctionCollector.__init__",
+      "file": "scripts/generate_function_index.py",
+      "line": 189,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "file_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init."
+    },
+    {
+      "name": "FunctionCollector.visit_ClassDef",
+      "file": "scripts/generate_function_index.py",
+      "line": 195,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "node: ast.ClassDef"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje ClassDef. Korzysta m.in. z: append, generic_visit, pop."
+    },
+    {
+      "name": "FunctionCollector.visit_FunctionDef",
+      "file": "scripts/generate_function_index.py",
+      "line": 200,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "node: ast.FunctionDef"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje FunctionDef. Korzysta m.in. z: _record_function."
+    },
+    {
+      "name": "FunctionCollector.visit_AsyncFunctionDef",
+      "file": "scripts/generate_function_index.py",
+      "line": 203,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "node: ast.AsyncFunctionDef"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje AsyncFunctionDef. Korzysta m.in. z: _record_function."
+    },
+    {
+      "name": "FunctionCollector._record_function",
+      "file": "scripts/generate_function_index.py",
+      "line": 206,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "node: ast.FunctionDef | ast.AsyncFunctionDef",
+        "kind: str"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje function. Korzysta m.in. z: generic_visit, enumerate, zip."
+    },
+    {
+      "name": "collect_functions",
+      "file": "scripts/generate_function_index.py",
+      "line": 255,
+      "kind": "function",
+      "inputs": [],
+      "returns": "list[FunctionEntry]",
+      "description": "Obsługuje functions. Korzysta m.in. z: sorted, rglob, should_skip."
+    },
+    {
+      "name": "write_markdown",
+      "file": "scripts/generate_function_index.py",
+      "line": 270,
+      "kind": "function",
+      "inputs": [
+        "entries: list[FunctionEntry]",
+        "output_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje markdown. Korzysta m.in. z: mkdir, write_text, append."
+    },
+    {
+      "name": "write_json",
+      "file": "scripts/generate_function_index.py",
+      "line": 296,
+      "kind": "function",
+      "inputs": [
+        "entries: list[FunctionEntry]",
+        "output_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje json. Korzysta m.in. z: mkdir, write_text, str."
+    },
+    {
+      "name": "main",
+      "file": "scripts/generate_function_index.py",
+      "line": 306,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: ArgumentParser, add_argument, parse_args."
+    },
+    {
+      "name": "parse_pose",
+      "file": "scripts/generate_reference_map.py",
+      "line": 20,
+      "kind": "function",
+      "inputs": [
+        "text: str"
+      ],
+      "returns": "brak",
+      "description": "pose: x y z roll pitch yaw (mogą być krótsze)."
+    },
+    {
+      "name": "compose_pose",
+      "file": "scripts/generate_reference_map.py",
+      "line": 29,
+      "kind": "function",
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "returns": "brak",
+      "description": "Składanie tylko 2D (x,y,yaw)."
+    },
+    {
+      "name": "extract_boxes_from_sdf",
+      "file": "scripts/generate_reference_map.py",
+      "line": 43,
+      "kind": "function",
+      "inputs": [
+        "sdf_path: str"
+      ],
+      "returns": "brak",
+      "description": "Zwraca listę boxów z kolizji: [{x,y,yaw,sx,sy}]."
+    },
+    {
+      "name": "world_to_pixel",
+      "file": "scripts/generate_reference_map.py",
+      "line": 86,
+      "kind": "function",
+      "inputs": [
+        "x",
+        "y",
+        "origin_x",
+        "origin_y",
+        "resolution"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje to pixel. Korzysta m.in. z: int."
+    },
+    {
+      "name": "draw_aabb",
+      "file": "scripts/generate_reference_map.py",
+      "line": 92,
+      "kind": "function",
+      "inputs": [
+        "grid",
+        "cx",
+        "cy",
+        "w",
+        "h",
+        "origin_x",
+        "origin_y",
+        "resolution",
+        "value = 0"
+      ],
+      "returns": "brak",
+      "description": "Rysuje axis-aligned box (AABB)."
+    },
+    {
+      "name": "main",
+      "file": "scripts/generate_reference_map.py",
+      "line": 109,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: ArgumentParser, add_argument, parse_args."
+    },
+    {
+      "name": "to_float",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 27,
+      "kind": "function",
+      "inputs": [
+        "v"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje float. Korzysta m.in. z: float, isfinite."
+    },
+    {
+      "name": "collect_results_paths",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 39,
+      "kind": "function",
+      "inputs": [
+        "root_out: Path",
+        "sweep_paths",
+        "experiment_paths",
+        "result_paths"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje results paths. Korzysta m.in. z: set, resolve, exists."
+    },
+    {
+      "name": "load_records",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 83,
+      "kind": "function",
+      "inputs": [
+        "results_paths"
+      ],
+      "returns": "brak",
+      "description": "Wczytuje records. Korzysta m.in. z: sort, append, get."
+    },
+    {
+      "name": "write_experiment_table",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 112,
+      "kind": "function",
+      "inputs": [
+        "records",
+        "out_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje experiment table. Korzysta m.in. z: open, DictWriter, writeheader."
+    },
+    {
+      "name": "stats",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 143,
+      "kind": "function",
+      "inputs": [
+        "values"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje stats. Korzysta m.in. z: asarray, int, float."
+    },
+    {
+      "name": "method_statistics",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 164,
+      "kind": "function",
+      "inputs": [
+        "records"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje statistics. Korzysta m.in. z: stats, append, get."
+    },
+    {
+      "name": "fmt",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 231,
+      "kind": "function",
+      "inputs": [
+        "v",
+        "digits = 4"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje fmt."
+    },
+    {
+      "name": "write_method_tables",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 237,
+      "kind": "function",
+      "inputs": [
+        "rows",
+        "out_dir: Path"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje method tables. Korzysta m.in. z: open, DictWriter, writeheader."
+    },
+    {
+      "name": "plot_box",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 298,
+      "kind": "function",
+      "inputs": [
+        "records",
+        "metric_key",
+        "title",
+        "ylabel",
+        "out_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Rysuje box. Korzysta m.in. z: use, subplots, boxplot."
+    },
+    {
+      "name": "plot_iou_bar",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 327,
+      "kind": "function",
+      "inputs": [
+        "method_rows",
+        "out_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Rysuje IoU bar. Korzysta m.in. z: use, subplots, arange."
+    },
+    {
+      "name": "plot_rmse_heatmap",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 354,
+      "kind": "function",
+      "inputs": [
+        "records",
+        "out_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Rysuje RMSE heatmap. Korzysta m.in. z: full, enumerate, use."
+    },
+    {
+      "name": "plot_mean_rank",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 386,
+      "kind": "function",
+      "inputs": [
+        "records",
+        "out_path: Path"
+      ],
+      "returns": "brak",
+      "description": "Rysuje mean rank. Korzysta m.in. z: zip, use, subplots."
+    },
+    {
+      "name": "main",
+      "file": "scripts/generate_thesis_report.py",
+      "line": 429,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: ArgumentParser, add_argument, parse_args."
+    },
+    {
+      "name": "text_or",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 8,
+      "kind": "function",
+      "inputs": [
+        "elem",
+        "default = '0'"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje or. Korzysta m.in. z: strip."
+    },
+    {
+      "name": "parse_pose",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 14,
+      "kind": "function",
+      "inputs": [
+        "elem"
+      ],
+      "returns": "brak",
+      "description": "Parsuje pozę. Korzysta m.in. z: split, len, text_or."
+    },
+    {
+      "name": "geometry_to_urdf",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 21,
+      "kind": "function",
+      "inputs": [
+        "geom_elem"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje to urdf. Korzysta m.in. z: find, text_or, Element."
+    },
+    {
+      "name": "add_origin",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 45,
+      "kind": "function",
+      "inputs": [
+        "parent",
+        "pose"
+      ],
+      "returns": "brak",
+      "description": "Dodaje origin. Korzysta m.in. z: SubElement, set, join."
+    },
+    {
+      "name": "add_inertial",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 51,
+      "kind": "function",
+      "inputs": [
+        "link",
+        "inertial_elem"
+      ],
+      "returns": "brak",
+      "description": "Dodaje inertial. Korzysta m.in. z: SubElement, parse_pose, add_origin."
+    },
+    {
+      "name": "add_visual_or_collision",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 74,
+      "kind": "function",
+      "inputs": [
+        "link",
+        "tag",
+        "elem"
+      ],
+      "returns": "brak",
+      "description": "Dodaje visual or collision. Korzysta m.in. z: SubElement, parse_pose, add_origin."
+    },
+    {
+      "name": "add_link",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 90,
+      "kind": "function",
+      "inputs": [
+        "parent",
+        "sdf_link"
+      ],
+      "returns": "brak",
+      "description": "Dodaje link. Korzysta m.in. z: get, SubElement, set."
+    },
+    {
+      "name": "add_joint",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 102,
+      "kind": "function",
+      "inputs": [
+        "parent",
+        "sdf_joint",
+        "child_pose"
+      ],
+      "returns": "brak",
+      "description": "Dodaje joint. Korzysta m.in. z: get, SubElement, set."
+    },
+    {
+      "name": "main",
+      "file": "scripts/generate_urdf_from_sdf.py",
+      "line": 131,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: dirname, join, parse."
+    },
+    {
+      "name": "load_reference_map",
+      "file": "scripts/inspect_dataset.py",
+      "line": 16,
+      "kind": "function",
+      "inputs": [
+        "yaml_path",
+        "pgm_path"
+      ],
+      "returns": "brak",
+      "description": "Wczytuje mapę referencyjną z plików YAML i PGM."
+    },
+    {
+      "name": "scan_to_points",
+      "file": "scripts/inspect_dataset.py",
+      "line": 55,
+      "kind": "function",
+      "inputs": [
+        "scan",
+        "pose",
+        "max_range = 5.0"
+      ],
+      "returns": "brak",
+      "description": "Konwertuje skan LiDAR na punkty (x, y) w układzie globalnym."
+    },
+    {
+      "name": "main",
+      "file": "scripts/inspect_dataset.py",
+      "line": 75,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: ArgumentParser, add_argument, parse_args."
+    },
+    {
+      "name": "read_json",
+      "file": "scripts/slam_dashboard.py",
+      "line": 60,
+      "kind": "function",
+      "inputs": [
+        "path: Path"
+      ],
+      "returns": "dict[str, Any]",
+      "description": "Obsługuje json. Korzysta m.in. z: loads, read_text."
+    },
+    {
+      "name": "read_text",
+      "file": "scripts/slam_dashboard.py",
+      "line": 67,
+      "kind": "function",
+      "inputs": [
+        "path: Path"
+      ],
+      "returns": "str",
+      "description": "Obsługuje text. Korzysta m.in. z: read_text."
+    },
+    {
+      "name": "safe_float",
+      "file": "scripts/slam_dashboard.py",
+      "line": 71,
+      "kind": "function",
+      "inputs": [
+        "value: str | None"
+      ],
+      "returns": "float | None",
+      "description": "Obsługuje float. Korzysta m.in. z: float."
+    },
+    {
+      "name": "safe_relative",
+      "file": "scripts/slam_dashboard.py",
+      "line": 80,
+      "kind": "function",
+      "inputs": [
+        "path: Path"
+      ],
+      "returns": "str",
+      "description": "Obsługuje relative. Korzysta m.in. z: str, relative_to, resolve."
+    },
+    {
+      "name": "list_config_files",
+      "file": "scripts/slam_dashboard.py",
+      "line": 87,
+      "kind": "function",
+      "inputs": [],
+      "returns": "list[dict[str, str]]",
+      "description": "Obsługuje config files. Korzysta m.in. z: sorted, exists, glob."
+    },
+    {
+      "name": "resolve_config_name",
+      "file": "scripts/slam_dashboard.py",
+      "line": 96,
+      "kind": "function",
+      "inputs": [
+        "name: str"
+      ],
+      "returns": "Path",
+      "description": "Obsługuje config name. Korzysta m.in. z: resolve, startswith, ValueError."
+    },
+    {
+      "name": "load_config_payload",
+      "file": "scripts/slam_dashboard.py",
+      "line": 105,
+      "kind": "function",
+      "inputs": [
+        "name: str"
+      ],
+      "returns": "dict[str, Any]",
+      "description": "Wczytuje config payload. Korzysta m.in. z: resolve_config_name, read_text, exists."
+    },
+    {
+      "name": "render_yaml_content",
+      "file": "scripts/slam_dashboard.py",
+      "line": 119,
+      "kind": "function",
+      "inputs": [
+        "parsed: Any"
+      ],
+      "returns": "str",
+      "description": "Obsługuje plik YAML content. Korzysta m.in. z: safe_dump."
+    },
+    {
+      "name": "save_config_payload",
+      "file": "scripts/slam_dashboard.py",
+      "line": 128,
+      "kind": "function",
+      "inputs": [
+        "name: str",
+        "content: str | None = None",
+        "parsed: Any | None = None"
+      ],
+      "returns": "dict[str, Any]",
+      "description": "Zapisuje config payload. Korzysta m.in. z: resolve_config_name, write_text, render_yaml_content."
+    },
+    {
+      "name": "ensure_function_index",
+      "file": "scripts/slam_dashboard.py",
+      "line": 144,
+      "kind": "function",
+      "inputs": [],
+      "returns": "None",
+      "description": "Zapewnia function index. Korzysta m.in. z: run, exists, str."
+    },
+    {
+      "name": "safe_resolve_local_path",
+      "file": "scripts/slam_dashboard.py",
+      "line": 161,
+      "kind": "function",
+      "inputs": [
+        "raw_path: str"
+      ],
+      "returns": "Path",
+      "description": "Obsługuje resolve local path. Korzysta m.in. z: Path, unquote, is_absolute."
+    },
+    {
+      "name": "load_trajectory_npz",
+      "file": "scripts/slam_dashboard.py",
+      "line": 172,
+      "kind": "function",
+      "inputs": [
+        "experiment_id: str"
+      ],
+      "returns": "np.lib.npyio.NpzFile",
+      "description": "Wczytuje trajektorię plik NPZ. Korzysta m.in. z: load, exists, FileNotFoundError."
+    },
+    {
+      "name": "wrap_angle_array",
+      "file": "scripts/slam_dashboard.py",
+      "line": 180,
+      "kind": "function",
+      "inputs": [
+        "values: np.ndarray"
+      ],
+      "returns": "np.ndarray",
+      "description": "Normalizuje angle array. Korzysta m.in. z: asarray, astype."
+    },
+    {
+      "name": "nearest_time_indices",
+      "file": "scripts/slam_dashboard.py",
+      "line": 185,
+      "kind": "function",
+      "inputs": [
+        "reference_time: np.ndarray",
+        "query_time: np.ndarray"
+      ],
+      "returns": "np.ndarray",
+      "description": "Obsługuje time indices. Korzysta m.in. z: reshape, searchsorted, clip."
+    },
+    {
+      "name": "get_pose_series",
+      "file": "scripts/slam_dashboard.py",
+      "line": 198,
+      "kind": "function",
+      "inputs": [
+        "data: np.lib.npyio.NpzFile",
+        "series_name: str"
+      ],
+      "returns": "tuple[np.ndarray, np.ndarray] | None",
+      "description": "Zwraca pozę series. Korzysta m.in. z: get, reshape, asarray."
+    },
+    {
+      "name": "get_error_series",
+      "file": "scripts/slam_dashboard.py",
+      "line": 216,
+      "kind": "function",
+      "inputs": [
+        "data: np.lib.npyio.NpzFile",
+        "series_name: str"
+      ],
+      "returns": "tuple[np.ndarray, np.ndarray, np.ndarray, str] | None",
+      "description": "Zwraca error series. Korzysta m.in. z: get, get_pose_series, reshape."
+    },
+    {
+      "name": "inspect_trajectory_capabilities",
+      "file": "scripts/slam_dashboard.py",
+      "line": 261,
+      "kind": "function",
+      "inputs": [
+        "exp_dir: Path"
+      ],
+      "returns": "dict[str, Any]",
+      "description": "Obsługuje trajektorię capabilities. Korzysta m.in. z: exists, load, get_error_series."
+    },
+    {
+      "name": "discover_experiments",
+      "file": "scripts/slam_dashboard.py",
+      "line": 283,
+      "kind": "function",
+      "inputs": [],
+      "returns": "list[dict[str, Any]]",
+      "description": "Obsługuje experiments. Korzysta m.in. z: sorted, exists, glob."
+    },
+    {
+      "name": "JobManager.__init__",
+      "file": "scripts/slam_dashboard.py",
+      "line": 353,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje init. Korzysta m.in. z: Lock, mkdir."
+    },
+    {
+      "name": "JobManager.list_jobs",
+      "file": "scripts/slam_dashboard.py",
+      "line": 358,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "list[dict[str, Any]]",
+      "description": "Obsługuje jobs. Korzysta m.in. z: sort, list, asdict."
+    },
+    {
+      "name": "JobManager.read_log",
+      "file": "scripts/slam_dashboard.py",
+      "line": 364,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "job_id: str",
+        "tail: int = 40000"
+      ],
+      "returns": "str",
+      "description": "Obsługuje log. Korzysta m.in. z: Path, read_text, get."
+    },
+    {
+      "name": "JobManager.start",
+      "file": "scripts/slam_dashboard.py",
+      "line": 375,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "label: str",
+        "command: str",
+        "cwd: Path | None = None"
+      ],
+      "returns": "dict[str, Any]",
+      "description": "Rozpoczyna start. Korzysta m.in. z: Job, Thread, start."
+    },
+    {
+      "name": "JobManager._run",
+      "file": "scripts/slam_dashboard.py",
+      "line": 398,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "job_id: str"
+      ],
+      "returns": "brak",
+      "description": "Uruchamia run. Korzysta m.in. z: Path, time, open."
+    },
+    {
+      "name": "command_for_training",
+      "file": "scripts/slam_dashboard.py",
+      "line": 432,
+      "kind": "function",
+      "inputs": [
+        "model_type: str",
+        "experiment_id: str"
+      ],
+      "returns": "tuple[str, str]",
+      "description": "Obsługuje for training. Korzysta m.in. z: quote, ValueError, str."
+    },
+    {
+      "name": "build_job_command",
+      "file": "scripts/slam_dashboard.py",
+      "line": 487,
+      "kind": "function",
+      "inputs": [
+        "payload: dict[str, Any]"
+      ],
+      "returns": "tuple[str, str]",
+      "description": "Buduje job command. Korzysta m.in. z: strip, ValueError, safe_resolve_local_path."
+    },
+    {
+      "name": "make_placeholder_figure",
+      "file": "scripts/slam_dashboard.py",
+      "line": 528,
+      "kind": "function",
+      "inputs": [
+        "title: str",
+        "message: str"
+      ],
+      "returns": "bytes",
+      "description": "Obsługuje placeholder figure. Korzysta m.in. z: subplots, text, set_title."
+    },
+    {
+      "name": "figure_to_png",
+      "file": "scripts/slam_dashboard.py",
+      "line": 536,
+      "kind": "function",
+      "inputs": [
+        "fig"
+      ],
+      "returns": "bytes",
+      "description": "Obsługuje to png. Korzysta m.in. z: BytesIO, tight_layout, savefig."
+    },
+    {
+      "name": "plot_trajectory_image",
+      "file": "scripts/slam_dashboard.py",
+      "line": 545,
+      "kind": "function",
+      "inputs": [
+        "experiment_id: str",
+        "series_names: list[str]",
+        "x_min: float | None",
+        "x_max: float | None",
+        "y_min: float | None",
+        "y_max: float | None"
+      ],
+      "returns": "bytes",
+      "description": "Rysuje trajektorię image. Korzysta m.in. z: subplots, set_title, set_xlabel."
+    },
+    {
+      "name": "plot_error_image",
+      "file": "scripts/slam_dashboard.py",
+      "line": 591,
+      "kind": "function",
+      "inputs": [
+        "experiment_id: str",
+        "series_names: list[str]",
+        "metric: str",
+        "time_min: float | None",
+        "time_max: float | None",
+        "y_min: float | None",
+        "y_max: float | None"
+      ],
+      "returns": "bytes",
+      "description": "Rysuje error image. Korzysta m.in. z: startswith, subplots, set."
+    },
+    {
+      "name": "DashboardHandler.do_GET",
+      "file": "scripts/slam_dashboard.py",
+      "line": 1900,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje GET. Korzysta m.in. z: urlparse, _send_text, ensure_function_index."
+    },
+    {
+      "name": "DashboardHandler.do_POST",
+      "file": "scripts/slam_dashboard.py",
+      "line": 1997,
+      "kind": "method",
+      "inputs": [
+        "self"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje POST. Korzysta m.in. z: urlparse, _send_json, _send_text."
+    },
+    {
+      "name": "DashboardHandler.log_message",
+      "file": "scripts/slam_dashboard.py",
+      "line": 2042,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "format: str",
+        "*args"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje message."
+    },
+    {
+      "name": "DashboardHandler._send_json",
+      "file": "scripts/slam_dashboard.py",
+      "line": 2045,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "payload: dict[str, Any]",
+        "status: HTTPStatus = HTTPStatus.OK"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje json. Korzysta m.in. z: encode, _send_bytes, dumps."
+    },
+    {
+      "name": "DashboardHandler._send_text",
+      "file": "scripts/slam_dashboard.py",
+      "line": 2049,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "text: str",
+        "status: HTTPStatus = HTTPStatus.OK",
+        "content_type: str = 'text/plain; charset=utf-8'"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje text. Korzysta m.in. z: _send_bytes, encode."
+    },
+    {
+      "name": "DashboardHandler._send_bytes",
+      "file": "scripts/slam_dashboard.py",
+      "line": 2052,
+      "kind": "method",
+      "inputs": [
+        "self",
+        "data: bytes",
+        "status: HTTPStatus = HTTPStatus.OK",
+        "content_type: str = 'application/octet-stream'"
+      ],
+      "returns": "brak",
+      "description": "Obsługuje bytes. Korzysta m.in. z: send_response, send_header, end_headers."
+    },
+    {
+      "name": "main",
+      "file": "scripts/slam_dashboard.py",
+      "line": 2060,
+      "kind": "function",
+      "inputs": [],
+      "returns": "brak",
+      "description": "Stanowi punkt wejścia dla main. Korzysta m.in. z: ArgumentParser, add_argument, parse_args."
+    }
+  ]
+}

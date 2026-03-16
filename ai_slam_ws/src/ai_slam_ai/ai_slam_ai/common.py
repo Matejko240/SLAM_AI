@@ -1,6 +1,7 @@
 import math
 import os
 import random
+from dataclasses import dataclass
 import numpy as np
 
 
@@ -28,6 +29,78 @@ def ensure_dir(path: str):
 
 def wrap(a: float) -> float:
     return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def parse_filter_mode(value: str, default: str = "any") -> str:
+    mode = str(value).strip().lower()
+    if mode in {"all", "and"}:
+        return "all"
+    if mode in {"any", "or"}:
+        return "any"
+    return default
+
+
+@dataclass(frozen=True)
+class PoseDelta:
+    dx: float
+    dy: float
+    dtheta: float
+    distance: float
+
+
+def pose_delta(prev_xyth, curr_xyth) -> PoseDelta:
+    dx = float(curr_xyth[0]) - float(prev_xyth[0])
+    dy = float(curr_xyth[1]) - float(prev_xyth[1])
+    dtheta = wrap(float(curr_xyth[2]) - float(prev_xyth[2]))
+    return PoseDelta(
+        dx=dx,
+        dy=dy,
+        dtheta=dtheta,
+        distance=float(math.hypot(dx, dy)),
+    )
+
+
+def scan_delta_rms(scan_prev: np.ndarray, scan_curr: np.ndarray) -> float:
+    if scan_prev is None or scan_curr is None:
+        return 0.0
+    delta = np.asarray(scan_curr, dtype=np.float32) - np.asarray(scan_prev, dtype=np.float32)
+    if delta.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(delta * delta)))
+
+
+def passes_motion_filter(
+    prev_xyth,
+    curr_xyth,
+    *,
+    dt_sec: float | None = None,
+    min_translation: float = 0.0,
+    min_rotation: float = 0.0,
+    min_time_gap_sec: float = 0.0,
+    min_scan_delta_rms: float = 0.0,
+    scan_delta_rms_value: float | None = None,
+    mode: str = "any",
+) -> tuple[bool, PoseDelta]:
+    delta = pose_delta(prev_xyth, curr_xyth)
+    checks = []
+
+    if min_translation > 0.0:
+        checks.append(delta.distance >= float(min_translation))
+    if min_rotation > 0.0:
+        checks.append(abs(delta.dtheta) >= float(min_rotation))
+    if min_time_gap_sec > 0.0:
+        checks.append(dt_sec is not None and float(dt_sec) >= float(min_time_gap_sec))
+    if min_scan_delta_rms > 0.0:
+        checks.append(
+            scan_delta_rms_value is not None
+            and float(scan_delta_rms_value) >= float(min_scan_delta_rms)
+        )
+
+    if not checks:
+        return True, delta
+
+    filt_mode = parse_filter_mode(mode)
+    return (all(checks) if filt_mode == "all" else any(checks)), delta
 
 
 def yaw_from_quat(q):
