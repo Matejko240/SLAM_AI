@@ -662,7 +662,30 @@ class ExperimentLogger:
                 else:
                     result[key] = self._merge_dict(result[key], value)
         return result
-    
+
+    def _merge_top_level_metadata(self, current: dict, saved: dict) -> dict:
+        """Zachowuje dodatkowe pola top-level spoza standardowego modelu logu."""
+        result = current.copy()
+        known_keys = {
+            "experiment_id",
+            "created_at",
+            "system_info",
+            "dataset",
+            "training",
+            "inference",
+            "evaluation",
+            "total_experiment_time_sec",
+            "notes",
+        }
+        for key, value in saved.items():
+            if key in known_keys:
+                continue
+            if key not in result or result[key] in (None, {}, []):
+                result[key] = value
+            elif isinstance(result.get(key), dict) and isinstance(value, dict):
+                result[key] = self._merge_dict(result[key], value)
+        return result
+
     def save(self):
         """
         Zapisuje log do pliku JSON w sposób bezpieczny dla wielu procesów (wiele node'ów).
@@ -713,6 +736,8 @@ class ExperimentLogger:
                         # Zachowaj total time jeśli już istnieje
                         if saved_data.get("total_experiment_time_sec") is not None and current_data.get("total_experiment_time_sec") is None:
                             current_data["total_experiment_time_sec"] = saved_data["total_experiment_time_sec"]
+
+                        current_data = self._merge_top_level_metadata(current_data, saved_data)
 
                     except Exception:
                         # Jeśli metadata jest w trakcie zapisu / uszkodzona, nie zabijaj treningu

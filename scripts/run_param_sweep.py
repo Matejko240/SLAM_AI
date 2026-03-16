@@ -15,11 +15,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from out_layout import (
+    OUT_DIR,
+    ensure_experiment_storage,
+    ensure_grouped_out_layout,
+    ensure_sweep_storage,
+    iter_experiment_dirs,
+    resolve_experiment_dir,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO_ROOT / "ai_slam_ws" / "src" / "ai_slam_bringup" / "config"
-OUT_DIR = REPO_ROOT / "out"
 RUN_FULL_CYCLE = REPO_ROOT / "scripts" / "run_full_cycle.sh"
 CLEANUP_SCRIPT = REPO_ROOT / "scripts" / "cleanup.sh"
 DEFAULT_CONFIG_NAME = "experiment_config.yaml"
@@ -101,10 +108,7 @@ def resolve_config_path(config_name: str) -> Path:
 def resolve_source_experiment(exp_id: str) -> Path:
     if not exp_id:
         raise ValueError("Brak eksperymentu zrodlowego dla sweepu na stalych datasetach.")
-    source_dir = (OUT_DIR / exp_id).resolve()
-    if not source_dir.exists() or not source_dir.is_dir():
-        raise FileNotFoundError(f"Nie znaleziono eksperymentu zrodlowego: {source_dir}")
-    return source_dir
+    return resolve_experiment_dir(exp_id)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -174,7 +178,11 @@ def sanitize_value(value: Any) -> str:
 def read_metrics(exp_id: str) -> dict[str, Any]:
     if not exp_id:
         return {}
-    results_path = OUT_DIR / exp_id / "results.json"
+    try:
+        exp_dir = resolve_experiment_dir(exp_id)
+    except FileNotFoundError:
+        return {}
+    results_path = exp_dir / "results.json"
     if not results_path.exists():
         return {}
     payload = read_json(results_path)
@@ -211,6 +219,11 @@ def write_summary(summary_path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def persist_summary_files(summary_csv: Path, summary_json: Path, rows: list[dict[str, Any]]) -> None:
+    write_summary(summary_csv, rows)
+    summary_json.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def effective_base_config(config_name: str, source_dir: Path | None) -> Path:
@@ -566,6 +579,7 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
     if not RUN_FULL_CYCLE.exists():
         raise FileNotFoundError(f"Brak skryptu: {RUN_FULL_CYCLE}")
 
+    ensure_grouped_out_layout()
     config_path = resolve_config_path(args.config)
     base_config = load_yaml(config_path)
     param_path = [part.strip() for part in str(args.param).split(".") if part.strip()]
@@ -579,11 +593,12 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
         raise ValueError("Zakres sweepu nie wygenerowal zadnej wartosci.")
 
     sweep_id = f"sweep_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(param_path)}"
-    sweep_dir = OUT_DIR / sweep_id
+    sweep_dir = ensure_sweep_storage(sweep_id)
     config_out_dir = sweep_dir / "configs"
     config_out_dir.mkdir(parents=True, exist_ok=True)
     summary_csv = sweep_dir / "summary.csv"
     summary_json = sweep_dir / "summary.json"
+    persist_summary_files(summary_csv, summary_json, [])
 
     print(f"[SWEEP] Tryb legacy full-cycle.")
     print(f"[SWEEP] Config bazowy: {config_path}")
@@ -604,12 +619,12 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
 
-        before = {path.name for path in OUT_DIR.glob("exp_*") if path.is_dir()}
+        before = {path.name for path in iter_experiment_dirs()}
         started_at = time.time()
         print(f"\n[SWEEP] [{index}/{len(values)}] {'.'.join(param_path)} = {casted_value}")
         completed = subprocess.run([str(RUN_FULL_CYCLE), str(temp_config)], cwd=REPO_ROOT)
         elapsed = time.time() - started_at
-        after = {path.name for path in OUT_DIR.glob("exp_*") if path.is_dir()}
+        after = {path.name for path in iter_experiment_dirs()}
         exp_id = discover_new_experiment(before, after)
         metrics = read_metrics(exp_id)
         status = "done" if completed.returncode == 0 else f"failed({completed.returncode})"
@@ -639,15 +654,15 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
                 "iou_map_baseline": metrics.get("iou_map_baseline"),
             }
         )
+        persist_summary_files(summary_csv, summary_json, rows)
 
-    write_summary(summary_csv, rows)
-    summary_json.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\n[SWEEP] Zapisano podsumowanie CSV: {summary_csv}")
     print(f"[SWEEP] Zapisano podsumowanie JSON: {summary_json}")
     return 1 if had_failures else 0
 
 
 def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
+    ensure_grouped_out_layout()
     source_dir = resolve_source_experiment(args.source_experiment)
     base_config_path = effective_base_config(args.config, source_dir)
     base_config = load_yaml(base_config_path)
@@ -663,7 +678,7 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
         raise ValueError("Zakres sweepu nie wygenerowal zadnej wartosci.")
 
     sweep_id = f"sweep_fixed_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(param_path)}"
-    sweep_dir = OUT_DIR / sweep_id
+    sweep_dir = ensure_sweep_storage(sweep_id)
     config_out_dir = sweep_dir / "configs"
     params_out_dir = sweep_dir / "train_params"
     logs_out_dir = sweep_dir / "logs"
@@ -672,6 +687,7 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
     logs_out_dir.mkdir(parents=True, exist_ok=True)
     summary_csv = sweep_dir / "summary.csv"
     summary_json = sweep_dir / "summary.json"
+    persist_summary_files(summary_csv, summary_json, [])
 
     print(f"[SWEEP] Tryb: fixed_dataset")
     print(f"[SWEEP] Eksperyment zrodlowy: {source_dir.name}")
@@ -696,7 +712,7 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
         )
 
         exp_id = f"exp_sweep_{time.strftime('%Y%m%d_%H%M%S')}_{index:02d}"
-        target_dir = OUT_DIR / exp_id
+        target_dir = ensure_experiment_storage(exp_id)
         started_at = time.time()
         status = "done"
         trainer_log_paths: dict[str, str] = {}
@@ -770,10 +786,9 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
                 "iou_map_baseline": metrics.get("iou_map_baseline"),
             }
         )
+        persist_summary_files(summary_csv, summary_json, rows)
         print(f"[SWEEP]   status={status}")
 
-    write_summary(summary_csv, rows)
-    summary_json.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\n[SWEEP] Zapisano podsumowanie CSV: {summary_csv}")
     print(f"[SWEEP] Zapisano podsumowanie JSON: {summary_json}")
     return 1 if had_failures else 0

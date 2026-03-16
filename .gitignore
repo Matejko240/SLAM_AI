@@ -5,7 +5,6 @@ ai_slam_ws/install/
 ai_slam_ws/log/
 log/
 install/
-out/*
 !.gitkeep
 .DS_Store
 .vscode/
@@ -16,3 +15,4 @@ build/
 niemoje/
 moje/
 Raporty/
+out/

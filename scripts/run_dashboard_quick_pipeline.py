@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from out_layout import DASHBOARD_QUICK_CONFIG_DIR, ensure_experiment_storage, ensure_grouped_out_layout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO_ROOT / "ai_slam_ws" / "src" / "ai_slam_bringup" / "config"
-TEMP_CONFIG_DIR = REPO_ROOT / "out" / "dashboard_quick_configs"
+TEMP_CONFIG_DIR = DASHBOARD_QUICK_CONFIG_DIR
 VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.12" / "site-packages"
 
 
@@ -163,6 +164,7 @@ def run_shell_command(command: str) -> int:
 
 
 def train_existing_experiment(base_config_path: Path, experiment_id: str) -> int:
+    ensure_experiment_storage(experiment_id)
     cfg = load_yaml(base_config_path)
     mode = str(get_cfg_value(cfg, "experiment", "mode", default="ai")).lower()
     if mode != "ai":
@@ -283,6 +285,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    ensure_grouped_out_layout()
     base_config_path = resolve_config_path(args.base_config)
     if args.mode in {"dataset", "full_cycle"} and args.dataset_duration is None:
         raise ValueError("Tryb dataset/full_cycle wymaga --dataset-duration.")
@@ -309,6 +312,7 @@ def main() -> int:
     print(f"[QUICK] Experiment ID: {experiment_id}")
 
     if args.mode == "dataset":
+        ensure_experiment_storage(experiment_id)
         return run_command(
             [
                 "bash",
@@ -320,6 +324,7 @@ def main() -> int:
         )
 
     if args.mode == "test_existing":
+        ensure_experiment_storage(args.experiment_id.strip())
         return run_command(
             [
                 "bash",
@@ -330,6 +335,7 @@ def main() -> int:
             ]
         )
 
+    ensure_experiment_storage(experiment_id)
     return run_command(
         [
             "bash",

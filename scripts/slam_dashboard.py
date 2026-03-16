@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import errno
 import html
 import io
 import json
 import mimetypes
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -29,15 +31,23 @@ import yaml
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from out_layout import (
+    DASHBOARD_JOBS_DIR,
+    OUT_DIR,
+    ensure_grouped_out_layout,
+    iter_experiment_dirs,
+    iter_sweep_dirs,
+    resolve_experiment_dir,
+    resolve_sweep_dir,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = REPO_ROOT / "out"
 DOCS_DIR = REPO_ROOT / "docs"
 CONFIG_DIR = REPO_ROOT / "ai_slam_ws" / "src" / "ai_slam_bringup" / "config"
 FUNCTION_INDEX_MD = DOCS_DIR / "function_index.md"
 FUNCTION_INDEX_JSON = DOCS_DIR / "function_index.json"
-JOB_LOG_DIR = OUT_DIR / "dashboard_jobs"
+JOB_LOG_DIR = DASHBOARD_JOBS_DIR
 VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.12" / "site-packages"
 POSITION_SERIES = {
     "gt": ("time_s", "gt_xytheta", "GT", "#e2e8f0"),
@@ -165,6 +175,11 @@ SWEEP_PLOT_FAMILIES = {
         ],
     },
 }
+SWEEP_NOTE_RE = re.compile(
+    r"Sweep (?P<mode>[a-z_]+): source=(?P<source>[^,]+), param=(?P<param>[^,]+), "
+    r"value=(?P<value>.*?), base_config=(?P<base_config>.+)$"
+)
+SWEEP_EXPERIMENT_RE = re.compile(r"(exp_[A-Za-z0-9_]+)")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -180,6 +195,15 @@ def read_json_list(path: Path) -> list[dict[str, Any]]:
         if not isinstance(payload, list):
             return []
         return [item for item in payload if isinstance(item, dict)]
+    except Exception:
+        return []
+
+
+def read_csv_list(path: Path) -> list[dict[str, Any]]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            return [dict(row) for row in reader if isinstance(row, dict)]
     except Exception:
         return []
 
@@ -264,6 +288,148 @@ def format_param_value(value: Any) -> str:
 
 def is_numeric_param_value(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def parse_sweep_value(raw_value: str) -> Any:
+    text = str(raw_value).strip()
+    if not text:
+        return ""
+    if text.lower() == "true":
+        return True
+    if text.lower() == "false":
+        return False
+    if text.startswith(("[", "{", "\"")):
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+    try:
+        if any(char in text for char in ".eE"):
+            return float(text)
+        return int(text)
+    except Exception:
+        return text
+
+
+def extract_sweep_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    sweep = metadata.get("sweep")
+    if isinstance(sweep, dict) and sweep.get("param_path"):
+        return {
+            "mode": str(sweep.get("mode", "")).strip() or "fixed_dataset",
+            "source_experiment_id": str(sweep.get("source_experiment_id", "")).strip(),
+            "param_path": str(sweep.get("param_path", "")).strip(),
+            "param_value": normalize_json_value(sweep.get("param_value")),
+            "base_config_path": str(sweep.get("base_config_path", "")).strip(),
+        }
+
+    notes = metadata.get("notes", [])
+    if not isinstance(notes, list):
+        return {}
+    for note in reversed(notes):
+        match = SWEEP_NOTE_RE.search(str(note))
+        if not match:
+            continue
+        return {
+            "mode": match.group("mode").strip() or "fixed_dataset",
+            "source_experiment_id": match.group("source").strip(),
+            "param_path": match.group("param").strip(),
+            "param_value": parse_sweep_value(match.group("value")),
+            "base_config_path": match.group("base_config").strip(),
+        }
+    return {}
+
+
+def sweep_config_path(sweep_dir: Path, experiment_id: str) -> str:
+    index = experiment_id.rsplit("_", 1)[-1]
+    if not index.isdigit():
+        return ""
+    config_dir = sweep_dir / "configs"
+    if not config_dir.exists():
+        return ""
+    matches = sorted(config_dir.glob(f"{index}_*.yaml"))
+    if not matches:
+        return ""
+    return str(matches[0].resolve())
+
+
+def collect_sweep_experiment_ids(sweep_dir: Path) -> list[str]:
+    experiment_ids: set[str] = set()
+    for subdir_name, pattern in (("logs", "*.log"), ("train_params", "*.yaml")):
+        subdir = sweep_dir / subdir_name
+        if not subdir.exists():
+            continue
+        for path in subdir.glob(pattern):
+            match = SWEEP_EXPERIMENT_RE.search(path.stem)
+            if match:
+                experiment_ids.add(match.group(1))
+    return sorted(experiment_ids)
+
+
+def recover_sweep_rows(sweep_dir: Path) -> list[dict[str, Any]]:
+    recovered_rows: list[dict[str, Any]] = []
+    for experiment_id in collect_sweep_experiment_ids(sweep_dir):
+        try:
+            exp_dir = resolve_experiment_dir(experiment_id)
+        except FileNotFoundError:
+            continue
+
+        metadata = read_json(exp_dir / "experiment_metadata.json")
+        sweep_meta = extract_sweep_metadata(metadata)
+        if not sweep_meta.get("param_path"):
+            continue
+
+        results = read_json(exp_dir / "results.json")
+        metrics = results.get("metrics", {}) if isinstance(results.get("metrics"), dict) else {}
+        total_time = metadata.get("total_experiment_time_sec")
+        recovered_rows.append(
+            {
+                "mode": sweep_meta.get("mode", "fixed_dataset"),
+                "source_experiment_id": sweep_meta.get("source_experiment_id", ""),
+                "param_path": sweep_meta.get("param_path", ""),
+                "param_value": sweep_meta.get("param_value"),
+                "status": "done" if (exp_dir / "results.json").exists() else "failed_results_missing",
+                "elapsed_sec": round(float(total_time), 3) if isinstance(total_time, (int, float)) else total_time,
+                "experiment_id": experiment_id,
+                "config_path": sweep_config_path(sweep_dir, experiment_id),
+                "rmse_xy_robak": metrics.get("rmse_xy_robak"),
+                "rmse_theta_robak": metrics.get("rmse_theta_robak"),
+                "iou_map_robak": metrics.get("iou_map_robak"),
+                "rmse_xy_rywak": metrics.get("rmse_xy_rywak"),
+                "rmse_theta_rywak": metrics.get("rmse_theta_rywak"),
+                "iou_map_rywak": metrics.get("iou_map_rywak"),
+                "rmse_xy_ai": metrics.get("rmse_xy_ai"),
+                "rmse_theta_ai": metrics.get("rmse_theta_ai"),
+                "iou_map_ai": metrics.get("iou_map_ai"),
+                "rmse_xy_baseline": metrics.get("rmse_xy_baseline"),
+                "rmse_theta_baseline": metrics.get("rmse_theta_baseline"),
+                "iou_map_baseline": metrics.get("iou_map_baseline"),
+            }
+        )
+
+    def sort_key(row: dict[str, Any]) -> tuple[int, float | str]:
+        numeric_value = metric_float(row.get("param_value"))
+        if numeric_value is not None:
+            return (0, numeric_value)
+        return (1, str(row.get("experiment_id", "")))
+
+    return sorted(recovered_rows, key=sort_key)
+
+
+def load_sweep_rows(sweep_dir: Path) -> tuple[list[dict[str, Any]], str]:
+    summary_json_path = sweep_dir / "summary.json"
+    rows = read_json_list(summary_json_path)
+    if rows:
+        return rows, "summary_json"
+
+    summary_csv_path = sweep_dir / "summary.csv"
+    rows = read_csv_list(summary_csv_path)
+    if rows:
+        return rows, "summary_csv"
+
+    rows = recover_sweep_rows(sweep_dir)
+    if rows:
+        return rows, "recovered_experiments"
+    return [], "missing"
 
 
 def list_config_files() -> list[dict[str, str]]:
@@ -352,7 +518,7 @@ def safe_resolve_local_path(raw_path: str) -> Path:
 
 
 def load_trajectory_npz(experiment_id: str) -> np.lib.npyio.NpzFile:
-    exp_dir = OUT_DIR / experiment_id
+    exp_dir = resolve_experiment_dir(experiment_id)
     traj_path = exp_dir / "trajectory_data.npz"
     if not traj_path.exists():
         raise FileNotFoundError(f"Brak pliku trajectory_data.npz dla {experiment_id}")
@@ -546,23 +712,19 @@ def metric_float(value: Any) -> float | None:
 
 def discover_sweeps() -> list[dict[str, Any]]:
     sweeps: list[dict[str, Any]] = []
+    ensure_grouped_out_layout()
     if not OUT_DIR.exists():
         return sweeps
 
-    for sweep_dir in sorted(OUT_DIR.glob("sweep*"), reverse=True):
-        if not sweep_dir.is_dir():
-            continue
+    for sweep_dir in iter_sweep_dirs():
         summary_json_path = sweep_dir / "summary.json"
-        if not summary_json_path.exists():
-            continue
+        summary_csv_path = sweep_dir / "summary.csv"
+        rows, rows_source = load_sweep_rows(sweep_dir)
 
-        rows = read_json_list(summary_json_path)
-        if not rows:
-            continue
-
-        param_path = str(rows[0].get("param_path", "")).strip()
-        source_experiment_id = str(rows[0].get("source_experiment_id", "")).strip()
-        mode = str(rows[0].get("mode", "")).strip() or "unknown"
+        first_row = rows[0] if rows else {}
+        param_path = str(first_row.get("param_path", "")).strip()
+        source_experiment_id = str(first_row.get("source_experiment_id", "")).strip()
+        mode = str(first_row.get("mode", "")).strip() or "unknown"
         success_count = sum(1 for row in rows if str(row.get("status", "")).strip() == "done")
         failed_count = len(rows) - success_count
         families: list[dict[str, Any]] = []
@@ -586,7 +748,9 @@ def discover_sweeps() -> list[dict[str, Any]]:
                     }
                 )
 
-        summary_csv_path = sweep_dir / "summary.csv"
+        created_at_source = summary_json_path if summary_json_path.exists() else (
+            summary_csv_path if summary_csv_path.exists() else sweep_dir
+        )
         sweeps.append(
             {
                 "id": sweep_dir.name,
@@ -597,9 +761,10 @@ def discover_sweeps() -> list[dict[str, Any]]:
                 "total_count": len(rows),
                 "success_count": success_count,
                 "failed_count": failed_count,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(summary_json_path.stat().st_mtime)),
-                "summary_json_path": str(summary_json_path.resolve()),
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(created_at_source.stat().st_mtime)),
+                "summary_json_path": str(summary_json_path.resolve()) if summary_json_path.exists() else "",
                 "summary_csv_path": str(summary_csv_path.resolve()) if summary_csv_path.exists() else "",
+                "rows_source": rows_source,
                 "families": families,
                 "has_metric_data": bool(families),
             }
@@ -610,12 +775,11 @@ def discover_sweeps() -> list[dict[str, Any]]:
 
 def discover_experiments() -> list[dict[str, Any]]:
     experiments: list[dict[str, Any]] = []
+    ensure_grouped_out_layout()
     if not OUT_DIR.exists():
         return experiments
 
-    for exp_dir in sorted(OUT_DIR.glob("exp_*"), reverse=True):
-        if not exp_dir.is_dir():
-            continue
+    for exp_dir in iter_experiment_dirs():
         metadata = read_json(exp_dir / "experiment_metadata.json")
         results = read_json(exp_dir / "results.json")
         series_info = inspect_trajectory_capabilities(exp_dir)
@@ -859,7 +1023,7 @@ def build_job_command(payload: dict[str, Any]) -> tuple[str, str]:
         experiment_id = str(payload.get("experiment_id", "")).strip()
         if not experiment_id:
             raise ValueError("Brak experiment_id dla inspekcji datasetu.")
-        dataset_dir = safe_resolve_local_path(str(OUT_DIR / experiment_id))
+        dataset_dir = resolve_experiment_dir(experiment_id)
         return (
             f"Generowanie raportu datasetu dla {experiment_id}",
             f"python3 scripts/inspect_dataset.py {shlex.quote(str(dataset_dir))}",
@@ -1213,16 +1377,16 @@ def plot_sweep_image(sweep_id: str, family_key: str) -> bytes:
     if not sweep_id:
         return make_placeholder_figure("Analiza sweepa", "Wybierz wynik sweepa.")
 
-    sweep_dir = OUT_DIR / sweep_id
-    if not sweep_dir.exists() or not sweep_dir.is_dir():
+    try:
+        sweep_dir = resolve_sweep_dir(sweep_id)
+    except FileNotFoundError:
         return make_placeholder_figure("Analiza sweepa", f"Nie znaleziono katalogu sweepa: {sweep_id}")
 
-    summary_json_path = sweep_dir / "summary.json"
-    rows = read_json_list(summary_json_path)
+    rows, rows_source = load_sweep_rows(sweep_dir)
     if not rows:
         return make_placeholder_figure(
             "Analiza sweepa",
-            f"Brak poprawnego summary.json dla {sweep_id}.",
+            f"Brak danych sweepa dla {sweep_id}.",
         )
 
     family_spec = SWEEP_PLOT_FAMILIES.get(family_key)
@@ -1324,9 +1488,10 @@ def plot_sweep_image(sweep_id: str, family_key: str) -> bytes:
         )
 
     ax.set_ylabel(family_spec["y_label"])
+    source_suffix = " | odtworzone z eksperymentow" if rows_source == "recovered_experiments" else ""
     ax.set_title(
         f"{family_spec['label']} vs {param_label} | dataset: {source_experiment_id} | "
-        f"udane: {len(done_rows)}/{len(rows)}"
+        f"udane: {len(done_rows)}/{len(rows)}{source_suffix}"
     )
     ax.legend(loc="best")
     style_plot_legend(ax)
@@ -3296,7 +3461,7 @@ HTML_PAGE = """<!doctype html>
         const paramPath = String(sweep.param_path || '');
         const paramLabel = paramPath ? describeConfigField(paramPath.split('.')) : 'Parametr sweepa';
         option.value = sweep.id;
-        option.textContent = `${sourceText} · ${paramLabel} (${sweep.success_count}/${sweep.total_count})`;
+        option.textContent = `${sweep.id} · ${sourceText} · ${paramLabel} (${sweep.success_count}/${sweep.total_count})`;
         select.appendChild(option);
       });
 
@@ -3339,10 +3504,11 @@ HTML_PAGE = """<!doctype html>
       const paramLabel = paramPath ? describeConfigField(paramPath.split('.')) : 'Parametr sweepa';
       const sourceText = sweep.source_experiment_id || 'brak źródła';
       const failurePart = sweep.failed_count ? ` | nieudane: ${sweep.failed_count}` : '';
+      const sourcePart = sweep.rows_source === 'recovered_experiments' ? ' | dane odtworzone z exp_sweep_*' : '';
       if (familySelect.options.length > 0) {
-        note.textContent = `Źródło datasetu: ${sourceText} | parametr: ${paramLabel} | udane przebiegi: ${sweep.success_count}/${sweep.total_count}${failurePart}`;
+        note.textContent = `Źródło datasetu: ${sourceText} | parametr: ${paramLabel} | udane przebiegi: ${sweep.success_count}/${sweep.total_count}${failurePart}${sourcePart}`;
       } else {
-        note.textContent = `Źródło datasetu: ${sourceText} | parametr: ${paramLabel} | sweep nie ma jeszcze metryk do narysowania. Udane przebiegi: ${sweep.success_count}/${sweep.total_count}${failurePart}`;
+        note.textContent = `Źródło datasetu: ${sourceText} | parametr: ${paramLabel} | sweep nie ma jeszcze metryk do narysowania. Udane przebiegi: ${sweep.success_count}/${sweep.total_count}${failurePart}${sourcePart}`;
       }
       setSweepSummaryLink('sweep-summary-json-link', sweep.summary_json_path, 'Otwórz summary.json');
       setSweepSummaryLink('sweep-summary-csv-link', sweep.summary_csv_path, 'Otwórz summary.csv');
@@ -4263,6 +4429,7 @@ def main():
     args = parser.parse_args()
 
     ensure_function_index()
+    ensure_grouped_out_layout()
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"Dashboard: http://{args.host}:{args.port}")
     print(f"Repo: {REPO_ROOT}")
