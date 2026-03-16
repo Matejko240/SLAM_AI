@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -23,7 +24,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import parse_qs, unquote, urlparse
+from urllib.request import urlopen
 
 import matplotlib
 import numpy as np
@@ -226,6 +229,27 @@ def safe_relative(path: Path) -> str:
         return str(path.resolve().relative_to(REPO_ROOT))
     except Exception:
         return str(path.resolve())
+
+
+def safe_resolve_str(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
+
+
+def safe_file_size_mb(path: Path) -> float | None:
+    try:
+        return round(path.stat().st_size / (1024 * 1024), 3)
+    except Exception:
+        return None
+
+
+def directory_has_live_files(path: Path) -> bool:
+    try:
+        return any(entry.exists() for entry in path.iterdir())
+    except Exception:
+        return False
 
 
 def normalize_json_value(value: Any) -> Any:
@@ -780,6 +804,8 @@ def discover_experiments() -> list[dict[str, Any]]:
         return experiments
 
     for exp_dir in iter_experiment_dirs():
+        if not directory_has_live_files(exp_dir):
+            continue
         metadata = read_json(exp_dir / "experiment_metadata.json")
         results = read_json(exp_dir / "results.json")
         series_info = inspect_trajectory_capabilities(exp_dir)
@@ -790,17 +816,20 @@ def discover_experiments() -> list[dict[str, Any]]:
         for dataset_path in sorted(exp_dir.glob("dataset*.npz")):
             if dataset_path.name == "trajectory_data.npz":
                 continue
+            if not dataset_path.exists():
+                continue
             kind = "ai"
             if "robak" in dataset_path.name:
                 kind = "robak"
             elif "rywak" in dataset_path.name:
                 kind = "rywak"
+            size_mb = safe_file_size_mb(dataset_path)
             datasets.append(
                 {
                     "name": dataset_path.name,
                     "kind": kind,
-                    "path": str(dataset_path.resolve()),
-                    "size_mb": round(dataset_path.stat().st_size / (1024 * 1024), 3),
+                    "path": safe_resolve_str(dataset_path),
+                    "size_mb": size_mb if size_mb is not None else 0.0,
                 }
             )
 
@@ -1041,13 +1070,15 @@ def build_job_command(payload: dict[str, Any]) -> tuple[str, str]:
         start = str(payload.get("start", "")).strip()
         stop = str(payload.get("stop", "")).strip()
         step = str(payload.get("step", "")).strip()
-        if not source_experiment or not param or not start or not stop or not step:
-            raise ValueError("Sweep wymaga eksperymentu zrodlowego, configu, parametru, zakresu od-do i kroku.")
+        eval_duration = str(payload.get("eval_duration", "")).strip()
+        if not source_experiment or not param or not start or not stop or not step or not eval_duration:
+            raise ValueError("Sweep wymaga eksperymentu zrodlowego, configu, parametru, zakresu od-do, kroku i czasu testu.")
         float(start)
         float(stop)
         float(step)
+        float(eval_duration)
         return (
-            f"Sweep na stalym datasecie {source_experiment}: {param} ({start} -> {stop}, krok {step})",
+            f"Sweep na stalym datasecie {source_experiment}: {param} ({start} -> {stop}, krok {step}, test {eval_duration}s)",
             "python3 scripts/run_param_sweep.py"
             f" --mode fixed_dataset"
             f" --config {shlex.quote(config)}"
@@ -1055,7 +1086,8 @@ def build_job_command(payload: dict[str, Any]) -> tuple[str, str]:
             f" --param {shlex.quote(param)}"
             f" --start {shlex.quote(start)}"
             f" --stop {shlex.quote(stop)}"
-            f" --step {shlex.quote(step)}",
+            f" --step {shlex.quote(step)}"
+            f" --eval-duration {shlex.quote(eval_duration)}",
         )
     if action == "quick_pipeline":
         mode = str(payload.get("mode", "")).strip()
@@ -1373,7 +1405,7 @@ def plot_comparison_image(group: str, param_key: str, metric_key: str) -> bytes:
     return figure_to_png(fig)
 
 
-def plot_sweep_image(sweep_id: str, family_key: str) -> bytes:
+def plot_sweep_image(sweep_id: str, family_key: str, selected_series: list[str] | None = None) -> bytes:
     if not sweep_id:
         return make_placeholder_figure("Analiza sweepa", "Wybierz wynik sweepa.")
 
@@ -1395,6 +1427,15 @@ def plot_sweep_image(sweep_id: str, family_key: str) -> bytes:
             "Analiza sweepa",
             "Ten sweep nie ma jeszcze dostępnych metryk do narysowania.\n"
             "Najpierw uruchom sweep, który zakończy się poprawnym testem i ewaluacją.",
+        )
+    active_series = family_spec["series"]
+    if selected_series:
+        selected_set = set(selected_series)
+        active_series = [series for series in family_spec["series"] if series[0] in selected_set]
+    if not active_series:
+        return make_placeholder_figure(
+            "Analiza sweepa",
+            "Wybierz przynajmniej jeden tor do narysowania na wykresie sweepa.",
         )
 
     done_rows = [row for row in rows if str(row.get("status", "")).strip() == "done"]
@@ -1429,7 +1470,7 @@ def plot_sweep_image(sweep_id: str, family_key: str) -> bytes:
 
     if is_numeric:
         numeric_points.sort(key=lambda item: item[0])
-        for _series_key, metric_key, label, color in family_spec["series"]:
+        for _series_key, metric_key, label, color in active_series:
             x_vals: list[float] = []
             y_vals: list[float] = []
             for x_value, row in numeric_points:
@@ -1454,7 +1495,7 @@ def plot_sweep_image(sweep_id: str, family_key: str) -> bytes:
     else:
         categories = list(dict.fromkeys(format_param_value(row.get("param_value")) for row in done_rows))
         positions = {label: idx for idx, label in enumerate(categories)}
-        for _series_key, metric_key, label, color in family_spec["series"]:
+        for _series_key, metric_key, label, color in active_series:
             x_vals: list[float] = []
             y_vals: list[float] = []
             for row in done_rows:
@@ -1605,6 +1646,23 @@ HTML_PAGE = """<!doctype html>
       border-radius: 12px;
       background: rgba(10, 15, 25, 0.92);
       color: var(--ink);
+    }
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      padding-right: 42px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23e5edf5' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      background-size: 14px 14px;
+    }
+    select option {
+      color: #e5edf5;
+      background: #0b1120;
+    }
+    select:disabled {
+      color: var(--muted);
     }
     textarea {
       min-height: 260px;
@@ -2050,6 +2108,7 @@ HTML_PAGE = """<!doctype html>
           <label>Wybierz eksperyment
             <select id="experiment-select" onchange="renderExperiment()"></select>
           </label>
+          <p class="section-note" id="state-note">Ładowanie stanu dashboardu...</p>
           <div id="experiment-meta" class="muted"></div>
           <div class="dataset-list" id="dataset-list"></div>
         </section>
@@ -2215,6 +2274,18 @@ HTML_PAGE = """<!doctype html>
               <input id="sweep-step" placeholder="np. 0.01">
             </label>
           </div>
+          <div class="two">
+            <label>Czas testu i ewaluacji [s]
+              <input id="sweep-eval-duration" placeholder="np. 100.0" oninput="renderSweepOptions()">
+            </label>
+            <div class="info-box">
+              <strong>Jak działa ten czas</strong>
+              <div class="info-list">
+                <div>Każda iteracja sweepa nadpisze <code>timing.eval_duration</code> tą wartością.</div>
+                <div>To jest łączny czas fazy test + ewaluacja dla jednego przebiegu.</div>
+              </div>
+            </div>
+          </div>
           <div class="button-row">
             <button onclick="startSweep()">Uruchom serię treningów i testów</button>
           </div>
@@ -2231,9 +2302,10 @@ HTML_PAGE = """<!doctype html>
               <select id="sweep-result-select" onchange="renderSweepResultOptions()"></select>
             </label>
             <label>Rodzina metryk
-              <select id="sweep-result-family" onchange="refreshSweepResultPlot()"></select>
+              <select id="sweep-result-family" onchange="renderSweepResultSeriesOptions(); refreshSweepResultPlot()"></select>
             </label>
           </div>
+          <div class="checkboxes" id="sweep-result-series"></div>
           <p class="section-note" id="sweep-result-note">Ładowanie wyników sweepów...</p>
           <div class="artifact-list">
             <a id="sweep-summary-json-link" class="link" target="_blank">Otwórz summary.json</a>
@@ -2398,6 +2470,7 @@ HTML_PAGE = """<!doctype html>
       configDirty: false,
       configRenderTimer: null,
     };
+    const OPTION_LABEL_MAX = 54;
     const TRAJ_DEFAULT = ["gt", "baseline", "ai", "robak", "rywak"];
     const ERR_DEFAULT = ["baseline", "ai", "robak", "rywak"];
     const CONFIG_GROUP_LABELS = {
@@ -2778,8 +2851,92 @@ HTML_PAGE = """<!doctype html>
     ]);
     const SWEEP_FIELD_SPECS = Object.entries(CONFIG_FIELD_METADATA)
       .filter(([key, meta]) => meta.sweep && DATASET_SWEEP_KEYS.has(key))
-      .map(([key, meta]) => ({ key, ...meta.sweep }));
+      .map(([key, meta]) => ({
+        key: key,
+        group: meta.sweep.group,
+        start: meta.sweep.start,
+        stop: meta.sweep.stop,
+        step: meta.sweep.step,
+      }));
 
+    function coalesce(value, fallback) {
+      return value === null || value === undefined ? fallback : value;
+    }
+    function comparisonGroups() {
+      return state.comparisonCatalog && Array.isArray(state.comparisonCatalog.groups)
+        ? state.comparisonCatalog.groups
+        : [];
+    }
+    function experimentDatasets(exp) {
+      return exp && Array.isArray(exp.datasets) ? exp.datasets : [];
+    }
+    function experimentArtifacts(exp) {
+      return exp && exp.artifacts ? exp.artifacts : {};
+    }
+    function pathTail(value, fallback = '') {
+      if (value === null || value === undefined || value === '') {
+        return fallback;
+      }
+      const parts = String(value).split('/');
+      return parts.length > 0 ? parts[parts.length - 1] : fallback;
+    }
+
+    function truncateLabel(text, maxLen = OPTION_LABEL_MAX) {
+      const normalized = String(coalesce(text, '')).trim();
+      if (normalized.length <= maxLen) {
+        return normalized;
+      }
+      return `${normalized.slice(0, Math.max(1, maxLen - 1)).trimEnd()}…`;
+    }
+    function setOptionLabel(option, label, maxLen = OPTION_LABEL_MAX) {
+      const fullLabel = String(coalesce(label, ''));
+      option.dataset.fullLabel = fullLabel;
+      option.textContent = truncateLabel(fullLabel, maxLen);
+      option.title = fullLabel;
+    }
+    function appendSelectOption(select, value, label, maxLen = OPTION_LABEL_MAX) {
+      const option = document.createElement('option');
+      option.value = value;
+      setOptionLabel(option, label, maxLen);
+      select.appendChild(option);
+      return option;
+    }
+    function syncSelectTitle(select) {
+      if (!select) {
+        return;
+      }
+      if (select.options.length > 0 && (select.selectedIndex < 0 || !select.value)) {
+        select.selectedIndex = 0;
+      }
+      const selected = select.selectedOptions && select.selectedOptions[0];
+      const fullLabel = selected && selected.dataset ? selected.dataset.fullLabel : '';
+      select.title = fullLabel || (selected ? selected.textContent : '') || '';
+    }
+    function finalizeSelect(select) {
+      syncSelectTitle(select);
+      return select;
+    }
+    function setSelectPlaceholder(select, label, maxLen = OPTION_LABEL_MAX) {
+      if (!select) {
+        return;
+      }
+      select.innerHTML = '';
+      const option = document.createElement('option');
+      option.value = '';
+      option.disabled = true;
+      option.selected = true;
+      setOptionLabel(option, label, maxLen);
+      select.appendChild(option);
+      finalizeSelect(select);
+    }
+    function setStateNote(message, tone = '') {
+      const note = document.getElementById('state-note');
+      if (!note) {
+        return;
+      }
+      note.textContent = message;
+      note.className = tone ? `section-note ${tone}` : 'section-note';
+    }
     function valueOf(id) { return document.getElementById(id).value.trim(); }
     function selectedExperimentId() { return valueOf('experiment-select'); }
     function selectedExperiment() { return state.experiments.find((exp) => exp.id === selectedExperimentId()); }
@@ -2787,6 +2944,14 @@ HTML_PAGE = """<!doctype html>
     function selectedSweepSourceExperimentId() { return valueOf('sweep-source-experiment'); }
     function selectedSweepSourceExperiment() {
       return state.experiments.find((exp) => exp.id === selectedSweepSourceExperimentId());
+    }
+    function experimentHasPrimaryDataset(exp) {
+      const datasets = experimentDatasets(exp);
+      const artifacts = experimentArtifacts(exp);
+      return datasets.some((dataset) => dataset && dataset.name === 'dataset.npz') || Boolean(artifacts.dataset_npz);
+    }
+    function sweepSourceExperiments() {
+      return state.experiments.filter((exp) => experimentHasPrimaryDataset(exp));
     }
     function selectedSweepResultId() { return valueOf('sweep-result-select'); }
     function selectedSweepResult() {
@@ -2883,7 +3048,7 @@ HTML_PAGE = """<!doctype html>
     }
 
     function metricCard(label, value, note = '') {
-      return `<div class="metric"><span class="muted">${label}</span><strong>${value ?? 'brak'}</strong>${note ? `<small>${note}</small>` : ''}</div>`;
+      return `<div class="metric"><span class="muted">${label}</span><strong>${coalesce(value, 'brak')}</strong>${note ? `<small>${note}</small>` : ''}</div>`;
     }
 
     function formatMetric(value, digits = 4) {
@@ -2912,28 +3077,47 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function loadState() {
-      const payload = await fetchJson('/api/state');
-      state.experiments = payload.experiments || [];
-      state.jobs = payload.jobs || [];
-      state.function_index = payload.function_index || null;
-      state.configs = payload.configs || [];
-      state.comparisonCatalog = payload.comparison_catalog || { groups: [] };
-      state.sweeps = payload.sweeps || [];
+      setStateNote('Ładowanie stanu dashboardu...');
+      try {
+        const payload = await fetchJson('/api/state');
+        state.experiments = payload.experiments || [];
+        state.jobs = payload.jobs || [];
+        state.function_index = payload.function_index || null;
+        state.configs = payload.configs || [];
+        state.comparisonCatalog = payload.comparison_catalog || { groups: [] };
+        state.sweeps = payload.sweeps || [];
 
-      renderExperimentSelect();
-      renderConfigSelect();
-      renderQuickLaunchPanel();
-      renderComparisonControls();
-      renderSweepControls();
-      renderSweepResultControls();
-      renderExperiment();
-      renderJobs();
-      renderFunctionIndex();
-      renderWorkspace();
+        renderExperimentSelect();
+        renderConfigSelect();
+        renderQuickLaunchPanel();
+        renderComparisonControls();
+        renderSweepControls();
+        renderSweepResultControls();
+        renderExperiment();
+        renderJobs();
+        renderFunctionIndex();
+        renderWorkspace();
 
-      if (!state.currentConfigName) {
-        state.currentConfigName = selectedConfigName();
-        await loadConfigEditor(false);
+        if (!state.currentConfigName) {
+          state.currentConfigName = selectedConfigName();
+          await loadConfigEditor(false);
+        }
+
+        if (state.experiments.length > 0) {
+          setStateNote(`Załadowano ${state.experiments.length} eksperymentów i ${state.sweeps.length} sweepów.`, 'ok');
+        } else {
+          setStateNote('Brak eksperymentów w katalogu out/.', 'error');
+        }
+      } catch (error) {
+        state.experiments = [];
+        state.jobs = [];
+        state.function_index = null;
+        state.configs = [];
+        state.comparisonCatalog = { groups: [] };
+        state.sweeps = [];
+        setSelectPlaceholder(document.getElementById('experiment-select'), 'Nie udało się wczytać eksperymentów');
+        renderExperiment();
+        setStateNote(`Nie udało się pobrać /api/state: ${error}`, 'error');
       }
     }
 
@@ -2941,15 +3125,19 @@ HTML_PAGE = """<!doctype html>
       const select = document.getElementById('experiment-select');
       const previous = select.value;
       select.innerHTML = '';
-      state.experiments.forEach((exp) => {
-        const option = document.createElement('option');
-        option.value = exp.id;
-        option.textContent = exp.id;
-        select.appendChild(option);
-      });
-      if (state.experiments.length > 0) {
-        select.value = state.experiments.some((exp) => exp.id === previous) ? previous : state.experiments[0].id;
+      if (state.experiments.length === 0) {
+        setSelectPlaceholder(select, 'Brak eksperymentów');
+        return;
       }
+      state.experiments.forEach((exp) => {
+        appendSelectOption(select, exp.id, exp.id);
+      });
+      if (state.experiments.some((exp) => exp.id === previous)) {
+        select.value = previous;
+      } else if (select.options.length > 0) {
+        select.selectedIndex = 0;
+      }
+      finalizeSelect(select);
     }
 
     function renderConfigSelect() {
@@ -2957,15 +3145,13 @@ HTML_PAGE = """<!doctype html>
       const previous = state.currentConfigName || select.value || 'experiment_config.yaml';
       select.innerHTML = '';
       state.configs.forEach((cfg) => {
-        const option = document.createElement('option');
-        option.value = cfg.name;
-        option.textContent = cfg.name;
-        select.appendChild(option);
+        appendSelectOption(select, cfg.name, cfg.name, 42);
       });
       if (state.configs.length > 0) {
         const exists = state.configs.some((cfg) => cfg.name === previous);
         select.value = exists ? previous : state.configs[0].name;
       }
+      finalizeSelect(select);
     }
 
     function renderComparisonControls() {
@@ -2973,24 +3159,22 @@ HTML_PAGE = """<!doctype html>
       const previous = groupSelect.value;
       groupSelect.innerHTML = '';
 
-      (state.comparisonCatalog?.groups || []).forEach((group) => {
-        const option = document.createElement('option');
-        option.value = group.key;
-        option.textContent = group.label;
-        groupSelect.appendChild(option);
+      comparisonGroups().forEach((group) => {
+        appendSelectOption(groupSelect, group.key, group.label, 34);
       });
 
       if (groupSelect.options.length > 0) {
         const hasPrevious = Array.from(groupSelect.options).some((option) => option.value === previous);
         groupSelect.value = hasPrevious ? previous : groupSelect.options[0].value;
       }
+      finalizeSelect(groupSelect);
 
       renderComparisonOptions();
     }
 
     function renderComparisonOptions() {
       const groupKey = valueOf('compare-group');
-      const group = (state.comparisonCatalog?.groups || []).find((item) => item.key === groupKey);
+      const group = comparisonGroups().find((item) => item.key === groupKey);
       const paramSelect = document.getElementById('compare-param');
       const metricSelect = document.getElementById('compare-metric');
       const note = document.getElementById('comparison-note');
@@ -3007,16 +3191,14 @@ HTML_PAGE = """<!doctype html>
       }
 
       group.params.forEach((item) => {
-        const option = document.createElement('option');
-        option.value = item.key;
-        option.textContent = `${describeConfigField(item.key.split('.'))} (${item.available_count})`;
-        paramSelect.appendChild(option);
+        appendSelectOption(
+          paramSelect,
+          item.key,
+          `${describeConfigField(item.key.split('.'))} (${item.available_count})`,
+        );
       });
       group.metrics.forEach((item) => {
-        const option = document.createElement('option');
-        option.value = item.key;
-        option.textContent = `${item.label} (${item.available_count})`;
-        metricSelect.appendChild(option);
+        appendSelectOption(metricSelect, item.key, `${item.label} (${item.available_count})`, 46);
       });
 
       if (paramSelect.options.length > 0) {
@@ -3027,6 +3209,8 @@ HTML_PAGE = """<!doctype html>
         const hasPrevious = Array.from(metricSelect.options).some((option) => option.value === prevMetric);
         metricSelect.value = hasPrevious ? prevMetric : metricSelect.options[0].value;
       }
+      finalizeSelect(paramSelect);
+      finalizeSelect(metricSelect);
 
       refreshComparisonPlot();
     }
@@ -3035,7 +3219,7 @@ HTML_PAGE = """<!doctype html>
       const groupKey = valueOf('compare-group');
       const paramKey = valueOf('compare-param');
       const metricKey = valueOf('compare-metric');
-      const group = (state.comparisonCatalog?.groups || []).find((item) => item.key === groupKey);
+      const group = comparisonGroups().find((item) => item.key === groupKey);
       const note = document.getElementById('comparison-note');
 
       if (!group || !paramKey || !metricKey) {
@@ -3047,7 +3231,7 @@ HTML_PAGE = """<!doctype html>
       const paramInfo = group.params.find((item) => item.key === paramKey);
       const metricInfo = group.metrics.find((item) => item.key === metricKey);
       const paramLabel = paramInfo ? describeConfigField(paramInfo.key.split('.')) : paramKey;
-      note.textContent = `Porównanie używa eksperymentów, które mają zapisane: ${paramLabel} oraz ${metricInfo?.label || metricKey}.`;
+      note.textContent = `Porównanie używa eksperymentów, które mają zapisane: ${paramLabel} oraz ${(metricInfo && metricInfo.label) || metricKey}.`;
       setImageTarget('comparison-plot', `/api/plot/comparison?${query({
         group: groupKey,
         param: paramKey,
@@ -3067,48 +3251,67 @@ HTML_PAGE = """<!doctype html>
       groupSelect.innerHTML = '';
       sourceSelect.innerHTML = '';
 
-      state.experiments.forEach((exp) => {
-        const option = document.createElement('option');
-        option.value = exp.id;
-        option.textContent = exp.id;
-        sourceSelect.appendChild(option);
+      sweepSourceExperiments().forEach((exp) => {
+        const sampleInfo = exp.dataset_samples ? ` | próbek: ${exp.dataset_samples}` : '';
+        appendSelectOption(sourceSelect, exp.id, `${exp.id}${sampleInfo}`);
       });
       if (sourceSelect.options.length > 0) {
         const preferredSource = prevSource || selectedExperimentId();
         const hasPreferred = Array.from(sourceSelect.options).some((option) => option.value === preferredSource);
         sourceSelect.value = hasPreferred ? preferredSource : sourceSelect.options[0].value;
       }
+      finalizeSelect(sourceSelect);
 
       ['shared', 'robak', 'rywak', 'map_filter'].forEach((groupKey) => {
         const hasOptions = SWEEP_FIELD_SPECS.some((item) => item.group === groupKey);
         if (!hasOptions) {
           return;
         }
-        const option = document.createElement('option');
-        option.value = groupKey;
-        option.textContent = (state.comparisonCatalog?.groups || []).find((item) => item.key === groupKey)?.label
-          || (groupKey === 'map_filter' ? 'Filtr mapy' : describeConfigGroup(groupKey));
-        groupSelect.appendChild(option);
+        appendSelectOption(
+          groupSelect,
+          groupKey,
+          ((comparisonGroups().find((item) => item.key === groupKey) || {}).label)
+            || (groupKey === 'map_filter' ? 'Filtr mapy' : describeConfigGroup(groupKey)),
+          34,
+        );
       });
       if (groupSelect.options.length > 0) {
         const hasPrevious = Array.from(groupSelect.options).some((option) => option.value === prevGroup);
         groupSelect.value = hasPrevious ? prevGroup : groupSelect.options[0].value;
       }
+      finalizeSelect(groupSelect);
 
       configSelect.innerHTML = '';
       state.configs.forEach((cfg) => {
-        const option = document.createElement('option');
-        option.value = cfg.name;
-        option.textContent = cfg.name;
-        configSelect.appendChild(option);
+        appendSelectOption(configSelect, cfg.name, cfg.name, 42);
       });
       if (configSelect.options.length > 0) {
         const preferredConfig = prevConfig || state.currentConfigName || selectedConfigName();
         const hasPreferred = Array.from(configSelect.options).some((option) => option.value === preferredConfig);
         configSelect.value = hasPreferred ? preferredConfig : configSelect.options[0].value;
       }
+      finalizeSelect(configSelect);
 
       renderSweepOptions();
+    }
+
+    function defaultSweepEvalDuration() {
+      const current = valueOf('sweep-eval-duration');
+      if (current) {
+        return current;
+      }
+      const fromConfig = numericConfigValue(['timing', 'eval_duration'], 100.0);
+      return fromConfig === null ? '100.0' : String(fromConfig);
+    }
+
+    function ensureSweepEvalDuration(force = false) {
+      const input = document.getElementById('sweep-eval-duration');
+      if (!input) {
+        return;
+      }
+      if (force || !input.value.trim()) {
+        input.value = defaultSweepEvalDuration();
+      }
     }
 
     function renderSweepOptions() {
@@ -3117,15 +3320,14 @@ HTML_PAGE = """<!doctype html>
       const note = document.getElementById('sweep-note');
       const previous = select.value;
       select.innerHTML = '';
+      ensureSweepEvalDuration();
 
       const options = SWEEP_FIELD_SPECS.filter((item) => item.group === groupKey);
       const sourceExp = selectedSweepSourceExperiment();
-      const usesSnapshot = Boolean(sourceExp?.artifacts?.config_snapshot_yaml) && (valueOf('sweep-config') || 'experiment_config.yaml') === 'experiment_config.yaml';
+      const sourceArtifacts = experimentArtifacts(sourceExp);
+      const usesSnapshot = Boolean(sourceArtifacts.config_snapshot_yaml) && (valueOf('sweep-config') || 'experiment_config.yaml') === 'experiment_config.yaml';
       options.forEach((item) => {
-        const option = document.createElement('option');
-        option.value = item.key;
-        option.textContent = describeConfigField(item.key.split('.'));
-        select.appendChild(option);
+        appendSelectOption(select, item.key, describeConfigField(item.key.split('.')));
       });
 
       if (select.options.length > 0) {
@@ -3137,17 +3339,22 @@ HTML_PAGE = """<!doctype html>
         document.getElementById('sweep-stop').value = '';
         document.getElementById('sweep-step').value = '';
       }
+      finalizeSelect(select);
+
+      const evalDuration = defaultSweepEvalDuration();
+      const datasetSuffix = sourceExp ? ` Wybrane źródło: ${sourceExp.id}.` : ' Najpierw wybierz eksperyment z datasetem.';
+      const evalSuffix = ` Każda iteracja użyje czasu testu i ewaluacji: ${evalDuration} s.`;
 
       if (!options.length) {
-        note.textContent = 'Brak parametrów sweepu dla tej grupy.';
+        note.textContent = `Brak parametrów sweepu dla tej grupy.${datasetSuffix}${evalSuffix}`;
       } else if (groupKey === 'shared') {
-        note.textContent = 'Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu i dla każdej wartości parametru przetrenuje jednocześnie Robaka oraz Rywaka.';
+        note.textContent = `Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu i dla każdej wartości parametru przetrenuje jednocześnie Robaka oraz Rywaka.${datasetSuffix}${evalSuffix}`;
       } else if (usesSnapshot) {
-        note.textContent = 'Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu. Bazowy config zostanie wzięty ze snapshotu eksperymentu źródłowego.';
-      } else if (sourceExp?.artifacts?.config_snapshot_yaml) {
-        note.textContent = 'Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu. Wybrany config nadpisze snapshot konfiguracji eksperymentu źródłowego.';
+        note.textContent = `Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu. Bazowy config zostanie wzięty ze snapshotu eksperymentu źródłowego, ale czas testu i ewaluacji zostanie jawnie nadpisany.${datasetSuffix}${evalSuffix}`;
+      } else if (sourceArtifacts.config_snapshot_yaml) {
+        note.textContent = `Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu. Wybrany config nadpisze snapshot konfiguracji eksperymentu źródłowego.${datasetSuffix}${evalSuffix}`;
       } else {
-        note.textContent = 'Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu. Wybrany config posłuży jako baza, bo eksperyment źródłowy nie ma snapshotu konfiguracji.';
+        note.textContent = `Sweep utworzy nowe eksperymenty na bazie jednego wybranego datasetu. Wybrany config posłuży jako baza, bo eksperyment źródłowy nie ma snapshotu konfiguracji.${datasetSuffix}${evalSuffix}`;
       }
     }
 
@@ -3170,6 +3377,22 @@ HTML_PAGE = """<!doctype html>
       if (force || !stepInput.value) {
         stepInput.value = spec.step;
       }
+      ensureSweepEvalDuration(force);
+    }
+
+    function estimateSweepIterations(start, stop, step) {
+      const startValue = Number(start);
+      const stopValue = Number(stop);
+      const stepValue = Number(step);
+      if (!Number.isFinite(startValue) || !Number.isFinite(stopValue) || !Number.isFinite(stepValue) || stepValue === 0) {
+        return null;
+      }
+      const direction = stopValue >= startValue ? 1 : -1;
+      if (stepValue * direction <= 0) {
+        return null;
+      }
+      const span = Math.abs(stopValue - startValue);
+      return Math.floor((span / Math.abs(stepValue)) + 1 + 1e-9);
     }
 
     function startSweep() {
@@ -3179,14 +3402,32 @@ HTML_PAGE = """<!doctype html>
       const start = valueOf('sweep-start');
       const stop = valueOf('sweep-stop');
       const step = valueOf('sweep-step');
-      if (!source_experiment || !config || !param || !start || !stop || !step) {
-        alert('Sweep wymaga eksperymentu źródłowego, configu, parametru oraz zakresu od-do z krokiem.');
+      const eval_duration = valueOf('sweep-eval-duration');
+      if (!source_experiment || !config || !param || !start || !stop || !step || !eval_duration) {
+        alert('Sweep wymaga eksperymentu źródłowego, configu, parametru, zakresu od-do z krokiem oraz czasu testu i ewaluacji.');
         return;
       }
       const sourceExp = selectedSweepSourceExperiment();
-      const usesSnapshot = Boolean(sourceExp?.artifacts?.config_snapshot_yaml) && config === 'experiment_config.yaml';
+      const usesSnapshot = Boolean(experimentArtifacts(sourceExp).config_snapshot_yaml) && config === 'experiment_config.yaml';
       if (state.configDirty && config === selectedConfigName() && !usesSnapshot) {
         alert('Masz niezapisane zmiany w aktualnym configu. Zapisz YAML przed uruchomieniem sweepu.');
+        return;
+      }
+      const evalDurationNumber = Number(eval_duration);
+      if (!Number.isFinite(evalDurationNumber) || evalDurationNumber <= 0) {
+        alert('Czas testu i ewaluacji musi być dodatnią liczbą.');
+        return;
+      }
+      const iterations = estimateSweepIterations(start, stop, step);
+      const paramLabel = describeConfigField(param.split('.'));
+      const confirmation = [
+        `Źródło datasetu: ${source_experiment}`,
+        `Parametr: ${paramLabel}`,
+        `Zakres: ${start} -> ${stop} (krok ${step})`,
+        `Czas testu i ewaluacji na iterację: ${eval_duration} s`,
+        `Liczba iteracji: ${coalesce(iterations, 'nieznana')}`,
+      ].join('\\n');
+      if (!window.confirm(`Uruchomić sweep?\n\n${confirmation}`)) {
         return;
       }
       startJob({
@@ -3197,6 +3438,7 @@ HTML_PAGE = """<!doctype html>
         start,
         stop,
         step,
+        eval_duration,
       });
     }
 
@@ -3334,12 +3576,13 @@ HTML_PAGE = """<!doctype html>
         2.7,
         1.8,
       );
-      const weakestKey = [
+      const weakestEntry = [
         ['skany', scanLevel],
         ['trajektoria', trajectoryLevel],
         ['korekty', correctionLevel],
         ['mapa', mapLevel],
-      ].sort((left, right) => inspectionLevelScore(left[1]) - inspectionLevelScore(right[1]))[0]?.[0] || 'brak';
+      ].sort((left, right) => inspectionLevelScore(left[1]) - inspectionLevelScore(right[1]))[0];
+      const weakestKey = weakestEntry ? weakestEntry[0] : 'brak';
 
       return {
         overall: overallLevel,
@@ -3359,7 +3602,7 @@ HTML_PAGE = """<!doctype html>
             <span class="muted">${label}</span>
             ${inspectionBadge(status)}
           </div>
-          <strong>${value ?? 'brak'}</strong>
+          <strong>${coalesce(value, 'brak')}</strong>
           ${note ? `<small>${note}</small>` : ''}
         </div>
       `;
@@ -3383,8 +3626,8 @@ HTML_PAGE = """<!doctype html>
     function renderDatasetInspection(exp) {
       const note = document.getElementById('dataset-inspection-note');
       const summaryGrid = document.getElementById('dataset-inspection-summary');
-      const artifacts = exp?.artifacts || {};
-      const summary = exp?.dataset_inspection || null;
+      const artifacts = experimentArtifacts(exp);
+      const summary = exp && exp.dataset_inspection ? exp.dataset_inspection : null;
       const overviewPath = artifacts.dataset_inspection_overview_png || artifacts.dataset_analysis_png || '';
       const scansPath = artifacts.dataset_inspection_scans_png || '';
       const summaryPath = artifacts.dataset_inspection_summary_json || '';
@@ -3400,10 +3643,11 @@ HTML_PAGE = """<!doctype html>
       }
 
       if (summary) {
+        const metaSummary = summary.meta || {};
         const quality = evaluateInspectionQuality(summary);
         const heroCards = [
           inspectionKpiCard('Ocena datasetu', inspectionLevelLabel(quality.overall), `Najsłabszy obszar: ${quality.weakestKey}`, quality.overall),
-          inspectionKpiCard('Próbki datasetu', formatInspectionNumber(summary.sample_count, 0), `Plik: ${summary.dataset_path?.split('/').pop() || 'dataset.npz'}`, quality.sample),
+          inspectionKpiCard('Próbki datasetu', formatInspectionNumber(summary.sample_count, 0), `Plik: ${pathTail(summary.dataset_path, 'dataset.npz')}`, quality.sample),
           inspectionKpiCard('Poprawne pomiary', `${formatInspectionNumber((summary.valid_return_ratio || 0) * 100.0, 1)} %`, `N = ${formatInspectionNumber(summary.valid_return_count || 0, 0)}`, quality.scans),
           inspectionKpiCard('Długość trajektorii', `${formatInspectionNumber(summary.trajectory_length_m)} m`, `Rozpiętość X/Y: ${formatInspectionNumber(summary.trajectory_x_span_m)} m / ${formatInspectionNumber(summary.trajectory_y_span_m)} m`, quality.trajectory),
           inspectionKpiCard('RMSE korekty XY', `${formatInspectionNumber(summary.correction_xy_rmse_m, 4)} m`, `RMSE θ = ${formatInspectionNumber(summary.correction_theta_rmse_rad, 4)} rad`, quality.corrections),
@@ -3415,7 +3659,7 @@ HTML_PAGE = """<!doctype html>
             metricCard('Mediana zasięgu', `${formatInspectionNumber(summary.range_median_m)} m`),
             metricCard('P95 zasięgu', `${formatInspectionNumber(summary.range_p95_m)} m`),
             metricCard('Maksymalny zasięg', `${formatInspectionNumber(summary.range_max_m)} m`),
-            metricCard('Seed / meta', formatInspectionNumber(summary.meta?.seed, 0), `N = ${formatInspectionNumber(summary.meta?.n, 0)}, beams = ${formatInspectionNumber(summary.meta?.scan_dim, 0)}`),
+            metricCard('Seed / meta', formatInspectionNumber(metaSummary.seed, 0), `N = ${formatInspectionNumber(metaSummary.n, 0)}, beams = ${formatInspectionNumber(metaSummary.scan_dim, 0)}`),
           ], quality.scans),
           inspectionGroupCard('Trajektoria', 'Podstawowy opis ruchu robota użyty do budowy datasetu.', [
             metricCard('Długość', `${formatInspectionNumber(summary.trajectory_length_m)} m`),
@@ -3431,7 +3675,7 @@ HTML_PAGE = """<!doctype html>
           inspectionGroupCard('Mapa punktowa', 'Ile danych wizualizacyjnych weszło do raportu i z ilu skanów je zebrano.', [
             metricCard('Punkty mapy', formatInspectionNumber(summary.sampled_map_point_count || 0, 0)),
             metricCard('Skanów do wizualizacji', formatInspectionNumber(summary.sampled_map_scan_count || 0, 0)),
-            metricCard('Mapa referencyjna', summary.reference_map_yaml?.split('/').pop() || 'brak', summary.dataset_dir?.split('/').pop() || ''),
+            metricCard('Mapa referencyjna', pathTail(summary.reference_map_yaml, 'brak'), pathTail(summary.dataset_dir, '')),
           ], quality.map),
         ];
         summaryGrid.innerHTML = `
@@ -3456,21 +3700,53 @@ HTML_PAGE = """<!doctype html>
       select.innerHTML = '';
 
       state.sweeps.forEach((sweep) => {
-        const option = document.createElement('option');
         const sourceText = sweep.source_experiment_id || 'brak źródła';
         const paramPath = String(sweep.param_path || '');
         const paramLabel = paramPath ? describeConfigField(paramPath.split('.')) : 'Parametr sweepa';
-        option.value = sweep.id;
-        option.textContent = `${sweep.id} · ${sourceText} · ${paramLabel} (${sweep.success_count}/${sweep.total_count})`;
-        select.appendChild(option);
+        appendSelectOption(
+          select,
+          sweep.id,
+          `${sweep.id} · ${sourceText} · ${paramLabel} (${sweep.success_count}/${sweep.total_count})`,
+        );
       });
 
       if (select.options.length > 0) {
         const hasPrevious = Array.from(select.options).some((option) => option.value === previous);
         select.value = hasPrevious ? previous : select.options[0].value;
       }
+      finalizeSelect(select);
 
       renderSweepResultOptions();
+    }
+
+    function renderSweepResultSeriesOptions() {
+      const sweep = selectedSweepResult();
+      const familyKey = valueOf('sweep-result-family');
+      const families = sweep && Array.isArray(sweep.families) ? sweep.families : [];
+      const family = families.find((item) => item.key === familyKey);
+      const container = document.getElementById('sweep-result-series');
+      const previous = checkedValues('sweep-result-series');
+      container.innerHTML = '';
+
+      if (!family || !Array.isArray(family.series) || family.series.length === 0) {
+        return;
+      }
+
+      const previousSet = new Set(previous);
+      const defaultValues = previous.length > 0
+        ? family.series.filter((item) => previousSet.has(item.key)).map((item) => item.key)
+        : family.series.map((item) => item.key);
+
+      family.series.forEach((item) => {
+        const wrapper = document.createElement('label');
+        const checked = defaultValues.includes(item.key) ? 'checked' : '';
+        wrapper.innerHTML = `<input type="checkbox" value="${item.key}" ${checked}> ${item.label} (${item.count})`;
+        const input = wrapper.querySelector('input');
+        if (input) {
+          input.addEventListener('change', refreshSweepResultPlot);
+        }
+        container.appendChild(wrapper);
+      });
     }
 
     function renderSweepResultOptions() {
@@ -3484,21 +3760,21 @@ HTML_PAGE = """<!doctype html>
         note.textContent = 'Brak zapisanych wyników sweepu w katalogu out/.';
         setSweepSummaryLink('sweep-summary-json-link', '', '');
         setSweepSummaryLink('sweep-summary-csv-link', '', '');
+        document.getElementById('sweep-result-series').innerHTML = '';
         setImageTarget('sweep-result-plot', '');
         return;
       }
 
       (sweep.families || []).forEach((family) => {
-        const option = document.createElement('option');
-        option.value = family.key;
-        option.textContent = family.label;
-        familySelect.appendChild(option);
+        appendSelectOption(familySelect, family.key, family.label, 34);
       });
 
       if (familySelect.options.length > 0) {
         const hasPrevious = Array.from(familySelect.options).some((option) => option.value === previous);
         familySelect.value = hasPrevious ? previous : familySelect.options[0].value;
       }
+      finalizeSelect(familySelect);
+      renderSweepResultSeriesOptions();
 
       const paramPath = String(sweep.param_path || '');
       const paramLabel = paramPath ? describeConfigField(paramPath.split('.')) : 'Parametr sweepa';
@@ -3522,6 +3798,7 @@ HTML_PAGE = """<!doctype html>
         return;
       }
       const familyKey = valueOf('sweep-result-family');
+      const selectedSeries = checkedValues('sweep-result-series');
       if (!familyKey) {
         setImageTarget('sweep-result-plot', `/api/plot/sweep?${query({
           sweep_id: sweep.id,
@@ -3533,6 +3810,7 @@ HTML_PAGE = """<!doctype html>
       setImageTarget('sweep-result-plot', `/api/plot/sweep?${query({
         sweep_id: sweep.id,
         family: familyKey,
+        series: selectedSeries.length > 0 ? selectedSeries.join(',') : '__none__',
         t: Date.now(),
       })}`);
     }
@@ -3563,8 +3841,8 @@ HTML_PAGE = """<!doctype html>
       meta.innerHTML = `
         <div><strong>${exp.id}</strong></div>
         <div>Utworzono: ${exp.created_at || 'brak danych'}</div>
-        <div>Próbki datasetu: ${exp.dataset_samples ?? 'brak'}</div>
-        <div>Próbki ewaluacji: ${exp.eval_samples ?? 'brak'}</div>
+        <div>Próbki datasetu: ${coalesce(exp.dataset_samples, 'brak')}</div>
+        <div>Próbki ewaluacji: ${coalesce(exp.eval_samples, 'brak')}</div>
       `;
 
       const m = exp.metrics || {};
@@ -3603,7 +3881,7 @@ HTML_PAGE = """<!doctype html>
         artifacts.appendChild(a);
       });
 
-      const pointDiag = exp.diagnostics?.point_map_filter || {};
+      const pointDiag = exp.diagnostics && exp.diagnostics.point_map_filter ? exp.diagnostics.point_map_filter : {};
       diagnostics.innerHTML = Object.entries(pointDiag).map(([name, stat]) =>
         `<div><strong>${name}</strong>: stamped_scans=${stat.stamped_scans}, skipped_scans=${stat.skipped_scans}, stamped_points=${stat.stamped_points}</div>`
       ).join('') || 'Brak diagnostyki map punktowych.';
@@ -3636,7 +3914,7 @@ HTML_PAGE = """<!doctype html>
         button.style.textAlign = 'left';
         button.innerHTML = `
           <div><strong>${job.label}</strong></div>
-          <div class="status ${job.status}"><span class="dot"></span>${job.status} (${job.return_code ?? '...'})</div>
+          <div class="status ${job.status}"><span class="dot"></span>${job.status} (${coalesce(job.return_code, '...')})</div>
         `;
         button.onclick = () => selectJob(job.id);
         list.appendChild(button);
@@ -4088,6 +4366,8 @@ HTML_PAGE = """<!doctype html>
         if (sweepConfig) {
           sweepConfig.value = payload.name;
         }
+        ensureSweepEvalDuration(true);
+        renderSweepOptions();
         const status = document.getElementById('config-status');
         status.className = 'flash ok';
         status.textContent = `Wczytano ${payload.name}.`;
@@ -4119,6 +4399,8 @@ HTML_PAGE = """<!doctype html>
         if (sweepConfig) {
           sweepConfig.value = payload.name;
         }
+        ensureSweepEvalDuration(true);
+        renderSweepOptions();
         const status = document.getElementById('config-status');
         status.className = 'flash ok';
         status.textContent = `Zapisano ${payload.name}.`;
@@ -4203,6 +4485,9 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function bootstrap() {
+      document.querySelectorAll('select').forEach((node) => {
+        node.addEventListener('change', () => syncSelectTitle(node));
+      });
       renderSeriesCheckboxes('trajectory-series', {
         gt: ['time_s', 'gt_xytheta', 'GT'],
         baseline: ['time_s', 'baseline_xytheta', 'Baseline'],
@@ -4322,7 +4607,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             sweep_id = query.get("sweep_id", [""])[0]
             family_key = query.get("family", [""])[0]
-            png = plot_sweep_image(sweep_id=sweep_id, family_key=family_key)
+            series_names = [item for item in query.get("series", [""])[0].split(",") if item]
+            png = plot_sweep_image(sweep_id=sweep_id, family_key=family_key, selected_series=series_names)
             self._send_bytes(png, content_type="image/png")
             return
         if parsed.path == "/api/artifact":
@@ -4430,7 +4716,25 @@ def main():
 
     ensure_function_index()
     ensure_grouped_out_layout()
-    server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            dashboard_url = f"http://{args.host}:{args.port}"
+            try:
+                with urlopen(f"{dashboard_url}/api/state", timeout=1.5) as response:
+                    server_header = response.headers.get("Server", "")
+                    if "SLAMAIDashboard" in server_header:
+                        print(f"Dashboard juz dziala: {dashboard_url}", file=sys.stderr)
+                        return
+            except URLError:
+                pass
+            raise SystemExit(
+                f"Port {args.port} jest zajety. Zamknij poprzedni proces albo uruchom dashboard na innym porcie."
+            ) from exc
+        raise
+
     print(f"Dashboard: http://{args.host}:{args.port}")
     print(f"Repo: {REPO_ROOT}")
     try:

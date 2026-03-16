@@ -61,6 +61,13 @@ def _ensure_symlink(link_path: Path, target_path: Path) -> bool:
     return True
 
 
+def _path_is_live_file(path: Path) -> bool:
+    try:
+        return path.exists() and path.is_file()
+    except Exception:
+        return False
+
+
 def _iter_named_dirs(root: Path, prefix: str) -> Iterator[Path]:
     if not root.exists():
         return
@@ -89,6 +96,33 @@ def _sync_special_dir(actual_dir: Path, legacy_name: str) -> None:
     _ensure_symlink(OUT_DIR / legacy_name, actual_dir)
 
 
+def _looks_like_experiment_storage(path: Path) -> bool:
+    if _path_is_live_file(path / "experiment_metadata.json"):
+        return True
+    if _path_is_live_file(path / "results.json"):
+        return True
+    return any(_path_is_live_file(candidate) for candidate in path.glob("dataset*.npz"))
+
+
+def _adopt_legacy_dataset_experiments() -> None:
+    _ensure_dir(EXPERIMENTS_DIR)
+    _ensure_dir(DATASETS_DIR)
+
+    for dataset_dir in _iter_named_dirs(DATASETS_DIR, "exp_"):
+        experiment_dir = EXPERIMENTS_DIR / dataset_dir.name
+        legacy_dir = OUT_DIR / dataset_dir.name
+        _cleanup_stale_symlink(experiment_dir)
+        _cleanup_stale_symlink(legacy_dir)
+
+        if experiment_dir.exists() or legacy_dir.exists():
+            continue
+        if not _looks_like_experiment_storage(dataset_dir):
+            continue
+
+        dataset_dir.rename(experiment_dir)
+        _ensure_symlink(OUT_DIR / experiment_dir.name, experiment_dir)
+
+
 def _sync_dataset_views() -> None:
     _ensure_dir(DATASETS_DIR)
     patterns = (
@@ -114,6 +148,7 @@ def ensure_grouped_out_layout() -> None:
     _ensure_dir(JOBS_DIR)
     _ensure_dir(QUICK_CONFIGS_DIR)
 
+    _adopt_legacy_dataset_experiments()
     _sync_named_group(EXPERIMENTS_DIR, "exp_")
     _sync_named_group(SWEEPS_DIR, "sweep")
     _sync_special_dir(DASHBOARD_JOBS_DIR, "dashboard_jobs")

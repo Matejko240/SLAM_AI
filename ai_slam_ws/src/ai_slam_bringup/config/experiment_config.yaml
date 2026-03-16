@@ -116,7 +116,7 @@ timing:
   dataset_wait_timeout: 1000.0   # Max czas oczekiwania na dataset przed treningiem
   
   # Faza 3-4: Inferencja i ewaluacja
-  eval_duration: 100.0    
+  eval_duration: 30.0    
   
   # Wewnętrzne opóźnienia (zaawansowane)
   bridge_delay: 3.0             # Opóźnienie startu bridge'a Gazebo

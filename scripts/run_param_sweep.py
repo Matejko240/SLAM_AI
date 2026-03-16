@@ -481,6 +481,12 @@ def common_config_values(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def apply_eval_duration_override(cfg: dict[str, Any], eval_duration: float | None) -> None:
+    if eval_duration is None:
+        return
+    set_nested_value(cfg, ["timing", "eval_duration"], float(eval_duration))
+
+
 def build_trainer_params(model_type: str, cfg: dict[str, Any], experiment_id: str) -> dict[str, Any]:
     common = common_config_values(cfg)
     out_dir = str(OUT_DIR.resolve())
@@ -604,6 +610,8 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
     print(f"[SWEEP] Config bazowy: {config_path}")
     print(f"[SWEEP] Parametr: {'.'.join(param_path)}")
     print(f"[SWEEP] Wartosci: {values}")
+    if args.eval_duration is not None:
+        print(f"[SWEEP] Nadpisany czas testu i ewaluacji: {args.eval_duration}s")
     print(f"[SWEEP] Katalog wynikow sweepu: {sweep_dir}")
 
     rows: list[dict[str, Any]] = []
@@ -612,6 +620,7 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
         cfg = load_yaml(config_path)
         casted_value = cast_like(original_value, float(raw_value)) if original_value is not None else raw_value
         set_nested_value(cfg, param_path, casted_value)
+        apply_eval_duration_override(cfg, args.eval_duration)
 
         temp_config = config_out_dir / f"{index:02d}_{sanitize_value(casted_value)}.yaml"
         temp_config.write_text(
@@ -695,6 +704,8 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
     print(f"[SWEEP] Parametr: {param_key}")
     print(f"[SWEEP] Wartosci: {values}")
     print(f"[SWEEP] Trenowane modele: {sorted(train_models) if train_models else ['brak retreningu']}")
+    if args.eval_duration is not None:
+        print(f"[SWEEP] Nadpisany czas testu i ewaluacji: {args.eval_duration}s")
     print(f"[SWEEP] Katalog wynikow sweepu: {sweep_dir}")
 
     rows: list[dict[str, Any]] = []
@@ -704,6 +715,7 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
         casted_value = cast_like(original_value, float(raw_value)) if original_value is not None else raw_value
         for target_path in target_paths:
             set_nested_value(cfg, target_path, casted_value)
+        apply_eval_duration_override(cfg, args.eval_duration)
 
         temp_config = config_out_dir / f"{index:02d}_{sanitize_value(casted_value)}.yaml"
         temp_config.write_text(
@@ -802,6 +814,7 @@ def main() -> int:
     parser.add_argument("--start", required=True, type=float, help="Wartosc poczatkowa.")
     parser.add_argument("--stop", required=True, type=float, help="Wartosc koncowa.")
     parser.add_argument("--step", required=True, type=float, help="Krok sweepu.")
+    parser.add_argument("--eval-duration", type=float, default=None, help="Nadpisanie timing.eval_duration dla każdej iteracji sweepa.")
     parser.add_argument(
         "--mode",
         choices=("fixed_dataset", "full_cycle"),
