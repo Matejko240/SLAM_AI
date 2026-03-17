@@ -41,7 +41,7 @@ Nowy skrypt wykonuje pełną sekwencję:
 - `run_full_cycle.sh`
 
 ```bash
-cd ~/SLAM_AI
+cd ~/projects/SLAM_AI
 ./scripts/run_all.sh
 ```
 
@@ -58,11 +58,21 @@ Lokalny dashboard HTTP pozwala:
 Uruchomienie:
 
 ```bash
-cd ~/SLAM_AI
+cd ~/projects/SLAM_AI
+source .venv/bin/activate
 ./scripts/run_dashboard.sh
 ```
 
 Domyślny adres: `http://127.0.0.1:8765`
+
+Zatrzymanie:
+
+```bash
+cd ~/projects/SLAM_AI
+bash ./scripts/kill_dashboard.sh
+```
+
+Jeśli dashboard działa na innym porcie, podaj go jako argument, np. `bash ./scripts/kill_dashboard.sh 8766`.
 
 ## Najważniejsze pliki
 

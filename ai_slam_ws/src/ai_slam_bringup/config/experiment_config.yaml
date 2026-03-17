@@ -57,6 +57,8 @@ robak:
   max_pair_dist: 0.08        # odrzuć zbyt dalekie pary (często outliery synchronizacji)
   max_pair_dyaw: 0.25
   sync_tolerance_sec: 0.08
+  sync_pair_gap_sec: 0.20
+  interpolate_gt: true
   label_frame: "local"
   augment_noise_std_scale: 0.01   # ALSAI-like: szum proporcjonalny do zasięgu
   augment_cut_fraction: 0.15      # szansa maskowania losowego segmentu skanu
@@ -130,16 +132,23 @@ dataset:
   scan_topic: "/scan_slam"           # Topic skanów LiDAR
   odom_topic: "/odom"           # Topic odometrii (corrupted)
   gt_topic: "/ground_truth_pose" # Topic ground truth
+  sync_tolerance_sec: 0.08      # Maks. różnica czasu między skanem a dopasowanym odom/GT
+  sync_pair_gap_sec: 0.20       # Maks. luka między próbkami przy interpolacji
+  interpolate_odom: true        # true = interpoluj odometrię do czasu skanu
+  interpolate_gt: true          # true = interpoluj GT do czasu skanu, żeby nie tracić próbek przy rzadszym GT
 
 # --- PARAMETRY GROUND TRUTH (gt_pose_publisher) ---
 ground_truth:
   use_tf_world: true            # true = preferuj pozycję robota z /tf_world (Gazebo dynamic_pose)
   tf_world_topic: "/tf_world"   # Topic z TFMessage z world frame
   tf_world_timeout_sec: 0.5     # Fallback do /odom_raw jeśli brak świeżych danych z tf_world
+  publish_odom_fallback: false  # false = nie mieszaj /odom_raw z GT na tym samym topicu
+  restamp_output_to_now: true   # true = publikuj GT z aktualnym czasem symulacji, nie ze stemplem bridge'a
   model_name_hint: "diffbot"    # Podpowiedź nazwy modelu w child_frame_id
   base_link_hint: "base_link"   # Podpowiedź nazwy linku bazowego
   world_frame_hint: "world"     # Oczekiwana nazwa frame świata
   heuristic_max_score: 15.0     # Wyższy próg = mniej "no_match", ale większe ryzyko złego dopasowania
+  heuristic_bootstrap_max_score: 64.0 # Luźniejszy próg tylko dla pierwszego złapania GT z anonimowych tf_world
   heuristic_max_step_m: 0.8     # Maks. krok [m] między kolejnymi klatkami GT (ciągłość toru)
   debug_every_n: 5000           # Częstotliwość logów diagnostycznych GT
 
@@ -182,12 +191,12 @@ slam:
     publish_pose: true
   resolution: 0.05
   max_laser_range: 10.0
-  minimum_time_interval: 0.10
-  minimum_travel_distance: 0.08
+  minimum_time_interval: 0.25
+  minimum_travel_distance: 0.15
   minimum_travel_heading: 0.08
   transform_timeout: 0.20
   tf_buffer_duration: 30.0
-  map_update_interval: 1.0
+  map_update_interval: 3.0
   enable_interactive_mode: false
   # Różnice dla wariantów
   baseline:

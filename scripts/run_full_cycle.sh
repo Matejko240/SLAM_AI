@@ -21,15 +21,61 @@ fi
 
 # --- 0. Ustawienia wstępne ---
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
+WS_SETUP="$ROOT_DIR/ai_slam_ws/install/setup.bash"
+CLEANUP_SCRIPT="$ROOT_DIR/scripts/cleanup.sh"
 VENV_SITE="$ROOT_DIR/.venv/lib/python3.12/site-packages"
 if [[ -d "$VENV_SITE" ]]; then
     export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$VENV_SITE"
 fi
+
+safe_source() {
+    set +u
+    # shellcheck disable=SC1090
+    source "$1"
+    set -u
+}
+
+fail_runtime_prereq() {
+    cat >&2 <<EOF
+ERROR: $1
+
+This command needs the ROS 2 + workspace runtime:
+  1. Install ROS dependencies: ./scripts/install_deps.sh
+  2. Build the workspace:
+     cd "$ROOT_DIR/ai_slam_ws"
+     source "$ROS_SETUP"
+     colcon build --symlink-install
+
+After that, retry from:
+  cd "$ROOT_DIR"
+  source .venv/bin/activate
+  ./scripts/run_full_cycle.sh ...
+EOF
+    exit 1
+}
+
 cd "$ROOT_DIR"
+
+if [[ ! -f "$ROS_SETUP" ]]; then
+    fail_runtime_prereq "Missing ROS 2 setup: $ROS_SETUP"
+fi
+
+if [[ ! -f "$WS_SETUP" ]]; then
+    fail_runtime_prereq "Workspace is not built yet: $WS_SETUP"
+fi
+
+safe_source "$ROS_SETUP"
+safe_source "$WS_SETUP"
+
+if ! command -v ros2 >/dev/null 2>&1; then
+    fail_runtime_prereq "ros2 CLI is still unavailable after sourcing the environment."
+fi
 
 # === CZYSZCZENIE PRZED STARTEM ===
 echo "--- Uruchamianie cleanup.sh przed startem ---"
-~/SLAM_AI/scripts/cleanup.sh || true
+"$CLEANUP_SCRIPT" || true
 sleep 2 
 echo "--- Środowisko wyczyszczone ---"
 
@@ -130,7 +176,7 @@ if [ ! -f "$MODEL_PATH" ]; then
     else
         echo "BŁĄD: Plik modelu nie istnieje: $MODEL_PATH"
         # Spróbujmy posprzątać przed wyjściem
-        ~/SLAM_AI/scripts/cleanup.sh || true
+        "$CLEANUP_SCRIPT" || true
         exit 1
     fi
 fi
@@ -140,7 +186,7 @@ echo "Przechodzę do fazy testów..."
 
 # Czyszczenie między fazami (ważne, żeby zamknąć poprzednie Gazebo)
 echo "--- Czyszczenie przed Faza 2 ---"
-~/SLAM_AI/scripts/cleanup.sh || true
+"$CLEANUP_SCRIPT" || true
 sleep 5 # Dłuższa pauza, żeby Gazebo na pewno zniknęło
 
 echo "Start FAZY 2..."
@@ -176,7 +222,7 @@ if [ ! -f "$RESULTS_PATH" ]; then
         RESULTS_PATH="ai_slam_ws/out/$EXP_ID/results.json"
     else
         echo "BŁĄD: Plik wyników nie istnieje: $RESULTS_PATH"
-        ~/SLAM_AI/scripts/cleanup.sh || true
+        "$CLEANUP_SCRIPT" || true
         exit 1
     fi
 fi
@@ -187,5 +233,5 @@ echo "Wyniki: out/$EXP_ID"
 
 # === FINALNE CZYSZCZENIE ===
 echo "--- Zamykanie wszystkich procesów (cleanup) ---"
-~/SLAM_AI/scripts/cleanup.sh || true
+"$CLEANUP_SCRIPT" || true
 echo "--- Gotowe ---"

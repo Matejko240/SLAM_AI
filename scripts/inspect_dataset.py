@@ -99,6 +99,61 @@ def save_figure(fig, path: Path) -> None:
     plt.close(fig)
 
 
+def wrap_angle(values: np.ndarray) -> np.ndarray:
+    return np.arctan2(np.sin(values), np.cos(values)).astype(np.float32)
+
+
+def reconstruct_gt_poses(odom: np.ndarray, corrections: np.ndarray) -> np.ndarray:
+    gt = np.asarray(odom, dtype=np.float32).copy()
+    gt[:, :2] += np.asarray(corrections[:, :2], dtype=np.float32)
+    if gt.shape[1] >= 3 and corrections.shape[1] >= 3:
+        gt[:, 2] = wrap_angle(gt[:, 2] + np.asarray(corrections[:, 2], dtype=np.float32))
+    return gt
+
+
+def trajectory_step_lengths(poses: np.ndarray) -> np.ndarray:
+    deltas = np.diff(poses[:, :2], axis=0) if poses.shape[0] > 1 else np.zeros((0, 2), dtype=np.float32)
+    return np.linalg.norm(deltas, axis=1).astype(np.float32) if deltas.size else np.zeros((0,), dtype=np.float32)
+
+
+def trajectory_length(poses: np.ndarray) -> float:
+    steps = trajectory_step_lengths(poses)
+    return float(steps.sum()) if steps.size else 0.0
+
+
+def trajectory_jump_threshold(odom: np.ndarray) -> float:
+    odom_steps = trajectory_step_lengths(odom)
+    if odom_steps.size == 0:
+        return 0.5
+    return max(0.5, float(np.percentile(odom_steps, 99)) * 8.0)
+
+
+def segmented_trajectory_for_plot(poses: np.ndarray, jump_threshold: float) -> tuple[np.ndarray, int]:
+    segmented = np.asarray(poses, dtype=np.float32).copy()
+    step_lengths = trajectory_step_lengths(segmented)
+    jump_indices = np.where(step_lengths > jump_threshold)[0] + 1
+    if jump_indices.size:
+        segmented[jump_indices, 0] = np.nan
+        segmented[jump_indices, 1] = np.nan
+    return segmented, int(jump_indices.size)
+
+
+def piecewise_trajectory_length(poses: np.ndarray, jump_threshold: float) -> float:
+    steps = trajectory_step_lengths(poses)
+    if steps.size == 0:
+        return 0.0
+    return float(steps[steps <= jump_threshold].sum())
+
+
+def trajectory_span_xy(poses: np.ndarray) -> tuple[float, float]:
+    if poses.size == 0:
+        return 0.0, 0.0
+    return (
+        float(np.max(poses[:, 0]) - np.min(poses[:, 0])),
+        float(np.max(poses[:, 1]) - np.min(poses[:, 1])),
+    )
+
+
 def scan_to_points(scan: np.ndarray, pose: np.ndarray, max_range: float) -> tuple[np.ndarray, np.ndarray]:
     angles = np.linspace(-np.pi, np.pi, scan.shape[-1], endpoint=False, dtype=np.float32)
     valid = np.isfinite(scan) & (scan > 0.05) & (scan < max_range)
@@ -128,7 +183,7 @@ def local_scan_points(scan: np.ndarray, max_range: float) -> tuple[np.ndarray, n
 
 def build_sampled_map_points(
     scans: np.ndarray,
-    odom: np.ndarray,
+    poses: np.ndarray,
     max_range: float,
     max_scans: int = 1800,
 ) -> tuple[np.ndarray, np.ndarray, int]:
@@ -137,7 +192,7 @@ def build_sampled_map_points(
     points_y: list[np.ndarray] = []
     sampled_scans = 0
     for index in range(0, scans.shape[0], sample_step):
-        px, py = scan_to_points(scans[index], odom[index], max_range=max_range)
+        px, py = scan_to_points(scans[index], poses[index], max_range=max_range)
         if px.size == 0:
             continue
         points_x.append(px)
@@ -148,12 +203,23 @@ def build_sampled_map_points(
     return np.concatenate(points_x), np.concatenate(points_y), sampled_scans
 
 
-def compute_summary(scans: np.ndarray, odom: np.ndarray, corrections: np.ndarray, meta: dict[str, Any]) -> dict[str, Any]:
+def compute_summary(
+    scans: np.ndarray,
+    odom: np.ndarray,
+    gt: np.ndarray,
+    corrections: np.ndarray,
+    meta: dict[str, Any],
+) -> dict[str, Any]:
     valid_ranges = scans[np.isfinite(scans) & (scans > 0.05)]
     correction_xy = np.linalg.norm(corrections[:, :2], axis=1)
     theta_abs = np.abs(corrections[:, 2])
-    deltas = np.diff(odom[:, :2], axis=0) if odom.shape[0] > 1 else np.zeros((0, 2), dtype=np.float32)
-    traj_len = float(np.linalg.norm(deltas, axis=1).sum()) if deltas.size else 0.0
+    jump_threshold = trajectory_jump_threshold(odom)
+    gt_traj_len_raw = trajectory_length(gt)
+    gt_traj_len = piecewise_trajectory_length(gt, jump_threshold)
+    odom_traj_len = trajectory_length(odom)
+    gt_span_x, gt_span_y = trajectory_span_xy(gt)
+    odom_span_x, odom_span_y = trajectory_span_xy(odom)
+    gt_jump_count = int(np.sum(trajectory_step_lengths(gt) > jump_threshold))
 
     return {
         "sample_count": int(scans.shape[0]),
@@ -164,9 +230,19 @@ def compute_summary(scans: np.ndarray, odom: np.ndarray, corrections: np.ndarray
         "range_median_m": float(np.median(valid_ranges)) if valid_ranges.size else 0.0,
         "range_p95_m": float(np.percentile(valid_ranges, 95)) if valid_ranges.size else 0.0,
         "range_max_m": float(np.max(valid_ranges)) if valid_ranges.size else 0.0,
-        "trajectory_length_m": traj_len,
-        "trajectory_x_span_m": float(np.max(odom[:, 0]) - np.min(odom[:, 0])) if odom.size else 0.0,
-        "trajectory_y_span_m": float(np.max(odom[:, 1]) - np.min(odom[:, 1])) if odom.size else 0.0,
+        "trajectory_length_m": gt_traj_len,
+        "trajectory_pose_source": "ground_truth",
+        "trajectory_x_span_m": gt_span_x,
+        "trajectory_y_span_m": gt_span_y,
+        "gt_trajectory_length_m": gt_traj_len,
+        "gt_raw_trajectory_length_m": gt_traj_len_raw,
+        "gt_trajectory_x_span_m": gt_span_x,
+        "gt_trajectory_y_span_m": gt_span_y,
+        "gt_discontinuity_jump_threshold_m": jump_threshold,
+        "gt_discontinuity_jump_count": gt_jump_count,
+        "odom_trajectory_length_m": odom_traj_len,
+        "odom_trajectory_x_span_m": odom_span_x,
+        "odom_trajectory_y_span_m": odom_span_y,
         "correction_xy_rmse_m": float(np.sqrt(np.mean(correction_xy ** 2))) if correction_xy.size else 0.0,
         "correction_theta_rmse_rad": float(np.sqrt(np.mean(corrections[:, 2] ** 2))) if corrections.size else 0.0,
         "correction_xy_mean_mm": float(np.mean(correction_xy) * 1000.0) if correction_xy.size else 0.0,
@@ -179,6 +255,7 @@ def render_overview(
     dataset_dir: Path,
     scans: np.ndarray,
     odom: np.ndarray,
+    gt: np.ndarray,
     corrections: np.ndarray,
     summary: dict[str, Any],
     ref_grid: np.ndarray,
@@ -187,9 +264,15 @@ def render_overview(
 ) -> Path:
     valid_ranges = scans[np.isfinite(scans) & (scans > 0.05)]
     plot_max_range = max(5.0, float(np.percentile(valid_ranges, 99))) if valid_ranges.size else 5.0
-    points_x, points_y, sampled_scans = build_sampled_map_points(scans, odom, max_range=plot_max_range)
+    points_x, points_y, sampled_scans = build_sampled_map_points(scans, gt, max_range=plot_max_range)
+    gt_plot, gt_jump_count = segmented_trajectory_for_plot(
+        gt, float(summary.get("gt_discontinuity_jump_threshold_m", 0.5))
+    )
+    gt_scatter_step = max(1, gt.shape[0] // 1200)
     summary["sampled_map_scan_count"] = int(sampled_scans)
     summary["sampled_map_point_count"] = int(points_x.size)
+    summary["sampled_map_pose_source"] = "ground_truth"
+    summary["gt_plot_discontinuity_count"] = int(gt_jump_count)
 
     fig, axes = plt.subplots(2, 2, figsize=(15.5, 10.5))
     configure_figure(fig)
@@ -216,10 +299,27 @@ def render_overview(
     if points_x.size:
         scatter_step = max(1, points_x.size // 16000)
         ax.scatter(points_x[::scatter_step], points_y[::scatter_step], s=1.6, c="#a3e635", alpha=0.22, linewidths=0)
-    ax.plot(odom[:, 0], odom[:, 1], color="#38bdf8", linewidth=1.8, alpha=0.92)
-    ax.scatter(odom[0, 0], odom[0, 1], s=68, c="#22c55e", zorder=5)
-    ax.scatter(odom[-1, 0], odom[-1, 1], s=72, c="#f97316", marker="X", zorder=5)
-    ax.set_title("Trajektoria i próbka mapy punktowej")
+    ax.scatter(
+        gt[::gt_scatter_step, 0],
+        gt[::gt_scatter_step, 1],
+        s=11,
+        c="#f8fafc",
+        alpha=0.58,
+        linewidths=0,
+        zorder=4,
+        label="GT próbki",
+    )
+    ax.plot(gt_plot[:, 0], gt_plot[:, 1], color="#f8fafc", linewidth=2.1, alpha=0.92, label="GT")
+    ax.plot(odom[:, 0], odom[:, 1], color="#38bdf8", linewidth=1.8, alpha=0.92, label="Odometra")
+    ax.scatter(gt[0, 0], gt[0, 1], s=68, c="#22c55e", zorder=5, label="Start GT")
+    ax.scatter(gt[-1, 0], gt[-1, 1], s=72, c="#f97316", marker="X", zorder=5, label="Koniec GT")
+    ax.scatter(odom[-1, 0], odom[-1, 1], s=40, c="#0ea5e9", marker="D", zorder=5, label="Koniec odometrii")
+    legend = ax.legend(loc="lower right")
+    legend.get_frame().set_facecolor("#111827")
+    legend.get_frame().set_edgecolor("#334155")
+    for text in legend.get_texts():
+        text.set_color("#e5eefc")
+    ax.set_title("Trajektorie GT i odometrii + mapa punktowa")
     ax.set_xlabel("X [m]")
     ax.set_ylabel("Y [m]")
 
@@ -230,7 +330,23 @@ def render_overview(
         cbar.set_label("Gęstość punktów", color="#dbe7ff")
         cbar.ax.yaxis.set_tick_params(color="#dbe7ff")
         plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#dbe7ff")
-    ax.plot(odom[:, 0], odom[:, 1], color="#e2e8f0", linewidth=1.1, alpha=0.75)
+    ax.scatter(
+        gt[::gt_scatter_step, 0],
+        gt[::gt_scatter_step, 1],
+        s=8,
+        c="#f8fafc",
+        alpha=0.42,
+        linewidths=0,
+        zorder=4,
+        label="GT próbki",
+    )
+    ax.plot(gt_plot[:, 0], gt_plot[:, 1], color="#e2e8f0", linewidth=1.4, alpha=0.82, label="GT")
+    ax.plot(odom[:, 0], odom[:, 1], color="#38bdf8", linewidth=1.1, alpha=0.72, label="Odometra")
+    legend = ax.legend(loc="upper right")
+    legend.get_frame().set_facecolor("#111827")
+    legend.get_frame().set_edgecolor("#334155")
+    for text in legend.get_texts():
+        text.set_color("#e5eefc")
     ax.set_title("Gęstość punktów LiDAR")
     ax.set_xlabel("X [m]")
     ax.set_ylabel("Y [m]")
@@ -268,7 +384,8 @@ def render_overview(
     info_text = (
         f"RMSE XY: {summary['correction_xy_rmse_m']:.4f} m\n"
         f"RMSE theta: {summary['correction_theta_rmse_rad']:.4f} rad\n"
-        f"Długość trajektorii: {summary['trajectory_length_m']:.1f} m"
+        f"Długość GT / odom: {summary['gt_trajectory_length_m']:.1f} / {summary['odom_trajectory_length_m']:.1f} m\n"
+        f"Przerwy GT po skokach > {summary['gt_discontinuity_jump_threshold_m']:.2f} m: {summary['gt_discontinuity_jump_count']}"
     )
     ax.text(
         0.02,
@@ -333,11 +450,12 @@ def generate_report(dataset_dir: Path) -> dict[str, Path]:
     scans = np.asarray(data["X_scan"], dtype=np.float32)
     odom = np.asarray(data["X_odom"], dtype=np.float32)
     corrections = np.asarray(data["Y"], dtype=np.float32)
+    gt = reconstruct_gt_poses(odom, corrections)
     meta = data["meta"].item() if "meta" in data else {}
     meta = meta if isinstance(meta, dict) else {}
 
     ref_grid, ref_resolution, ref_origin = load_reference_map(REF_MAP_YAML)
-    summary = compute_summary(scans, odom, corrections, meta)
+    summary = compute_summary(scans, odom, gt, corrections, meta)
     summary.update(
         {
             "dataset_dir": str(dataset_dir.resolve()),
@@ -346,7 +464,7 @@ def generate_report(dataset_dir: Path) -> dict[str, Path]:
         }
     )
 
-    overview_path = render_overview(dataset_dir, scans, odom, corrections, summary, ref_grid, ref_resolution, ref_origin)
+    overview_path = render_overview(dataset_dir, scans, odom, gt, corrections, summary, ref_grid, ref_resolution, ref_origin)
     scans_path = render_scan_gallery(dataset_dir, scans)
     summary_path = dataset_dir / SUMMARY_NAME
     summary = normalize_json_value(summary)

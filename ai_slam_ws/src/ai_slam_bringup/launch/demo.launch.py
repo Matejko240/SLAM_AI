@@ -170,14 +170,21 @@ def launch_setup(context, *args, **kwargs):
     dataset_scan_topic = str(get_config_value(cfg, "dataset", "scan_topic", default="/scan"))
     dataset_odom_topic = str(get_config_value(cfg, "dataset", "odom_topic", default="/odom"))
     dataset_gt_topic = str(get_config_value(cfg, "dataset", "gt_topic", default="/ground_truth_pose"))
+    dataset_sync_tolerance_sec = float(get_config_value(cfg, "dataset", "sync_tolerance_sec", default=0.08))
+    dataset_sync_pair_gap_sec = float(get_config_value(cfg, "dataset", "sync_pair_gap_sec", default=0.2))
+    dataset_interpolate_odom = parse_bool(get_config_value(cfg, "dataset", "interpolate_odom", default=True), default=True)
+    dataset_interpolate_gt = parse_bool(get_config_value(cfg, "dataset", "interpolate_gt", default=True), default=True)
     gt_cfg = get_config_value(cfg, "ground_truth", default={})
     gt_use_tf_world = parse_bool(gt_cfg.get("use_tf_world", True), default=True)
     gt_tf_world_topic = str(gt_cfg.get("tf_world_topic", "/tf_world"))
     gt_tf_world_timeout = float(gt_cfg.get("tf_world_timeout_sec", 0.5))
+    gt_publish_odom_fallback = parse_bool(gt_cfg.get("publish_odom_fallback", False), default=False)
+    gt_restamp_output_to_now = parse_bool(gt_cfg.get("restamp_output_to_now", True), default=True)
     gt_model_name_hint = str(gt_cfg.get("model_name_hint", "diffbot"))
     gt_base_link_hint = str(gt_cfg.get("base_link_hint", "base_link"))
     gt_world_frame_hint = str(gt_cfg.get("world_frame_hint", "world"))
     gt_heuristic_max_score = float(gt_cfg.get("heuristic_max_score", 12.0))
+    gt_heuristic_bootstrap_max_score = float(gt_cfg.get("heuristic_bootstrap_max_score", 64.0))
     gt_heuristic_max_step = float(gt_cfg.get("heuristic_max_step_m", 0.8))
     gt_debug_every_n = int(gt_cfg.get("debug_every_n", 2000))
     
@@ -234,6 +241,8 @@ def launch_setup(context, *args, **kwargs):
     robak_max_pair_dyaw = float(robak_cfg.get("max_pair_dyaw", robak_cfg.get("max_delta_yaw", math.pi)))
     robak_label_frame = str(robak_cfg.get("label_frame", "local"))
     robak_sync_tolerance = float(robak_cfg.get("sync_tolerance_sec", 0.08))
+    robak_sync_pair_gap = float(robak_cfg.get("sync_pair_gap_sec", dataset_sync_pair_gap_sec))
+    robak_interpolate_gt = parse_bool(robak_cfg.get("interpolate_gt", True), default=True)
     robak_aug_noise_std_scale = float(robak_cfg.get("augment_noise_std_scale", 0.0))
     robak_aug_cut_fraction = float(robak_cfg.get("augment_cut_fraction", 0.0))
     robak_aug_cut_max_points = int(robak_cfg.get("augment_cut_max_points", 20))
@@ -438,7 +447,9 @@ def launch_setup(context, *args, **kwargs):
         PythonLaunchDescriptionSource(gz_sim_launch_py),
         launch_arguments={
             "gz_args": f"{world_path} -r -s --headless-rendering",
-            "on_exit_shutdown": "True",
+            # We drive shutdown explicitly from dataset/train/eval completion handlers below.
+            # Leaving Gazebo's own on-exit shutdown enabled causes duplicate shutdown events.
+            "on_exit_shutdown": "False",
         }.items(),
         condition=IfCondition(str(not is_gui).lower()),
     )
@@ -447,7 +458,7 @@ def launch_setup(context, *args, **kwargs):
         PythonLaunchDescriptionSource(gz_sim_launch_py),
         launch_arguments={
             "gz_args": f"{world_path} -r",
-            "on_exit_shutdown": "True",
+            "on_exit_shutdown": "False",
         }.items(),
         condition=IfCondition(str(is_gui).lower()),
     )
@@ -598,10 +609,13 @@ def launch_setup(context, *args, **kwargs):
             "use_tf_world": gt_use_tf_world,
             "tf_world_topic": gt_tf_world_topic,
             "tf_world_timeout_sec": gt_tf_world_timeout,
+            "publish_odom_fallback": gt_publish_odom_fallback,
+            "restamp_output_to_now": gt_restamp_output_to_now,
             "model_name_hint": gt_model_name_hint,
             "base_link_hint": gt_base_link_hint,
             "world_frame_hint": gt_world_frame_hint,
             "heuristic_max_score": gt_heuristic_max_score,
+            "heuristic_bootstrap_max_score": gt_heuristic_bootstrap_max_score,
             "heuristic_max_step_m": gt_heuristic_max_step,
             "debug_every_n": gt_debug_every_n,
         }],
@@ -816,6 +830,10 @@ def launch_setup(context, *args, **kwargs):
             "scan_topic": dataset_scan_topic,
             "odom_topic": dataset_odom_topic,
             "gt_topic": dataset_gt_topic,
+            "sync_tolerance_sec": dataset_sync_tolerance_sec,
+            "sync_pair_gap_sec": dataset_sync_pair_gap_sec,
+            "interpolate_odom": dataset_interpolate_odom,
+            "interpolate_gt": dataset_interpolate_gt,
         }],
         output="screen",
         condition=IfCondition(str(do_dataset_phase).lower()),
@@ -885,6 +903,8 @@ def launch_setup(context, *args, **kwargs):
             "max_pair_dyaw": robak_max_pair_dyaw,
             "label_frame": robak_label_frame,
             "sync_tolerance_sec": robak_sync_tolerance,
+            "sync_pair_gap_sec": robak_sync_pair_gap,
+            "interpolate_gt": robak_interpolate_gt,
             "augment_noise_std_scale": robak_aug_noise_std_scale,
             "augment_cut_fraction": robak_aug_cut_fraction,
             "augment_cut_max_points": robak_aug_cut_max_points,

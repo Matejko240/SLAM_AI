@@ -1096,17 +1096,17 @@ def build_job_command(payload: dict[str, Any]) -> tuple[str, str]:
         dataset_duration = str(payload.get("dataset_duration", "")).strip()
         eval_duration = str(payload.get("eval_duration", "")).strip()
         experiment_id = str(payload.get("experiment_id", "")).strip()
-        if mode not in {"dataset", "full_cycle", "train_existing", "test_existing"}:
+        if mode not in {"dataset", "dataset_train", "full_cycle", "train_existing", "test_existing", "train_test_existing"}:
             raise ValueError("Nieznany tryb szybkiego uruchomienia.")
-        if mode in {"dataset", "full_cycle"} and not dataset_duration:
+        if mode in {"dataset", "dataset_train", "full_cycle"} and not dataset_duration:
             raise ValueError("Brak wspólnego czasu datasetu.")
         if dataset_duration:
             float(dataset_duration)
-        if mode in {"full_cycle", "test_existing"}:
+        if mode in {"full_cycle", "test_existing", "train_test_existing"}:
             if not eval_duration:
                 raise ValueError("Ten tryb wymaga czasu testu i ewaluacji.")
             float(eval_duration)
-        if mode in {"train_existing", "test_existing"} and not experiment_id:
+        if mode in {"train_existing", "test_existing", "train_test_existing"} and not experiment_id:
             raise ValueError("Brak wybranego eksperymentu.")
 
         label_suffix = experiment_id or run_name or config
@@ -1125,9 +1125,11 @@ def build_job_command(payload: dict[str, Any]) -> tuple[str, str]:
             command += f" --experiment-id {shlex.quote(experiment_id)}"
         label_map = {
             "dataset": "Szybki start: tylko datasety",
+            "dataset_train": "Szybki start: dataset + trening",
             "full_cycle": "Szybki start: dataset + trening + test",
             "train_existing": "Szybki start: trening wybranego eksperymentu",
             "test_existing": "Szybki start: test wybranego eksperymentu",
+            "train_test_existing": "Szybki start: trening + test wybranego eksperymentu",
         }
         label = f"{label_map.get(mode, 'Szybki start')} ({label_suffix})"
         return label, command
@@ -1599,15 +1601,22 @@ HTML_PAGE = """<!doctype html>
       display: grid;
       gap: 18px;
       align-items: start;
-      grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+      grid-template-columns: 320px minmax(0, 1fr);
+    }
+    .layout > * {
+      min-width: 0;
     }
     .stack {
       display: grid;
       gap: 16px;
       align-content: start;
+      min-width: 0;
     }
     .sidebar {
       align-self: start;
+      min-width: 0;
+      width: min(100%, 320px);
+      max-width: 320px;
     }
     .panel {
       background: var(--panel);
@@ -1616,6 +1625,8 @@ HTML_PAGE = """<!doctype html>
       box-shadow: var(--shadow);
       padding: 18px;
       backdrop-filter: blur(10px);
+      min-width: 0;
+      overflow: hidden;
     }
     .panel h2, .panel h3 {
       margin-top: 0;
@@ -1631,6 +1642,7 @@ HTML_PAGE = """<!doctype html>
       gap: 6px;
       font-size: 0.92rem;
       color: var(--muted);
+      min-width: 0;
     }
     input, select, textarea, button {
       font: inherit;
@@ -1639,8 +1651,13 @@ HTML_PAGE = """<!doctype html>
       width: auto;
       padding: 0;
     }
+    input:disabled, select:disabled, textarea:disabled, button:disabled {
+      opacity: 0.58;
+      cursor: not-allowed;
+    }
     input, select, textarea {
       width: 100%;
+      min-width: 0;
       padding: 11px 12px;
       border: 1px solid rgba(148, 163, 184, 0.2);
       border-radius: 12px;
@@ -1648,14 +1665,24 @@ HTML_PAGE = """<!doctype html>
       color: var(--ink);
     }
     select {
+      display: block;
       appearance: none;
       -webkit-appearance: none;
       -moz-appearance: none;
       padding-right: 42px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23e5edf5' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-position: right 14px center;
       background-size: 14px 14px;
+    }
+    #experiment-select {
+      inline-size: 100%;
+      max-inline-size: 100%;
+      min-inline-size: 0;
     }
     select option {
       color: #e5edf5;
@@ -1746,6 +1773,44 @@ HTML_PAGE = """<!doctype html>
       margin: 0;
       flex: 0 0 auto;
       transform: translateY(-0.5px);
+    }
+    .quick-step-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    .quick-step {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: start;
+      gap: 10px;
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      color: var(--ink);
+    }
+    .quick-step input[type="checkbox"] {
+      margin-top: 2px;
+      width: 16px;
+      height: 16px;
+    }
+    .quick-step strong {
+      display: block;
+      font-size: 0.98rem;
+      color: var(--ink);
+    }
+    .quick-step small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .quick-helper {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.12);
     }
     .metric {
       padding: 14px;
@@ -2027,6 +2092,23 @@ HTML_PAGE = """<!doctype html>
     .status.done .dot { background: var(--good); }
     .status.failed .dot { background: var(--bad); }
     .muted { color: var(--muted); }
+    #experiment-meta {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    #experiment-meta > div {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    #experiment-meta strong {
+      display: block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .section-note, .flash {
       margin: 0;
       color: var(--muted);
@@ -2117,26 +2199,45 @@ HTML_PAGE = """<!doctype html>
           <h2>Szybki Start</h2>
           <p class="section-note" id="quick-launch-config-note">Ładowanie ustawień szybkiego startu...</p>
           <label>Nazwa nowego uruchomienia
-            <input id="quick-experiment-name" placeholder="np. robak_porownanie_01">
+            <input id="quick-experiment-name" placeholder="np. robak_porownanie_01" oninput="renderQuickLaunchPanel()">
           </label>
           <div class="two">
             <label>Wspólny czas datasetu [s]
-              <input id="quick-dataset-duration" placeholder="np. 30.0">
+              <input id="quick-dataset-duration" placeholder="np. 30.0" oninput="renderQuickLaunchPanel()">
             </label>
             <label>Czas testu i ewaluacji [s]
-              <input id="quick-eval-duration" placeholder="np. 100.0">
+              <input id="quick-eval-duration" placeholder="np. 100.0" oninput="renderQuickLaunchPanel()">
+            </label>
+          </div>
+          <div class="quick-step-grid">
+            <label class="quick-step">
+              <input id="quick-step-dataset" type="checkbox" checked onchange="renderQuickLaunchPanel()">
+              <span>
+                <strong>Dataset</strong>
+                <small>Zbiera nowe datasety dla aktywnych torów z configu i tworzy nowy eksperyment.</small>
+              </span>
+            </label>
+            <label class="quick-step">
+              <input id="quick-step-train" type="checkbox" checked onchange="renderQuickLaunchPanel()">
+              <span>
+                <strong>Trening</strong>
+                <small>Trenuje wszystkie aktywne modele. Bez datasetu użyje aktualnie wybranego eksperymentu.</small>
+              </span>
+            </label>
+            <label class="quick-step">
+              <input id="quick-step-test" type="checkbox" checked onchange="renderQuickLaunchPanel()">
+              <span>
+                <strong>Test</strong>
+                <small>Uruchamia test i ewaluację. Bez datasetu zapisze wyniki w wybranym eksperymencie.</small>
+              </span>
             </label>
           </div>
           <div class="button-row">
-            <button class="secondary" onclick="startQuickPipeline('dataset')">Zbierz tylko datasety</button>
-            <button onclick="startQuickPipeline('full_cycle')">Dataset + trening + test</button>
-          </div>
-          <div class="button-row">
-            <button class="secondary" onclick="startQuickPipeline('train_existing')">Trenuj wybrany eksperyment</button>
-            <button class="secondary" onclick="startQuickPipeline('test_existing')">Testuj wybrany eksperyment</button>
+            <button id="quick-run-button" onclick="startQuickPipeline()">Uruchom zaznaczone etapy</button>
             <button class="secondary" onclick="inspectSelected()">Raport datasetu</button>
           </div>
-          <p class="section-note">Nowe uruchomienia używają nazwy z pola powyżej. Trening i test korzystają z aktualnie wybranego eksperymentu z listy po lewej. Test zapisze nowe wyniki w folderze tego eksperymentu.</p>
+          <p class="section-note quick-helper" id="quick-launch-phase-note">Wybierz etapy do wykonania.</p>
+          <p class="section-note quick-helper" id="quick-launch-process-note">Ładowanie aktywnych torów z configu...</p>
         </section>
 
         <section class="panel controls" data-workspaces="experiments">
@@ -2888,6 +2989,26 @@ HTML_PAGE = """<!doctype html>
       }
       return `${normalized.slice(0, Math.max(1, maxLen - 1)).trimEnd()}…`;
     }
+    function truncateMiddleLabel(text, maxLen = OPTION_LABEL_MAX, tailLen = 12) {
+      const normalized = String(coalesce(text, '')).trim();
+      if (normalized.length <= maxLen) {
+        return normalized;
+      }
+      const suffixLength = Math.max(6, Math.min(tailLen, Math.floor(maxLen / 2)));
+      const prefixLength = Math.max(6, maxLen - suffixLength - 1);
+      return `${normalized.slice(0, prefixLength).trimEnd()}…${normalized.slice(-suffixLength)}`;
+    }
+    function compactExperimentLabel(experimentId, maxLen = 34) {
+      return truncateMiddleLabel(experimentId, maxLen, 13);
+    }
+    function escapeHtml(text) {
+      return String(coalesce(text, ''))
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
     function setOptionLabel(option, label, maxLen = OPTION_LABEL_MAX) {
       const fullLabel = String(coalesce(label, ''));
       option.dataset.fullLabel = fullLabel;
@@ -3000,6 +3121,25 @@ HTML_PAGE = """<!doctype html>
       }
       const numeric = Number(value);
       return Number.isFinite(numeric) ? numeric : fallback;
+    }
+    function boolConfigValue(path, fallback = false) {
+      const value = getPathValue(state.currentConfigParsed, path);
+      if (typeof value === 'boolean') {
+        return value;
+      }
+      if (typeof value === 'number') {
+        return value !== 0;
+      }
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'on'].includes(normalized)) {
+          return true;
+        }
+        if (['false', '0', 'no', 'off'].includes(normalized)) {
+          return false;
+        }
+      }
+      return fallback;
     }
     function setWorkspace(workspace) {
       state.currentWorkspace = workspace;
@@ -3130,7 +3270,9 @@ HTML_PAGE = """<!doctype html>
         return;
       }
       state.experiments.forEach((exp) => {
-        appendSelectOption(select, exp.id, exp.id);
+        const option = appendSelectOption(select, exp.id, compactExperimentLabel(exp.id, 34), 34);
+        option.dataset.fullLabel = exp.id;
+        option.title = exp.id;
       });
       if (state.experiments.some((exp) => exp.id === previous)) {
         select.value = previous;
@@ -3838,8 +3980,9 @@ HTML_PAGE = """<!doctype html>
         return;
       }
 
+      const compactId = compactExperimentLabel(exp.id, 42);
       meta.innerHTML = `
-        <div><strong>${exp.id}</strong></div>
+        <div><strong title="${escapeHtml(exp.id)}">${escapeHtml(compactId)}</strong></div>
         <div>Utworzono: ${exp.created_at || 'brak danych'}</div>
         <div>Próbki datasetu: ${coalesce(exp.dataset_samples, 'brak')}</div>
         <div>Próbki ewaluacji: ${coalesce(exp.eval_samples, 'brak')}</div>
@@ -3979,14 +4122,160 @@ HTML_PAGE = """<!doctype html>
       startJob({ action: 'inspect_dataset', experiment_id });
     }
 
+    function quickPhaseState() {
+      return {
+        dataset: Boolean(document.getElementById('quick-step-dataset')?.checked),
+        train: Boolean(document.getElementById('quick-step-train')?.checked),
+        test: Boolean(document.getElementById('quick-step-test')?.checked),
+      };
+    }
+
+    function quickLaunchPlan() {
+      const phases = quickPhaseState();
+      const basePlan = {
+        mode: '',
+        summary: '',
+        target: '',
+        buttonLabel: 'Uruchom zaznaczone etapy',
+        needsName: false,
+        needsDatasetDuration: false,
+        needsEvalDuration: false,
+        needsExperiment: false,
+        error: '',
+      };
+
+      if (!phases.dataset && !phases.train && !phases.test) {
+        return {
+          ...basePlan,
+          error: 'Zaznacz co najmniej jeden etap: dataset, trening albo test.',
+          buttonLabel: 'Wybierz etapy',
+        };
+      }
+      if (phases.dataset && phases.test && !phases.train) {
+        return {
+          ...basePlan,
+          summary: 'dataset + test',
+          error: 'Kombinacja dataset + test bez treningu nie jest wspierana. Dodaj trening albo uruchom test osobno na istniejącym eksperymencie.',
+          buttonLabel: 'Niepoprawny wybór',
+        };
+      }
+      if (phases.dataset && phases.train && phases.test) {
+        return {
+          ...basePlan,
+          mode: 'full_cycle',
+          summary: 'dataset + trening + test',
+          target: 'new',
+          buttonLabel: 'Uruchom: dataset + trening + test',
+          needsName: true,
+          needsDatasetDuration: true,
+          needsEvalDuration: true,
+        };
+      }
+      if (phases.dataset && phases.train) {
+        return {
+          ...basePlan,
+          mode: 'dataset_train',
+          summary: 'dataset + trening',
+          target: 'new',
+          buttonLabel: 'Uruchom: dataset + trening',
+          needsName: true,
+          needsDatasetDuration: true,
+        };
+      }
+      if (phases.dataset) {
+        return {
+          ...basePlan,
+          mode: 'dataset',
+          summary: 'dataset',
+          target: 'new',
+          buttonLabel: 'Uruchom: dataset',
+          needsName: true,
+          needsDatasetDuration: true,
+        };
+      }
+      if (phases.train && phases.test) {
+        return {
+          ...basePlan,
+          mode: 'train_test_existing',
+          summary: 'trening + test',
+          target: 'existing',
+          buttonLabel: 'Uruchom: trening + test',
+          needsEvalDuration: true,
+          needsExperiment: true,
+        };
+      }
+      if (phases.train) {
+        return {
+          ...basePlan,
+          mode: 'train_existing',
+          summary: 'trening',
+          target: 'existing',
+          buttonLabel: 'Uruchom: trening',
+          needsExperiment: true,
+        };
+      }
+      return {
+        ...basePlan,
+        mode: 'test_existing',
+        summary: 'test',
+        target: 'existing',
+        buttonLabel: 'Uruchom: test',
+        needsEvalDuration: true,
+        needsExperiment: true,
+      };
+    }
+
+    function quickTrackSummary() {
+      if (!state.currentConfigParsed) {
+        return 'Aktywne procesy pojawią się po wczytaniu configu.';
+      }
+
+      const mode = String(getPathValue(state.currentConfigParsed, ['experiment', 'mode']) || 'ai').trim().toLowerCase();
+      const active = [];
+      const evalOnly = [];
+
+      if (boolConfigValue(['tracks', 'tor1_baseline'], true)) {
+        active.push('Baseline: tor referencyjny, bez treningu');
+      }
+      if (mode === 'ai' && boolConfigValue(['tracks', 'tor2_ai_slam'], true)) {
+        active.push('AI SLAM: dataset + trening + test');
+      }
+      if (mode === 'ai' && boolConfigValue(['tracks', 'tor5_robak'], false)) {
+        active.push('Robak: dataset + trening + test');
+      }
+      if (mode === 'ai' && boolConfigValue(['tracks', 'tor6_rywak'], false)) {
+        active.push('Rywak: dataset + trening + test');
+      }
+      if (boolConfigValue(['tracks', 'tor3_local'], false)) {
+        evalOnly.push('Local');
+      }
+      if (boolConfigValue(['tracks', 'tor4_bruteforce'], false)) {
+        evalOnly.push('Bruteforce');
+      }
+
+      let text = active.length
+        ? `Aktywne procesy z configu: ${active.join(' | ')}.`
+        : 'W configu nie ma aktywnych torów szybkiego startu.';
+      if (mode !== 'ai') {
+        text += ` experiment.mode=${mode}, więc dataset i trening dla torów AI są wyłączone.`;
+      }
+      if (evalOnly.length) {
+        text += ` Tory ${evalOnly.join(' i ')} uruchamiają się tylko w teście i ewaluacji.`;
+      }
+      return text;
+    }
+
     function renderQuickLaunchPanel(forceDefaults = false) {
       const note = document.getElementById('quick-launch-config-note');
+      const phaseNote = document.getElementById('quick-launch-phase-note');
+      const processNote = document.getElementById('quick-launch-process-note');
+      const runButton = document.getElementById('quick-run-button');
+      const nameInput = document.getElementById('quick-experiment-name');
       const datasetInput = document.getElementById('quick-dataset-duration');
       const evalInput = document.getElementById('quick-eval-duration');
       const configName = selectedConfigName() || state.currentConfigName || 'experiment_config.yaml';
       const experimentId = selectedExperimentId();
-
-      note.textContent = `Bazowy config: ${configName}. Wybrany eksperyment do treningu/testu: ${experimentId || 'brak'}. Wspólny czas datasetu nadpisuje timing.dataset_duration, robak.dataset_duration i rywak.dataset_duration tylko dla nowych uruchomień.`;
+      const plan = quickLaunchPlan();
 
       const datasetDuration = numericConfigValue(['timing', 'dataset_duration'], 30.0);
       const evalDuration = numericConfigValue(['timing', 'eval_duration'], 100.0);
@@ -3997,9 +4286,67 @@ HTML_PAGE = """<!doctype html>
       if (forceDefaults || !evalInput.value) {
         evalInput.value = evalDuration === null ? '' : String(evalDuration);
       }
+
+      nameInput.disabled = !plan.needsName;
+      datasetInput.disabled = !plan.needsDatasetDuration;
+      evalInput.disabled = !plan.needsEvalDuration;
+
+      nameInput.placeholder = plan.needsName ? 'np. robak_porownanie_01' : 'Niewymagane dla tego planu';
+      datasetInput.placeholder = plan.needsDatasetDuration ? 'np. 30.0' : 'Niewymagane dla tego planu';
+      evalInput.placeholder = plan.needsEvalDuration ? 'np. 100.0' : 'Niewymagane dla tego planu';
+
+      const blockers = [];
+      if (plan.error) {
+        blockers.push(plan.error);
+      }
+      if (state.configDirty) {
+        blockers.push('Masz niezapisane zmiany w YAML. Zapisz config przed szybkim startem.');
+      }
+      if (plan.needsExperiment && !experimentId) {
+        blockers.push('Wybierz eksperyment z listy, bo ten plan działa na istniejącym runie.');
+      }
+      if (plan.needsName && !valueOf('quick-experiment-name')) {
+        blockers.push('Podaj nazwę nowego uruchomienia.');
+      }
+      if (plan.needsDatasetDuration && !valueOf('quick-dataset-duration')) {
+        blockers.push('Podaj wspólny czas datasetu.');
+      }
+      if (plan.needsEvalDuration && !valueOf('quick-eval-duration')) {
+        blockers.push('Podaj czas testu i ewaluacji.');
+      }
+
+      const targetNote = plan.error
+        ? 'Zaznacz poprawny zestaw etapów, aby określić sposób uruchomienia.'
+        : plan.target === 'new'
+          ? 'Zaznaczenie datasetu utworzy nowy eksperyment.'
+          : 'Bez datasetu panel użyje aktualnie wybranego eksperymentu.';
+      note.textContent = `Bazowy config: ${configName}. ${targetNote} Wybrany eksperyment do treningu i testu: ${experimentId || 'brak'}.`;
+
+      if (blockers.length) {
+        phaseNote.textContent = blockers.join(' ');
+      } else {
+        const details = [`Plan: ${plan.summary}.`];
+        if (plan.target === 'new') {
+          details.push('Powstanie nowy eksperyment z nazwą z pola powyżej.');
+        } else {
+          details.push(`Użyty będzie wybrany eksperyment: ${experimentId}.`);
+        }
+        if (plan.needsDatasetDuration) {
+          details.push('Wspólny czas datasetu nadpisze timing.dataset_duration oraz odpowiedniki Robaka i Rywaka.');
+        }
+        if (plan.needsEvalDuration) {
+          details.push('Czas testu steruje fazą testu i ewaluacji.');
+        }
+        phaseNote.textContent = details.join(' ');
+      }
+
+      processNote.textContent = quickTrackSummary();
+      runButton.textContent = plan.buttonLabel;
+      runButton.disabled = blockers.length > 0;
     }
 
-    function startQuickPipeline(mode) {
+    function startQuickPipeline() {
+      const plan = quickLaunchPlan();
       const config = selectedConfigName();
       const runName = valueOf('quick-experiment-name');
       const datasetDuration = valueOf('quick-dataset-duration');
@@ -4010,29 +4357,25 @@ HTML_PAGE = """<!doctype html>
         alert('Najpierw wczytaj plik konfiguracyjny.');
         return;
       }
-      if (mode === 'dataset' || mode === 'full_cycle') {
-        if (!datasetDuration) {
-          alert('Podaj wspólny czas zbierania datasetu.');
-          return;
-        }
-      }
-      if (mode === 'full_cycle' && !evalDuration) {
-        alert('Podaj czas testu i ewaluacji dla pełnego przebiegu.');
+      if (plan.error) {
+        alert(plan.error);
         return;
       }
-      if (mode === 'test_existing' && !evalDuration) {
-        alert('Podaj czas testu i ewaluacji dla testu wybranego eksperymentu.');
+      if (plan.needsDatasetDuration && !datasetDuration) {
+        alert('Podaj wspólny czas zbierania datasetu.');
         return;
       }
-      if ((mode === 'train_existing' || mode === 'test_existing') && !experimentId) {
+      if (plan.needsEvalDuration && !evalDuration) {
+        alert('Podaj czas testu i ewaluacji.');
+        return;
+      }
+      if (plan.needsExperiment && !experimentId) {
         alert('Najpierw wybierz eksperyment z listy.');
         return;
       }
-      if (mode === 'dataset' || mode === 'full_cycle') {
-        if (!runName) {
-          alert('Podaj nazwę nowego uruchomienia, żeby łatwo odróżnić eksperymenty.');
-          return;
-        }
+      if (plan.needsName && !runName) {
+        alert('Podaj nazwę nowego uruchomienia, żeby łatwo odróżnić eksperymenty.');
+        return;
       }
       if (state.configDirty) {
         alert('Masz niezapisane zmiany w configu. Zapisz YAML przed szybkim uruchomieniem.');
@@ -4041,12 +4384,12 @@ HTML_PAGE = """<!doctype html>
 
       startJob({
         action: 'quick_pipeline',
-        mode,
+        mode: plan.mode,
         config,
-        name: runName,
-        experiment_id: experimentId,
-        dataset_duration: datasetDuration,
-        eval_duration: evalDuration,
+        name: plan.needsName ? runName : '',
+        experiment_id: plan.needsExperiment ? experimentId : '',
+        dataset_duration: plan.needsDatasetDuration ? datasetDuration : '',
+        eval_duration: plan.needsEvalDuration ? evalDuration : '',
       });
     }
 

@@ -25,15 +25,22 @@ dataset:
   scan_topic: "/scan"
   odom_topic: "/odom"
   gt_topic: "/ground_truth_pose"
+  sync_tolerance_sec: 0.08
+  sync_pair_gap_sec: 0.20
+  interpolate_odom: true
+  interpolate_gt: true
 
 ground_truth:
   use_tf_world: true
   tf_world_topic: "/tf_world"
   tf_world_timeout_sec: 0.5
+  publish_odom_fallback: false
+  restamp_output_to_now: true
   model_name_hint: "diffbot"
   base_link_hint: "base_link"
   world_frame_hint: "world"
   heuristic_max_score: 12.0
+  heuristic_bootstrap_max_score: 64.0
   heuristic_max_step_m: 0.8
   debug_every_n: 1000
 
@@ -63,6 +70,8 @@ robak:
   min_pair_dist: 0.03
   min_pair_dyaw: 0.05
   pair_filter_mode: "any"
+  sync_pair_gap_sec: 0.20
+  interpolate_gt: true
 
 rywak:
   min_sample_dist: 0.03

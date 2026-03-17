@@ -1,14 +1,29 @@
 import math
 
 import rclpy
-from rclpy.node import Node
-from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
+from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
 
 
 def _stamp_to_sec(stamp) -> float:
     return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
+
+def _wrap_angle(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def _quat_from_yaw(yaw: float):
+    half = 0.5 * float(yaw)
+    return (0.0, 0.0, math.sin(half), math.cos(half))
 
 
 class GTPosePublisher(Node):
@@ -24,7 +39,11 @@ class GTPosePublisher(Node):
         self.declare_parameter("base_link_hint", "base_link")
         self.declare_parameter("world_frame_hint", "world")
         self.declare_parameter("heuristic_max_score", 9.0)
+        self.declare_parameter("heuristic_bootstrap_max_score", 64.0)
         self.declare_parameter("heuristic_max_step_m", 0.8)
+        self.declare_parameter("publish_odom_fallback", False)
+        self.declare_parameter("restamp_output_to_now", True)
+        self.declare_parameter("propagate_tf_world_with_odom", True)
         self.declare_parameter("debug_every_n", 500)
 
         self.in_topic = str(self.get_parameter("in_topic").value)
@@ -37,7 +56,11 @@ class GTPosePublisher(Node):
         self.base_link_hint = str(self.get_parameter("base_link_hint").value).lower().strip()
         self.world_frame_hint = str(self.get_parameter("world_frame_hint").value).lower().strip()
         self.heuristic_max_score = float(self.get_parameter("heuristic_max_score").value)
+        self.heuristic_bootstrap_max_score = float(self.get_parameter("heuristic_bootstrap_max_score").value)
         self.heuristic_max_step_m = float(self.get_parameter("heuristic_max_step_m").value)
+        self.publish_odom_fallback = bool(self.get_parameter("publish_odom_fallback").value)
+        self.restamp_output_to_now = bool(self.get_parameter("restamp_output_to_now").value)
+        self.propagate_tf_world_with_odom = bool(self.get_parameter("propagate_tf_world_with_odom").value)
         self.debug_every_n = int(self.get_parameter("debug_every_n").value)
 
         self.pub = self.create_publisher(PoseStamped, self.out_topic, 10)
@@ -48,16 +71,24 @@ class GTPosePublisher(Node):
 
         self.last_tf_world_stamp_sec = None
         self.n_tf_world = 0
+        self.n_tf_world_propagated = 0
         self.n_odom_fallback = 0
+        self.n_odom_fallback_suppressed = 0
         self.n_tf_world_no_match = 0
         self.n_tf_world_heuristic = 0
         self._last_tf_world_source = None
         self.latest_odom_xy = None
+        self.latest_odom_pose = None
         self.last_gt_world_xyzt = None
+        self.last_gt_world_pose = None
+        self.last_gt_anchor_odom_pose = None
 
         self.get_logger().info(
             f"[GT] source: tf_world={self.use_tf_world} ({self.tf_world_topic}), "
-            f"fallback odom={self.in_topic}, out={self.out_topic}"
+            f"fallback odom={self.in_topic}, out={self.out_topic}, "
+            f"publish_odom_fallback={self.publish_odom_fallback}, "
+            f"restamp_output_to_now={self.restamp_output_to_now}, "
+            f"propagate_tf_world_with_odom={self.propagate_tf_world_with_odom}"
         )
 
     @staticmethod
@@ -79,8 +110,6 @@ class GTPosePublisher(Node):
         if not self.world_frame_hint:
             return True
         if not parent_tokens:
-            # Niektóre bridge potrafią zostawić pusty parent; dopuszczamy,
-            # ale bez premii punktowej.
             return True
         return self._tokens_match_hint(parent_tokens, self.world_frame_hint)
 
@@ -97,14 +126,10 @@ class GTPosePublisher(Node):
         child_base = child_tokens[-1]
         base_hint = self.base_link_hint or "base_link"
 
-        # 1) Najlepiej: base_link.
         if child_base == base_hint:
             score = 100
-
-        # 2) Fallback: model frame (np. world -> diffbot), gdy brak base_link.
         if score == 0 and self.model_name_hint and child_base == self.model_name_hint:
             score = 70
-
         if score <= 0:
             return 0
 
@@ -127,7 +152,7 @@ class GTPosePublisher(Node):
         return ", ".join(parts)
 
     def _select_unnamed_transform_by_odom(self, msg: TFMessage):
-        """Fallback gdy bridge nie niesie nazw ramek (puste parent/child)."""
+        """Fallback when the bridge does not preserve frame ids."""
         if self.latest_odom_xy is None and self.last_gt_world_xyzt is None:
             return None, None
 
@@ -140,7 +165,6 @@ class GTPosePublisher(Node):
         best_d_prev2 = None
         best_d_odom2 = None
 
-        # Gdy mamy poprzedni GT w world, utrzymuj spójność ruchu robota.
         dynamic_step_m = self.heuristic_max_step_m
         if pt is not None and len(msg.transforms) > 0:
             mt = _stamp_to_sec(msg.transforms[0].header.stamp)
@@ -159,8 +183,6 @@ class GTPosePublisher(Node):
             z = float(tr.transform.translation.z)
             if (not math.isfinite(x)) or (not math.isfinite(y)) or (not math.isfinite(z)):
                 continue
-
-            # Robot base_link w tym modelu jest blisko z~0.1m.
             if z < -0.30 or z > 0.80:
                 continue
 
@@ -173,10 +195,8 @@ class GTPosePublisher(Node):
                 d_prev2 = (x - px) * (x - px) + (y - py) * (y - py)
 
             if d_prev2 is not None and d_prev2 <= dynamic_step2:
-                # Preferuj ciągłość toru; odometria tylko jako miękki tie-breaker.
                 score = d_prev2 + (0.10 * d_odom2 if d_odom2 is not None else 0.0) + 0.02 * abs(z - 0.10)
             else:
-                # Gdy ciągłość odpada, użyj odometrii.
                 if d_odom2 is None:
                     continue
                 score = d_odom2 + 0.04 * abs(z - 0.10)
@@ -187,32 +207,47 @@ class GTPosePublisher(Node):
                 best_d_prev2 = d_prev2
                 best_d_odom2 = d_odom2
 
-        # Akceptacja: preferuj spójność toru, fallback do progu odometrii.
         if best is None:
             return None, None
         if best_d_prev2 is not None and best_d_prev2 <= dynamic_step2:
+            return best, best_score
+        if self.last_gt_world_xyzt is None and best_d_odom2 is not None and best_d_odom2 <= self.heuristic_bootstrap_max_score:
             return best, best_score
         if best_d_odom2 is not None and best_d_odom2 <= self.heuristic_max_score:
             return best, best_score
         return None, None
 
-    def _remember_last_world_pose(self, stamp, pos):
+    def _remember_last_world_pose(self, stamp, pos, quat):
         try:
             t = _stamp_to_sec(stamp)
         except Exception:
             t = None
         if t is None:
             return
+
+        yaw = _yaw_from_quat(float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
         self.last_gt_world_xyzt = (
             float(pos[0]),
             float(pos[1]),
             float(pos[2]),
             float(t),
         )
+        self.last_gt_world_pose = (
+            float(pos[0]),
+            float(pos[1]),
+            float(pos[2]),
+            float(yaw),
+            float(t),
+        )
+        if self.latest_odom_pose is not None:
+            self.last_gt_anchor_odom_pose = self.latest_odom_pose
 
-    def _publish_pose(self, stamp, frame_id: str, pos, quat):
+    def _publish_pose(self, stamp, frame_id: str, pos, quat, force_input_stamp: bool = False):
         ps = PoseStamped()
-        ps.header.stamp = stamp
+        if force_input_stamp or not self.restamp_output_to_now:
+            ps.header.stamp = stamp
+        else:
+            ps.header.stamp = self.get_clock().now().to_msg()
         ps.header.frame_id = frame_id
         ps.pose.position.x = float(pos[0])
         ps.pose.position.y = float(pos[1])
@@ -222,6 +257,49 @@ class GTPosePublisher(Node):
         ps.pose.orientation.z = float(quat[2])
         ps.pose.orientation.w = float(quat[3])
         self.pub.publish(ps)
+
+    def _publish_tf_world_pose(self, stamp, frame_id: str, pos, quat, source_tag):
+        self._publish_pose(stamp, frame_id, pos, quat)
+        self.last_tf_world_stamp_sec = _stamp_to_sec(stamp)
+        self.n_tf_world += 1
+        self._last_tf_world_source = source_tag
+        self._remember_last_world_pose(stamp, pos, quat)
+
+    def _publish_propagated_world_pose(self, msg: Odometry) -> bool:
+        if not self.propagate_tf_world_with_odom:
+            return False
+        if self.last_gt_world_pose is None or self.last_gt_anchor_odom_pose is None or self.latest_odom_pose is None:
+            return False
+
+        wx0, wy0, wz0, wth0, _t_world = self.last_gt_world_pose
+        ox0, oy0, oth0, _t_anchor = self.last_gt_anchor_odom_pose
+        ox1, oy1, oth1, t_odom = self.latest_odom_pose
+
+        if self.last_tf_world_stamp_sec is None:
+            return False
+        dt = t_odom - self.last_tf_world_stamp_sec
+        if dt < 0.0 or dt > self.tf_world_timeout_sec:
+            return False
+
+        dx = ox1 - ox0
+        dy = oy1 - oy0
+        dth = _wrap_angle(oth1 - oth0)
+        yaw = _wrap_angle(wth0 + dth)
+        quat = _quat_from_yaw(yaw)
+        self._publish_pose(
+            msg.header.stamp,
+            self.world_frame_hint or self.frame_id,
+            (wx0 + dx, wy0 + dy, wz0),
+            quat,
+            force_input_stamp=True,
+        )
+        self.n_tf_world_propagated += 1
+        if self.debug_every_n > 0 and self.n_tf_world_propagated % self.debug_every_n == 0:
+            self.get_logger().info(
+                f"[GT] propagated tf_world publishes={self.n_tf_world_propagated}, "
+                f"last_tf={self._last_tf_world_source}"
+            )
+        return True
 
     def on_tf_world(self, msg: TFMessage):
         best = None
@@ -234,38 +312,22 @@ class GTPosePublisher(Node):
                 best = tr
 
         if best is None or best_score <= 0:
-            # Fallback: gdy /tf_world ma puste frame ids (np. "->"), wybierz
-            # najbardziej prawdopodobną pozycję robota po bliskości do odometrii.
             h_best, h_score = self._select_unnamed_transform_by_odom(msg)
             if h_best is not None:
                 frame_id = self.world_frame_hint or self.frame_id
-                self._publish_pose(
-                    h_best.header.stamp,
-                    frame_id,
-                    (
-                        h_best.transform.translation.x,
-                        h_best.transform.translation.y,
-                        h_best.transform.translation.z,
-                    ),
-                    (
-                        h_best.transform.rotation.x,
-                        h_best.transform.rotation.y,
-                        h_best.transform.rotation.z,
-                        h_best.transform.rotation.w,
-                    ),
+                pos = (
+                    h_best.transform.translation.x,
+                    h_best.transform.translation.y,
+                    h_best.transform.translation.z,
                 )
-                self.last_tf_world_stamp_sec = _stamp_to_sec(h_best.header.stamp)
-                self.n_tf_world += 1
+                quat = (
+                    h_best.transform.rotation.x,
+                    h_best.transform.rotation.y,
+                    h_best.transform.rotation.z,
+                    h_best.transform.rotation.w,
+                )
+                self._publish_tf_world_pose(h_best.header.stamp, frame_id, pos, quat, ("(heuristic)", "(unnamed)"))
                 self.n_tf_world_heuristic += 1
-                self._last_tf_world_source = ("(heuristic)", "(unnamed)")
-                self._remember_last_world_pose(
-                    h_best.header.stamp,
-                    (
-                        h_best.transform.translation.x,
-                        h_best.transform.translation.y,
-                        h_best.transform.translation.z,
-                    ),
-                )
                 if self.debug_every_n > 0 and self.n_tf_world_heuristic % self.debug_every_n == 0:
                     self.get_logger().info(
                         f"[GT] heuristic tf_world fallback publishes={self.n_tf_world_heuristic}, "
@@ -283,51 +345,56 @@ class GTPosePublisher(Node):
             return
 
         frame_id = str(best.header.frame_id) if str(best.header.frame_id) else (self.world_frame_hint or self.frame_id)
-        self._publish_pose(
-            best.header.stamp,
-            frame_id,
-            (
-                best.transform.translation.x,
-                best.transform.translation.y,
-                best.transform.translation.z,
-            ),
-            (
-                best.transform.rotation.x,
-                best.transform.rotation.y,
-                best.transform.rotation.z,
-                best.transform.rotation.w,
-            ),
+        pos = (
+            best.transform.translation.x,
+            best.transform.translation.y,
+            best.transform.translation.z,
         )
-
-        self.last_tf_world_stamp_sec = _stamp_to_sec(best.header.stamp)
-        self.n_tf_world += 1
-        self._last_tf_world_source = (str(best.header.frame_id), str(best.child_frame_id))
-        self._remember_last_world_pose(
-            best.header.stamp,
-            (
-                best.transform.translation.x,
-                best.transform.translation.y,
-                best.transform.translation.z,
-            ),
+        quat = (
+            best.transform.rotation.x,
+            best.transform.rotation.y,
+            best.transform.rotation.z,
+            best.transform.rotation.w,
         )
+        self._publish_tf_world_pose(best.header.stamp, frame_id, pos, quat, (str(best.header.frame_id), str(best.child_frame_id)))
 
         if self.debug_every_n > 0 and self.n_tf_world % self.debug_every_n == 0:
             self.get_logger().info(
                 f"[GT] tf_world publishes={self.n_tf_world}, "
+                f"tf_world_propagated={self.n_tf_world_propagated}, "
                 f"odom fallback publishes={self.n_odom_fallback}, "
                 f"last_tf={self._last_tf_world_source}"
             )
 
     def on_odom(self, msg: Odometry):
-        self.latest_odom_xy = (
-            float(msg.pose.pose.position.x),
-            float(msg.pose.pose.position.y),
+        ox = float(msg.pose.pose.position.x)
+        oy = float(msg.pose.pose.position.y)
+        oth = _yaw_from_quat(
+            float(msg.pose.pose.orientation.x),
+            float(msg.pose.pose.orientation.y),
+            float(msg.pose.pose.orientation.z),
+            float(msg.pose.pose.orientation.w),
         )
+        t_odom = _stamp_to_sec(msg.header.stamp)
+
+        self.latest_odom_xy = (ox, oy)
+        self.latest_odom_pose = (ox, oy, oth, t_odom)
+
         if self.use_tf_world and self.last_tf_world_stamp_sec is not None:
-            t_odom = _stamp_to_sec(msg.header.stamp)
             dt = t_odom - self.last_tf_world_stamp_sec
             if 0.0 <= dt <= self.tf_world_timeout_sec:
+                if self._publish_propagated_world_pose(msg):
+                    return
                 return
+
+        if self.use_tf_world and not self.publish_odom_fallback:
+            self.n_odom_fallback_suppressed += 1
+            if self.debug_every_n > 0 and self.n_odom_fallback_suppressed % self.debug_every_n == 0:
+                self.get_logger().warn(
+                    f"[GT] suppressed odom fallback publishes={self.n_odom_fallback_suppressed}; "
+                    "waiting for tf_world to avoid mixing GT and odometry frames."
+                )
+            return
 
         self._publish_pose(
             msg.header.stamp,
@@ -343,6 +410,7 @@ class GTPosePublisher(Node):
                 msg.pose.pose.orientation.z,
                 msg.pose.pose.orientation.w,
             ),
+            force_input_stamp=True,
         )
         self.n_odom_fallback += 1
 

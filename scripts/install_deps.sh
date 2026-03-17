@@ -5,35 +5,44 @@ set -euo pipefail
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
+OS_CODENAME="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")"
 
 echo "=== Rozpoczynam instalację zależności dla projektu SLAM AI ==="
 echo "Repo root: ${REPO_ROOT}"
 echo "ROS Distro: ${ROS_DISTRO}"
+echo "Ubuntu codename: ${OS_CODENAME}"
 
 # 1. Instalacja pakietów systemowych i ROS 2
 sudo apt-get update
+sudo apt-get install -f -y
 sudo apt-get install -y --no-install-recommends \
-  curl gnupg lsb-release ca-certificates \
+  curl gnupg lsb-release ca-certificates software-properties-common \
   git build-essential cmake pkg-config \
   python3 python3-venv python3-dev python3-pip \
   python3-numpy python3-matplotlib \
-  python3-colcon-common-extensions \
-  python3-rosdep \
   python3-setuptools
 
-# Dodanie kluczy ROS (jeśli nie istnieją)
-if [ ! -f /usr/share/keyrings/ros-archive-keyring.gpg ]; then
-  sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-    -o /usr/share/keyrings/ros-archive-keyring.gpg
-fi
+# Ubuntu 24.04 / ROS Jazzy: najstabilniej dodać repo przez ros2-apt-source.
+sudo add-apt-repository -y universe
 
-# Dodanie repozytorium ROS (jeśli nie istnieje)
-if [ ! -f /etc/apt/sources.list.d/ros2.list ]; then
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | \
-    sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+if ! dpkg -s ros2-apt-source >/dev/null 2>&1; then
+  echo "=== Instalacja ros2-apt-source ==="
+  ROS_APT_SOURCE_VERSION="$(
+    curl -fsSL https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest |
+      grep -F '"tag_name"' |
+      awk -F'"' '{print $4}'
+  )"
+  ROS_APT_DEB="/tmp/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.${OS_CODENAME}_all.deb"
+  curl -fL -o "${ROS_APT_DEB}" \
+    "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.${OS_CODENAME}_all.deb"
+  sudo dpkg -i "${ROS_APT_DEB}"
+  rm -f "${ROS_APT_DEB}"
 fi
 
 sudo apt-get update
+
+# Na nowszych Ubuntu rosdep/colcon są dostarczane przez ros-dev-tools.
+sudo apt-get install -y --no-install-recommends ros-dev-tools
 
 # Instalacja pakietów ROS 2 potrzebnych do symulacji i nawigacji
 sudo apt-get install -y --no-install-recommends \
@@ -53,7 +62,7 @@ sudo apt-get install -y --no-install-recommends \
 
 # Inicjalizacja rosdep
 if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
-    sudo rosdep init 2>/dev/null || true
+    sudo rosdep init
 fi
 rosdep update || echo "rosdep update failed, continuing..."
 

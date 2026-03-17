@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -14,13 +15,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from out_layout import DASHBOARD_QUICK_CONFIG_DIR, ensure_experiment_storage, ensure_grouped_out_layout
+from out_layout import DASHBOARD_QUICK_CONFIG_DIR, ensure_experiment_storage, ensure_grouped_out_layout, resolve_experiment_dir
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO_ROOT / "ai_slam_ws" / "src" / "ai_slam_bringup" / "config"
 TEMP_CONFIG_DIR = DASHBOARD_QUICK_CONFIG_DIR
 VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.12" / "site-packages"
+ROS_DISTRO = os.environ.get("ROS_DISTRO", "jazzy")
+ROS_SETUP = Path(f"/opt/ros/{ROS_DISTRO}/setup.bash")
+WS_SETUP = REPO_ROOT / "ai_slam_ws" / "install" / "setup.bash"
 
 
 def resolve_config_path(raw_value: str) -> Path:
@@ -147,8 +151,10 @@ def build_ros_run_command(executable: str, params: list[tuple[str, Any]]) -> str
         if value is not None
     )
     parts = [
-        "source /opt/ros/jazzy/setup.bash",
-        "if [ -f ai_slam_ws/install/setup.bash ]; then source ai_slam_ws/install/setup.bash; fi",
+        f"if [ ! -f {shlex.quote(str(ROS_SETUP))} ]; then echo '[QUICK][ERROR] Missing ROS 2 setup: {ROS_SETUP}' >&2; exit 1; fi",
+        f"source {shlex.quote(str(ROS_SETUP))}",
+        f"if [ ! -f {shlex.quote(str(WS_SETUP))} ]; then echo '[QUICK][ERROR] Workspace is not built yet: {WS_SETUP}' >&2; exit 1; fi",
+        f"source {shlex.quote(str(WS_SETUP))}",
     ]
     if VENV_SITE.is_dir():
         parts.append(f"export PYTHONPATH=\"${{PYTHONPATH:+$PYTHONPATH:}}{VENV_SITE}\"")
@@ -161,6 +167,135 @@ def run_shell_command(command: str) -> int:
     print("[QUICK]   " + command)
     completed = subprocess.run(["bash", "-lc", command], cwd=REPO_ROOT, check=False)
     return int(completed.returncode)
+
+
+def ensure_runtime_ready() -> None:
+    missing: list[str] = []
+    if not ROS_SETUP.is_file():
+        missing.append(f"- Missing ROS 2 setup: {ROS_SETUP}")
+    if not WS_SETUP.is_file():
+        missing.append(f"- Workspace is not built yet: {WS_SETUP}")
+    if not missing:
+        return
+
+    details = "\n".join(missing)
+    raise RuntimeError(
+        "Brakuje środowiska ROS 2 potrzebnego do quick pipeline.\n"
+        f"{details}\n\n"
+        "Najpierw uruchom:\n"
+        "  ./scripts/install_deps.sh\n"
+        f"  cd {REPO_ROOT / 'ai_slam_ws'}\n"
+        f"  source {ROS_SETUP}\n"
+        "  colcon build --symlink-install\n"
+    )
+
+
+def dataset_artifacts_complete(config_path: Path, experiment_id: str) -> bool:
+    cfg = load_yaml(config_path)
+    exp_dir = resolve_experiment_dir(experiment_id)
+
+    expected_files: list[str] = []
+    mode = str(get_cfg_value(cfg, "experiment", "mode", default="ai")).lower()
+    if mode == "ai":
+        expected_files.extend(["dataset.npz", "experiment_metadata.json"])
+
+    tracks_cfg = get_cfg_value(cfg, "tracks", default={})
+    if parse_bool(get_cfg_value(tracks_cfg, "tor5_robak", default=False), default=False):
+        expected_files.append(str(get_cfg_value(cfg, "robak", "dataset_name", default="dataset_robak.npz")))
+    if parse_bool(get_cfg_value(tracks_cfg, "tor6_rywak", default=False), default=False):
+        expected_files.append(str(get_cfg_value(cfg, "rywak", "dataset_name", default="dataset_rywak.npz")))
+
+    if not expected_files:
+        return False
+
+    return all((exp_dir / name).is_file() and (exp_dir / name).stat().st_size > 0 for name in expected_files)
+
+
+def training_artifacts_complete(config_path: Path, experiment_id: str) -> bool:
+    cfg = load_yaml(config_path)
+    exp_dir = resolve_experiment_dir(experiment_id)
+
+    expected_files: list[str] = []
+    mode = str(get_cfg_value(cfg, "experiment", "mode", default="ai")).lower()
+    if mode == "ai":
+        expected_files.extend(["model.pt", "train_history.json"])
+
+    tracks_cfg = get_cfg_value(cfg, "tracks", default={})
+    if parse_bool(get_cfg_value(tracks_cfg, "tor5_robak", default=False), default=False):
+        expected_files.extend(
+            [
+                str(get_cfg_value(cfg, "robak", "model_name", default="model_robak.pt")),
+                str(get_cfg_value(cfg, "robak", "history_name", default="train_history_robak.json")),
+            ]
+        )
+    if parse_bool(get_cfg_value(tracks_cfg, "tor6_rywak", default=False), default=False):
+        expected_files.extend(
+            [
+                str(get_cfg_value(cfg, "rywak", "model_name", default="model_rywak.pt")),
+                str(get_cfg_value(cfg, "rywak", "history_name", default="train_history_rywak.json")),
+            ]
+        )
+
+    if not expected_files:
+        return False
+
+    return all((exp_dir / name).is_file() and (exp_dir / name).stat().st_size > 0 for name in expected_files)
+
+
+def test_artifacts_complete(experiment_id: str) -> bool:
+    exp_dir = resolve_experiment_dir(experiment_id)
+    results_path = exp_dir / "results.json"
+    return results_path.is_file() and results_path.stat().st_size > 0
+
+
+def quick_artifacts_complete(config_path: Path, experiment_id: str, phases: set[str]) -> bool:
+    checks: list[bool] = []
+    if "dataset" in phases:
+        checks.append(dataset_artifacts_complete(config_path, experiment_id))
+    if "train" in phases:
+        checks.append(training_artifacts_complete(config_path, experiment_id))
+    if "test" in phases:
+        checks.append(test_artifacts_complete(experiment_id))
+    return bool(checks) and all(checks)
+
+
+def run_launch_phase(phase: str, config_path: Path, experiment_id: str, success_phases: set[str]) -> int:
+    ensure_experiment_storage(experiment_id)
+    return_code = run_command(
+        [
+            "bash",
+            "./scripts/run_experiment.sh",
+            phase,
+            f"config:={config_path}",
+            f"experiment_id:={experiment_id}",
+        ]
+    )
+    if return_code != 0 and quick_artifacts_complete(config_path, experiment_id, success_phases):
+        print(
+            "[QUICK][WARN] Requested artifacts were saved successfully; "
+            "ignoring non-zero shutdown return code."
+        )
+        return 0
+    return return_code
+
+
+def run_full_cycle_quick(config_path: Path, experiment_id: str) -> int:
+    ensure_experiment_storage(experiment_id)
+    return_code = run_command(
+        [
+            "bash",
+            "./scripts/run_full_cycle.sh",
+            str(config_path),
+            f"experiment_id:={experiment_id}",
+        ]
+    )
+    if return_code != 0 and quick_artifacts_complete(config_path, experiment_id, {"dataset", "train", "test"}):
+        print(
+            "[QUICK][WARN] Requested artifacts were saved successfully; "
+            "ignoring non-zero shutdown return code."
+        )
+        return 0
+    return return_code
 
 
 def train_existing_experiment(base_config_path: Path, experiment_id: str) -> int:
@@ -274,7 +409,11 @@ def train_existing_experiment(base_config_path: Path, experiment_id: str) -> int
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Szybkie uruchamianie pipeline z dashboardu.")
-    parser.add_argument("--mode", choices=("dataset", "full_cycle", "train_existing", "test_existing"), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("dataset", "dataset_train", "full_cycle", "train_existing", "test_existing", "train_test_existing"),
+        required=True,
+    )
     parser.add_argument("--base-config", required=True, help="Nazwa configu z config/ albo ścieżka absolutna.")
     parser.add_argument("--name", default="", help="Przyjazna nazwa uruchomienia. Zostanie dołączona do experiment_id.")
     parser.add_argument("--dataset-duration", type=float, default=None, help="Wspólny czas datasetu dla AI, Robaka i Rywaka.")
@@ -286,13 +425,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     ensure_grouped_out_layout()
+    ensure_runtime_ready()
     base_config_path = resolve_config_path(args.base_config)
-    if args.mode in {"dataset", "full_cycle"} and args.dataset_duration is None:
-        raise ValueError("Tryb dataset/full_cycle wymaga --dataset-duration.")
-    if args.mode in {"full_cycle", "test_existing"} and args.eval_duration is None:
-        raise ValueError("Tryb full_cycle/test_existing wymaga --eval-duration.")
-    if args.mode in {"train_existing", "test_existing"} and not args.experiment_id.strip():
-        raise ValueError("Tryb train_existing/test_existing wymaga --experiment-id.")
+    if args.mode in {"dataset", "dataset_train", "full_cycle"} and args.dataset_duration is None:
+        raise ValueError("Tryb dataset/dataset_train/full_cycle wymaga --dataset-duration.")
+    if args.mode in {"full_cycle", "test_existing", "train_test_existing"} and args.eval_duration is None:
+        raise ValueError("Tryb z testem wymaga --eval-duration.")
+    if args.mode in {"train_existing", "test_existing", "train_test_existing"} and not args.experiment_id.strip():
+        raise ValueError("Tryb bez datasetu wymaga --experiment-id.")
 
     if args.mode == "train_existing":
         print(f"[QUICK] Bazowy config: {base_config_path}")
@@ -312,38 +452,22 @@ def main() -> int:
     print(f"[QUICK] Experiment ID: {experiment_id}")
 
     if args.mode == "dataset":
-        ensure_experiment_storage(experiment_id)
-        return run_command(
-            [
-                "bash",
-                "./scripts/run_experiment.sh",
-                "dataset",
-                f"config:={temp_config_path}",
-                f"experiment_id:={experiment_id}",
-            ]
-        )
+        return run_launch_phase("dataset", temp_config_path, experiment_id, {"dataset"})
+
+    if args.mode == "dataset_train":
+        return run_launch_phase("train", temp_config_path, experiment_id, {"dataset", "train"})
 
     if args.mode == "test_existing":
-        ensure_experiment_storage(args.experiment_id.strip())
-        return run_command(
-            [
-                "bash",
-                "./scripts/run_experiment.sh",
-                "test",
-                f"config:={temp_config_path}",
-                f"experiment_id:={args.experiment_id.strip()}",
-            ]
-        )
+        return run_launch_phase("test", temp_config_path, args.experiment_id.strip(), {"test"})
 
-    ensure_experiment_storage(experiment_id)
-    return run_command(
-        [
-            "bash",
-            "./scripts/run_full_cycle.sh",
-            str(temp_config_path),
-            f"experiment_id:={experiment_id}",
-        ]
-    )
+    if args.mode == "train_test_existing":
+        print(f"[QUICK] Existing experiment: {args.experiment_id}")
+        train_rc = train_existing_experiment(base_config_path=base_config_path, experiment_id=args.experiment_id.strip())
+        if train_rc != 0:
+            return train_rc
+        return run_launch_phase("test", temp_config_path, args.experiment_id.strip(), {"test"})
+
+    return run_full_cycle_quick(temp_config_path, experiment_id)
 
 
 if __name__ == "__main__":
