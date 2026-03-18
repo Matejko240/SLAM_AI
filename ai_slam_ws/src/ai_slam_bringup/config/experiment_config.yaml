@@ -144,6 +144,7 @@ ground_truth:
   tf_world_timeout_sec: 0.5     # Fallback do /odom_raw jeśli brak świeżych danych z tf_world
   publish_odom_fallback: false  # false = nie mieszaj /odom_raw z GT na tym samym topicu
   restamp_output_to_now: true   # true = publikuj GT z aktualnym czasem symulacji, nie ze stemplem bridge'a
+  propagate_tf_world_with_odom: true  # po złapaniu tf_world podtrzymuj GT odometrią między klatkami tf_world
   model_name_hint: "diffbot"    # Podpowiedź nazwy modelu w child_frame_id
   base_link_hint: "base_link"   # Podpowiedź nazwy linku bazowego
   world_frame_hint: "world"     # Oczekiwana nazwa frame świata

@@ -180,6 +180,10 @@ def launch_setup(context, *args, **kwargs):
     gt_tf_world_timeout = float(gt_cfg.get("tf_world_timeout_sec", 0.5))
     gt_publish_odom_fallback = parse_bool(gt_cfg.get("publish_odom_fallback", False), default=False)
     gt_restamp_output_to_now = parse_bool(gt_cfg.get("restamp_output_to_now", True), default=True)
+    gt_propagate_tf_world_with_odom = parse_bool(
+        gt_cfg.get("propagate_tf_world_with_odom", True),
+        default=True,
+    )
     gt_model_name_hint = str(gt_cfg.get("model_name_hint", "diffbot"))
     gt_base_link_hint = str(gt_cfg.get("base_link_hint", "base_link"))
     gt_world_frame_hint = str(gt_cfg.get("world_frame_hint", "world"))
@@ -611,6 +615,7 @@ def launch_setup(context, *args, **kwargs):
             "tf_world_timeout_sec": gt_tf_world_timeout,
             "publish_odom_fallback": gt_publish_odom_fallback,
             "restamp_output_to_now": gt_restamp_output_to_now,
+            "propagate_tf_world_with_odom": gt_propagate_tf_world_with_odom,
             "model_name_hint": gt_model_name_hint,
             "base_link_hint": gt_base_link_hint,
             "world_frame_hint": gt_world_frame_hint,

@@ -58,7 +58,7 @@ Lokalny dashboard HTTP pozwala:
 Uruchomienie:
 
 ```bash
-cd ~/projects/SLAM_AI
+cd ~/SLAM_AI
 source .venv/bin/activate
 ./scripts/run_dashboard.sh
 ```

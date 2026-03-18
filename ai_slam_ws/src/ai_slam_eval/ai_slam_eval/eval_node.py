@@ -357,7 +357,10 @@ class EvalNode(Node):
         self.map_ai = None
         self.map_robak = None
         self.map_rywak = None
-        self.t0 = self.get_clock().now()
+        # Ustal start czasu dopiero po ruszeniu zegara ROS/symulacji.
+        # Gdy node startuje przed pojawieniem się /clock, zapisanie t0 tutaj
+        # może dać błędny punkt odniesienia i ewaluacja nigdy nie dojdzie do duration_sec.
+        self.t0 = None
 
         self.ts = []
         self.gt_xy = []
@@ -512,7 +515,10 @@ class EvalNode(Node):
         self.pose_ai = msg
         # Zapisz moment pierwszego otrzymania danych z AI
         if self.ai_start_time is None:
-            t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
+            if self.t0 is None:
+                t = 0.0
+            else:
+                t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
             self.ai_start_time = t
             self.ai_start_idx = len(self.ts)
             self.get_logger().info(f"AI inference started at t={t:.1f}s (idx={self.ai_start_idx})")
@@ -634,7 +640,18 @@ class EvalNode(Node):
             return False
 
     def tick(self):
-        t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
+        now = self.get_clock().now()
+        if self.t0 is None:
+            # Przy use_sim_time początkowy czas bywa nieustalony zanim zacznie płynąć /clock.
+            # Czekamy na pierwszy sensowny tick i dopiero wtedy zerujemy licznik ewaluacji.
+            if now.nanoseconds <= 0:
+                return
+            self.t0 = now
+            self.get_logger().info(
+                f"Evaluation timer started at sim_time={now.nanoseconds * 1e-9:.3f}s"
+            )
+
+        t = (now - self.t0).nanoseconds * 1e-9
         if self.gt is None or self.odom is None:
             if t >= self.duration_sec:
                 self.finish()

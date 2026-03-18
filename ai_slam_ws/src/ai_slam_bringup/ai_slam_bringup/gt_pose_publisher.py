@@ -91,6 +91,12 @@ class GTPosePublisher(Node):
             f"propagate_tf_world_with_odom={self.propagate_tf_world_with_odom}"
         )
 
+    def _resolve_output_stamp(self, input_stamp, force_input_stamp: bool = False):
+        """Wybiera stempel faktycznie użyty do publikacji GT."""
+        if force_input_stamp or not self.restamp_output_to_now:
+            return input_stamp
+        return self.get_clock().now().to_msg()
+
     @staticmethod
     def _frame_tokens(frame_id: str):
         frame = str(frame_id).strip().lower()
@@ -243,11 +249,9 @@ class GTPosePublisher(Node):
             self.last_gt_anchor_odom_pose = self.latest_odom_pose
 
     def _publish_pose(self, stamp, frame_id: str, pos, quat, force_input_stamp: bool = False):
+        out_stamp = self._resolve_output_stamp(stamp, force_input_stamp=force_input_stamp)
         ps = PoseStamped()
-        if force_input_stamp or not self.restamp_output_to_now:
-            ps.header.stamp = stamp
-        else:
-            ps.header.stamp = self.get_clock().now().to_msg()
+        ps.header.stamp = out_stamp
         ps.header.frame_id = frame_id
         ps.pose.position.x = float(pos[0])
         ps.pose.position.y = float(pos[1])
@@ -257,13 +261,16 @@ class GTPosePublisher(Node):
         ps.pose.orientation.z = float(quat[2])
         ps.pose.orientation.w = float(quat[3])
         self.pub.publish(ps)
+        return out_stamp
 
     def _publish_tf_world_pose(self, stamp, frame_id: str, pos, quat, source_tag):
-        self._publish_pose(stamp, frame_id, pos, quat)
-        self.last_tf_world_stamp_sec = _stamp_to_sec(stamp)
+        # Do oceny świeżości tf_world używaj tego samego czasu, z którym publikujemy GT.
+        # Bridge Gazebo potrafi dostarczać stempel nieprzydatny do dalszej propagacji z odometrii.
+        out_stamp = self._publish_pose(stamp, frame_id, pos, quat)
+        self.last_tf_world_stamp_sec = _stamp_to_sec(out_stamp)
         self.n_tf_world += 1
         self._last_tf_world_source = source_tag
-        self._remember_last_world_pose(stamp, pos, quat)
+        self._remember_last_world_pose(out_stamp, pos, quat)
 
     def _publish_propagated_world_pose(self, msg: Odometry) -> bool:
         if not self.propagate_tf_world_with_odom:
