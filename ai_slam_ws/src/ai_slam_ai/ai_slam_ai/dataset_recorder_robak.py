@@ -14,6 +14,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
 from .common import (
+    atomic_write_bytes,
     ensure_dir,
     parse_filter_mode,
     passes_motion_filter,
@@ -459,6 +460,8 @@ class DatasetRecorderRobak(Node):
 
         X = np.stack(self.X_pairs).astype(np.float32)
         Y = np.stack(self.Y).astype(np.float32)
+        pair_distance = np.linalg.norm(Y[:, :2], axis=1).astype(np.float32)
+        pair_rotation_abs_deg = np.rad2deg(np.abs(Y[:, 2])).astype(np.float32)
 
         meta = {
             "seed": np.int64(self.seed),
@@ -486,17 +489,19 @@ class DatasetRecorderRobak(Node):
             "augment_cut_fraction": np.float32(self.augment_cut_fraction),
             "augment_cut_max_points": np.int64(self.augment_cut_max_points),
             "augment_added_samples": np.int64(self.aug_samples_count),
+            "label_translation_mean_m": np.float32(np.mean(pair_distance)),
+            "label_translation_p95_m": np.float32(np.percentile(pair_distance, 95)),
+            "label_translation_max_m": np.float32(np.max(pair_distance)),
+            "label_rotation_abs_mean_deg": np.float32(np.mean(pair_rotation_abs_deg)),
+            "label_rotation_abs_p95_deg": np.float32(np.percentile(pair_rotation_abs_deg, 95)),
+            "label_rotation_abs_max_deg": np.float32(np.max(pair_rotation_abs_deg)),
         }
 
         ensure_dir(self.out_dir)
         try:
             buffer = io.BytesIO()
             np.savez_compressed(buffer, X_pairs=X, Y=Y, meta=meta)
-            buffer.seek(0)
-            with open(self.dataset_path, "wb") as f:
-                f.write(buffer.read())
-                f.flush()
-                os.fsync(f.fileno())
+            atomic_write_bytes(self.dataset_path, buffer.getvalue())
         except Exception as e:
             self.get_logger().error(f"[Robak] Failed to save dataset: {e}")
             rclpy.shutdown()

@@ -16,18 +16,41 @@ from nav_msgs.srv import GetMap
 from sensor_msgs.msg import LaserScan
 # Import loggera z pakietu ai_slam_ai
 try:
-    from ai_slam_ai.experiment_logger import ExperimentLogger
+    from ai_slam_ai.experiment_logger import ExperimentLogger, get_experiment_dir
 except ImportError:
     # Fallback - próbuj znaleźć ścieżkę
     ExperimentLogger = None
+    get_experiment_dir = None
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+def resolve_experiment_output_dir(base_out_dir: str, experiment_id: str | None) -> str:
+    base_dir_abs = os.path.abspath(str(base_out_dir))
+    exp_id = str(experiment_id or "").strip()
+    if not exp_id:
+        return base_dir_abs
+    if get_experiment_dir is not None:
+        return get_experiment_dir(base_dir_abs, exp_id)
+    exp_folder = exp_id if exp_id.startswith("exp_") else f"exp_{exp_id}"
+    return os.path.join(base_dir_abs, exp_folder)
+
+
 def wrap(a):
     return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def inverse_pose_transform_xy(x: float, y: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
+    dx = float(x) - float(tx)
+    dy = float(y) - float(ty)
+    c = math.cos(float(yaw))
+    s = math.sin(float(yaw))
+    return (
+        c * dx + s * dy,
+        -s * dx + c * dy,
+    )
 
 
 def parse_filter_mode(value: str, default: str = "any") -> str:
@@ -263,6 +286,36 @@ def map_iou_binary(ref_occ: np.ndarray, occ_s: np.ndarray, known: np.ndarray | N
     return float(inter) / float(union)
 
 
+def logodds_to_probability(logodds: np.ndarray) -> np.ndarray:
+    clipped = np.clip(np.asarray(logodds, dtype=np.float32), -10.0, 10.0)
+    return (1.0 / (1.0 + np.exp(-clipped))).astype(np.float32)
+
+
+def bresenham_cells(i0: int, j0: int, i1: int, j1: int) -> list[tuple[int, int]]:
+    cells: list[tuple[int, int]] = []
+    di = abs(i1 - i0)
+    dj = abs(j1 - j0)
+    step_i = 1 if i0 < i1 else -1
+    step_j = 1 if j0 < j1 else -1
+    err = dj - di
+    i = i0
+    j = j0
+
+    while True:
+        cells.append((i, j))
+        if i == i1 and j == j1:
+            break
+        err2 = 2 * err
+        if err2 > -di:
+            err -= di
+            j += step_j
+        if err2 < dj:
+            err += dj
+            i += step_i
+
+    return cells
+
+
 class EvalNode(Node):
     def __init__(self):
         super().__init__("eval_node")
@@ -272,7 +325,16 @@ class EvalNode(Node):
         self.declare_parameter("experiment_id", "")
         self.declare_parameter("duration_sec", 120.0)
         self.declare_parameter("reference_map_yaml", "")
+        self.declare_parameter("spawn_x", 0.0)
+        self.declare_parameter("spawn_y", 0.0)
+        self.declare_parameter("spawn_yaw", 0.0)
+        self.declare_parameter("gt_world_frame_hint", "world")
         self.declare_parameter("config_snapshot_path", "")
+        self.declare_parameter("world_name", "")
+        self.declare_parameter("evaluation_label", "")
+        self.declare_parameter("artifact_subdir", "")
+        self.declare_parameter("finalize_experiment", True)
+        self.declare_parameter("write_experiment_metadata", True)
         # --- tematy (żeby launch mógł przekazać inne nazwy bez edycji kodu)
         self.declare_parameter("gt_topic", "/ground_truth_pose")
         self.declare_parameter("odom_topic", "/odom")
@@ -288,6 +350,11 @@ class EvalNode(Node):
         self.declare_parameter("points_min_rotation", 0.0)
         self.declare_parameter("points_min_time_gap_sec", 0.0)
         self.declare_parameter("points_filter_mode", "any")
+        self.declare_parameter("points_use_probabilities", True)
+        self.declare_parameter("points_occ_logodds_hit", 0.85)
+        self.declare_parameter("points_free_logodds_miss", 0.40)
+        self.declare_parameter("points_logodds_min", -4.0)
+        self.declare_parameter("points_logodds_max", 4.0)
         self.declare_parameter("sync_tolerance_sec", 0.15)
         self.declare_parameter("maps_rotate_180", True)
         self.declare_parameter("maps_max_cols", 3)
@@ -304,24 +371,42 @@ class EvalNode(Node):
         experiment_id = str(self.get_parameter("experiment_id").value) or None
         self.duration_sec = float(self.get_parameter("duration_sec").value)
         self.ref_yaml = str(self.get_parameter("reference_map_yaml").value)
+        self.spawn_x = float(self.get_parameter("spawn_x").value)
+        self.spawn_y = float(self.get_parameter("spawn_y").value)
+        self.spawn_yaw = float(self.get_parameter("spawn_yaw").value)
+        self.gt_world_frame_hint = str(self.get_parameter("gt_world_frame_hint").value).strip().lower()
         self.config_snapshot_path = str(self.get_parameter("config_snapshot_path").value)
+        self.world_name = str(self.get_parameter("world_name").value).strip()
+        requested_label = str(self.get_parameter("evaluation_label").value).strip()
+        self.evaluation_label = requested_label or self.world_name or "evaluation"
+        self.artifact_subdir = str(self.get_parameter("artifact_subdir").value).strip()
+        self.finalize_experiment = bool(self.get_parameter("finalize_experiment").value)
+        self.write_experiment_metadata = bool(self.get_parameter("write_experiment_metadata").value)
         self.config_snapshot_out = ""
 
         # Inicjalizacja loggera eksperymentu (używa istniejącego podfolderu)
         self.exp_logger = None
-        if ExperimentLogger is not None:
+        if self.write_experiment_metadata and ExperimentLogger is not None:
             self.exp_logger = ExperimentLogger(base_out_dir, experiment_id)
             self.out_dir = self.exp_logger.get_output_dir()
         else:
-            self.out_dir = os.path.abspath(base_out_dir)
-        
+            self.out_dir = resolve_experiment_output_dir(base_out_dir, experiment_id)
+
+        self.artifact_dir = (
+            os.path.join(self.out_dir, self.artifact_subdir)
+            if self.artifact_subdir
+            else self.out_dir
+        )
         os.makedirs(self.out_dir, exist_ok=True)
+        os.makedirs(self.artifact_dir, exist_ok=True)
         self.get_logger().info(f"Output directory: {self.out_dir}")
+        self.get_logger().info(f"Evaluation artifact directory: {self.artifact_dir}")
+        self.get_logger().info(f"Evaluation label: {self.evaluation_label}")
         if self.exp_logger:
             self.get_logger().info(f"Experiment ID: {self.exp_logger.experiment_id}")
         if self.config_snapshot_path and os.path.exists(self.config_snapshot_path):
             try:
-                self.config_snapshot_out = os.path.join(self.out_dir, "config_snapshot.yaml")
+                self.config_snapshot_out = os.path.join(self.artifact_dir, "config_snapshot.yaml")
                 shutil.copyfile(self.config_snapshot_path, self.config_snapshot_out)
             except Exception as exc:
                 self.config_snapshot_out = ""
@@ -391,6 +476,11 @@ class EvalNode(Node):
         self.points_min_rotation = float(self.get_parameter("points_min_rotation").value)
         self.points_min_time_gap_sec = float(self.get_parameter("points_min_time_gap_sec").value)
         self.points_filter_mode = parse_filter_mode(str(self.get_parameter("points_filter_mode").value))
+        self.points_use_probabilities = bool(self.get_parameter("points_use_probabilities").value)
+        self.points_occ_logodds_hit = float(self.get_parameter("points_occ_logodds_hit").value)
+        self.points_free_logodds_miss = float(self.get_parameter("points_free_logodds_miss").value)
+        self.points_logodds_min = float(self.get_parameter("points_logodds_min").value)
+        self.points_logodds_max = float(self.get_parameter("points_logodds_max").value)
         self.sync_tolerance_sec = float(self.get_parameter("sync_tolerance_sec").value)
         self.maps_rotate_180 = bool(self.get_parameter("maps_rotate_180").value)
         self.maps_max_cols = max(1, int(self.get_parameter("maps_max_cols").value))
@@ -445,8 +535,10 @@ class EvalNode(Node):
 
         self.ref_info = None
         self.ref_occ = None
-        self.points_map_robak = None
-        self.points_map_rywak = None
+        self.points_logodds_robak = None
+        self.points_logodds_rywak = None
+        self.points_known_robak = None
+        self.points_known_rywak = None
         self.points_stamp_state = {
             "robak": {
                 "last_pose": None,
@@ -454,6 +546,7 @@ class EvalNode(Node):
                 "stamped_scans": 0,
                 "skipped_scans": 0,
                 "stamped_points": 0,
+                "free_cells_updated": 0,
             },
             "rywak": {
                 "last_pose": None,
@@ -461,6 +554,7 @@ class EvalNode(Node):
                 "stamped_scans": 0,
                 "skipped_scans": 0,
                 "stamped_points": 0,
+                "free_cells_updated": 0,
             },
         }
 
@@ -469,15 +563,19 @@ class EvalNode(Node):
             self.ref_occ = self._load_ref_occ(self.ref_yaml, self.ref_info)
         if self.ref_occ is not None:
             h, w = self.ref_occ.shape
-            self.points_map_robak = np.zeros((h, w), dtype=np.uint8)
-            self.points_map_rywak = np.zeros((h, w), dtype=np.uint8)
+            self.points_logodds_robak = np.zeros((h, w), dtype=np.float32)
+            self.points_logodds_rywak = np.zeros((h, w), dtype=np.float32)
+            self.points_known_robak = np.zeros((h, w), dtype=np.uint8)
+            self.points_known_rywak = np.zeros((h, w), dtype=np.uint8)
 
         self.get_logger().info(
             "[Eval] points filter: "
             f"min_translation={self.points_min_translation}, "
             f"min_rotation={self.points_min_rotation:.3f}, "
             f"min_dt={self.points_min_time_gap_sec:.3f}, "
-            f"mode={self.points_filter_mode}"
+            f"mode={self.points_filter_mode}, "
+            f"use_probabilities={self.points_use_probabilities}, "
+            f"hit={self.points_occ_logodds_hit:.2f}, miss={self.points_free_logodds_miss:.2f}"
         )
         
         # Logowanie startu ewaluacji
@@ -494,9 +592,25 @@ class EvalNode(Node):
         origin = y.get("origin", "[-3.0, -3.0, 0.0]").strip()
         origin = origin.strip("[]")
         origin_vals = [float(v.strip()) for v in origin.split(",")]
+        while len(origin_vals) < 3:
+            origin_vals.append(0.0)
         res = float(y.get("resolution", "0.1"))
         img = y.get("image", "reference_map.pgm").strip()
-        return {"resolution": res, "origin": origin_vals, "image": img}
+        local_ox, local_oy = inverse_pose_transform_xy(
+            origin_vals[0],
+            origin_vals[1],
+            self.spawn_x,
+            self.spawn_y,
+            self.spawn_yaw,
+        )
+        local_yaw = wrap(float(origin_vals[2]) - self.spawn_yaw)
+        return {
+            "resolution": res,
+            "origin": [local_ox, local_oy, local_yaw],
+            "origin_world": origin_vals[:3],
+            "spawn_pose": [self.spawn_x, self.spawn_y, self.spawn_yaw],
+            "image": img,
+        }
 
     def _load_ref_occ(self, yaml_path, info):
         base = os.path.dirname(yaml_path)
@@ -547,14 +661,57 @@ class EvalNode(Node):
         if self.map_ai is not None and not hasattr(self, '_map_ai_logged'):
             self._map_ai_logged = True
             self.get_logger().info(f"Received /map_ai: {msg.info.width}x{msg.info.height}, res={msg.info.resolution}")
+
+    def _points_grids(self, state_key: str):
+        if state_key == "robak":
+            return self.points_logodds_robak, self.points_known_robak
+        if state_key == "rywak":
+            return self.points_logodds_rywak, self.points_known_rywak
+        return None, None
+
+    def _points_occ_known(self, state_key: str):
+        logodds_grid, known_grid = self._points_grids(state_key)
+        if logodds_grid is None or known_grid is None:
+            return None, None, None
+        known = known_grid.astype(np.bool_)
+        prob = logodds_to_probability(logodds_grid)
+        occ = prob >= 0.5
+        return occ, known, prob
+
+    def _world_to_ref_indices(self, x: float, y: float) -> tuple[int, int] | None:
+        if self.ref_info is None:
+            return None
+        res = float(self.ref_info["resolution"])
+        ox = float(self.ref_info["origin"][0])
+        oy = float(self.ref_info["origin"][1])
+        h, w = self.ref_occ.shape
+        j = int((x - ox) / res)
+        i = int((y - oy) / res)
+        if 0 <= i < h and 0 <= j < w:
+            return i, j
+        return None
+
+    def _apply_logodds_update(
+        self,
+        logodds_grid: np.ndarray,
+        known_grid: np.ndarray,
+        i: int,
+        j: int,
+        delta: float,
+    ) -> None:
+        logodds_grid[i, j] = float(
+            np.clip(logodds_grid[i, j] + delta, self.points_logodds_min, self.points_logodds_max)
+        )
+        known_grid[i, j] = 1
+
     def _stamp_points_to_ref_grid(
         self,
-        out_grid: np.ndarray,
         pose_msg: PoseStamped,
         scan_msg: LaserScan,
         state_key: str,
     ):
-        if out_grid is None or self.ref_info is None:
+        logodds_grid, known_grid = self._points_grids(state_key)
+        if logodds_grid is None or known_grid is None or self.ref_info is None:
             return
 
         x, y, th = xytheta_from_pose(pose_msg)
@@ -576,10 +733,10 @@ class EvalNode(Node):
                 state["skipped_scans"] += 1
                 return
 
-        res = float(self.ref_info["resolution"])
-        ox = float(self.ref_info["origin"][0])
-        oy = float(self.ref_info["origin"][1])
-        h, w = out_grid.shape
+        h, w = logodds_grid.shape
+        robot_idx = self._world_to_ref_indices(x, y)
+        if robot_idx is None:
+            return
 
         step = max(1, int(self.points_beam_step))
         rmax = float(self.points_max_range)
@@ -587,6 +744,7 @@ class EvalNode(Node):
         a0 = float(scan_msg.angle_min)
         da = float(scan_msg.angle_increment)
         stamped_points = 0
+        free_cells_updated = 0
 
         for k in range(0, len(scan_msg.ranges), step):
             r = float(scan_msg.ranges[k])
@@ -601,18 +759,50 @@ class EvalNode(Node):
             px = x + r * math.cos(ang)
             py = y + r * math.sin(ang)
 
-            j = int((px - ox) / res)
-            i = int((py - oy) / res)
-            if 0 <= i < h and 0 <= j < w:
-                if out_grid[i, j] == 0:
+            endpoint_idx = self._world_to_ref_indices(px, py)
+            if endpoint_idx is None:
+                continue
+
+            ray_cells = bresenham_cells(robot_idx[0], robot_idx[1], endpoint_idx[0], endpoint_idx[1])
+            if len(ray_cells) > 1:
+                for cell_i, cell_j in ray_cells[:-1]:
+                    if 0 <= cell_i < h and 0 <= cell_j < w:
+                        if self.points_use_probabilities:
+                            self._apply_logodds_update(
+                                logodds_grid,
+                                known_grid,
+                                cell_i,
+                                cell_j,
+                                -abs(self.points_free_logodds_miss),
+                            )
+                        else:
+                            known_grid[cell_i, cell_j] = 1
+                        free_cells_updated += 1
+
+            cell_i, cell_j = ray_cells[-1]
+            if 0 <= cell_i < h and 0 <= cell_j < w:
+                prev_known = bool(known_grid[cell_i, cell_j])
+                prev_occupied = bool(logodds_grid[cell_i, cell_j] >= 0.0)
+                if self.points_use_probabilities:
+                    self._apply_logodds_update(
+                        logodds_grid,
+                        known_grid,
+                        cell_i,
+                        cell_j,
+                        abs(self.points_occ_logodds_hit),
+                    )
+                else:
+                    known_grid[cell_i, cell_j] = 1
+                    logodds_grid[cell_i, cell_j] = self.points_logodds_max
+                if (not prev_known) or (not prev_occupied):
                     stamped_points += 1
-                out_grid[i, j] = 1
 
         if state is not None:
             state["last_pose"] = curr_pose
             state["last_time"] = t_scan
             state["stamped_scans"] += 1
             state["stamped_points"] += stamped_points
+            state["free_cells_updated"] += free_cells_updated
 
 
     def on_scan_points(self, msg: LaserScan):
@@ -620,11 +810,11 @@ class EvalNode(Node):
         if self.ref_occ is None:
             return
 
-        if self.pose_robak is not None and self.points_map_robak is not None:
-            self._stamp_points_to_ref_grid(self.points_map_robak, self.pose_robak, msg, "robak")
+        if self.pose_robak is not None and self.points_logodds_robak is not None:
+            self._stamp_points_to_ref_grid(self.pose_robak, msg, "robak")
 
-        if self.pose_rywak is not None and self.points_map_rywak is not None:
-            self._stamp_points_to_ref_grid(self.points_map_rywak, self.pose_rywak, msg, "rywak")
+        if self.pose_rywak is not None and self.points_logodds_rywak is not None:
+            self._stamp_points_to_ref_grid(self.pose_rywak, msg, "rywak")
 
     def _stamp_to_sec(self, stamp) -> float:
         return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
@@ -662,6 +852,16 @@ class EvalNode(Node):
             return
 
         gx, gy, gth = xytheta_from_pose(self.gt)
+        gt_frame = str(self.gt.header.frame_id).strip().lower()
+        if self.gt_world_frame_hint and gt_frame == self.gt_world_frame_hint:
+            gx, gy = inverse_pose_transform_xy(
+                gx,
+                gy,
+                self.spawn_x,
+                self.spawn_y,
+                self.spawn_yaw,
+            )
+            gth = wrap(gth - self.spawn_yaw)
         ox, oy, oth = xytheta_from_odom(self.odom)
 
         self.ts.append(float(t))
@@ -882,15 +1082,16 @@ class EvalNode(Node):
                     self.get_logger().info(f"IOU Robak: {iou_map_robak}")
                 except Exception as e:
                     self.get_logger().error(f"Failed to calculate IOU Robak: {e}")
-            elif self.points_map_robak is not None and np.count_nonzero(self.points_map_robak) > 0:
-                try:
-                    occ_pts = self.points_map_robak.astype(np.bool_)
-                    iou_map_robak = map_iou_binary(self.ref_occ, occ_pts, known=occ_pts)
-                    self.get_logger().info(f"IOU Robak (points fallback): {iou_map_robak}")
-                except Exception as e:
-                    self.get_logger().error(f"Failed to calculate IOU Robak (points): {e}")
             else:
-                self.get_logger().warn("No /map_robak received - IOU Robak cannot be calculated")
+                occ_pts, known_pts, _prob_pts = self._points_occ_known("robak")
+                if occ_pts is not None and known_pts is not None and np.count_nonzero(known_pts) > 0:
+                    try:
+                        iou_map_robak = map_iou_binary(self.ref_occ, occ_pts, known=known_pts)
+                        self.get_logger().info(f"IOU Robak (points fallback): {iou_map_robak}")
+                    except Exception as e:
+                        self.get_logger().error(f"Failed to calculate IOU Robak (points): {e}")
+                else:
+                    self.get_logger().warn("No /map_robak received - IOU Robak cannot be calculated")
 
             if self.map_rywak is not None:
                 try:
@@ -898,31 +1099,37 @@ class EvalNode(Node):
                     self.get_logger().info(f"IOU Rywak: {iou_map_rywak}")
                 except Exception as e:
                     self.get_logger().error(f"Failed to calculate IOU Rywak: {e}")
-            elif self.points_map_rywak is not None and np.count_nonzero(self.points_map_rywak) > 0:
-                try:
-                    occ_pts = self.points_map_rywak.astype(np.bool_)
-                    iou_map_rywak = map_iou_binary(self.ref_occ, occ_pts, known=occ_pts)
-                    self.get_logger().info(f"IOU Rywak (points fallback): {iou_map_rywak}")
-                except Exception as e:
-                    self.get_logger().error(f"Failed to calculate IOU Rywak (points): {e}")
             else:
-                self.get_logger().warn("No /map_rywak received - IOU Rywak cannot be calculated")
+                occ_pts, known_pts, _prob_pts = self._points_occ_known("rywak")
+                if occ_pts is not None and known_pts is not None and np.count_nonzero(known_pts) > 0:
+                    try:
+                        iou_map_rywak = map_iou_binary(self.ref_occ, occ_pts, known=known_pts)
+                        self.get_logger().info(f"IOU Rywak (points fallback): {iou_map_rywak}")
+                    except Exception as e:
+                        self.get_logger().error(f"Failed to calculate IOU Rywak (points): {e}")
+                else:
+                    self.get_logger().warn("No /map_rywak received - IOU Rywak cannot be calculated")
 
-        traj_path = os.path.join(self.out_dir, "trajectory.png")
-        err_path = os.path.join(self.out_dir, "errors.png")
-        maps_path = os.path.join(self.out_dir, "maps.png")
-        traj_data_path = os.path.join(self.out_dir, "trajectory_data.npz")
-        results_path = os.path.join(self.out_dir, "results.json")
+        traj_path = os.path.join(self.artifact_dir, "trajectory.png")
+        err_path = os.path.join(self.artifact_dir, "errors.png")
+        maps_path = os.path.join(self.artifact_dir, "maps.png")
+        map_layers_path = os.path.join(self.artifact_dir, "map_layers.npz")
+        traj_data_path = os.path.join(self.artifact_dir, "trajectory_data.npz")
+        results_path = os.path.join(self.artifact_dir, "results.json")
 
         self._save_trajectory_data(traj_data_path)
         self._plot_trajectories(traj_path)
         self._plot_errors(err_path)
+        self._save_map_layers(map_layers_path)
         self._plot_maps(maps_path)
 
         results = {
             "mode": self.mode,
             "seed": self.seed,
             "duration_sec": self.duration_sec,
+            "world_name": self.world_name,
+            "evaluation_label": self.evaluation_label,
+            "artifact_subdir": self.artifact_subdir,
             "metrics": {
                 "rmse_xy_baseline": rmse_xy,
                 "rmse_theta_baseline": rmse_th,
@@ -939,7 +1146,8 @@ class EvalNode(Node):
                 "rmse_xy_robak": rmse_xy_robak,
                 "rmse_theta_robak": rmse_th_robak,
                 "rmse_xy_rywak": rmse_xy_rywak,
-                "rmse_theta_rywak": rmse_th_rywak,                
+                "rmse_theta_rywak": rmse_th_rywak,
+                "n_evaluation_samples": int(len(self.ts)),
             },
             "diagnostics": {
                 "point_map_filter": {
@@ -947,15 +1155,22 @@ class EvalNode(Node):
                         "stamped_scans": int(state["stamped_scans"]),
                         "skipped_scans": int(state["skipped_scans"]),
                         "stamped_points": int(state["stamped_points"]),
+                        "free_cells_updated": int(state["free_cells_updated"]),
+                        "known_cells": int(np.count_nonzero(self._points_grids(key)[1])) if self._points_grids(key)[1] is not None else 0,
+                        "occupied_cells_prob_ge_0_5": (
+                            int(np.count_nonzero(self._points_occ_known(key)[0])) if self._points_occ_known(key)[0] is not None else 0
+                        ),
                     }
                     for key, state in self.points_stamp_state.items()
                 }
             },
             "artifacts": {
+                "results_json": results_path,
                 "trajectory_png": traj_path,
                 "trajectory_data_npz": traj_data_path,
                 "errors_png": err_path,
                 "maps_png": maps_path,
+                "map_layers_npz": map_layers_path,
                 "reference_map_yaml": self.ref_yaml,
                 "config_snapshot_yaml": self.config_snapshot_out,
                 "map_topic_baseline": "/map",
@@ -995,20 +1210,22 @@ class EvalNode(Node):
                 artifacts=results["artifacts"]
             )
 
-            
-            # Poczekaj, aby infer_node zdążył zapisać swoje dane do metadata.json
-            # Infer_node zazwyczaj kończy się kilka sekund po evaluation,
-            # więc czekamy, aby CSV miał wszystkie dane
-            self.get_logger().info("Waiting 15s for infer_node to save metadata...")
-            time.sleep(15.0)
-            self.exp_logger.finalize()
-            # Dodaj do pliku podsumowania wszystkich eksperymentów
-            # Wczytuje najnowsze dane z metadata.json, więc inference data też będą uwzględnione
-            summary_path = self.exp_logger.append_to_summary()
-            self.get_logger().info(f"Experiment summary saved to: {summary_path}")
-            
-            # Wyświetl podsumowanie eksperymentu
-            self.get_logger().info("\n" + self.exp_logger.get_summary())
+            if self.finalize_experiment:
+                # Poczekaj, aby infer_node zdążył zapisać swoje dane do metadata.json
+                # Infer_node zazwyczaj kończy się kilka sekund po evaluation,
+                # więc czekamy, aby CSV miał wszystkie dane
+                self.get_logger().info("Waiting 15s for infer_node to save metadata...")
+                time.sleep(15.0)
+                self.exp_logger.finalize()
+                # Dodaj do pliku podsumowania wszystkich eksperymentów
+                # Wczytuje najnowsze dane z metadata.json, więc inference data też będą uwzględnione
+                summary_path = self.exp_logger.append_to_summary()
+                self.get_logger().info(f"Experiment summary saved to: {summary_path}")
+
+                # Wyświetl podsumowanie eksperymentu
+                self.get_logger().info("\n" + self.exp_logger.get_summary())
+            else:
+                self.get_logger().info("Skipping experiment finalize/summary for intermediate evaluation run.")
 
         rclpy.shutdown()
 
@@ -1103,7 +1320,7 @@ class EvalNode(Node):
         return corners, xmin, ymin, xmax, ymax
 
     def _reference_walls_world_points(self, max_points: int = 50000):
-        """Zwraca punkty zajętych komórek mapy referencyjnej w układzie world."""
+        """Zwraca punkty zajętych komórek mapy referencyjnej w lokalnym układzie od spawnu."""
         if self.ref_info is None or self.ref_occ is None:
             return None
 
@@ -1138,7 +1355,7 @@ class EvalNode(Node):
         ref_poly, _, _, _, _ = self._reference_bounds_polygon()
         ref_walls = self._reference_walls_world_points()
 
-        fig, ax1 = plt.subplots(1, 1, figsize=(9, 6))
+        fig, (ax_focus, ax_full) = plt.subplots(1, 2, figsize=(14.5, 6.4))
         from matplotlib.patches import Polygon
         label_gt = "GT (trajektoria rzeczywista)"
         label_baseline = "baseline (SLAM)"
@@ -1148,63 +1365,73 @@ class EvalNode(Node):
         label_scanmatch = "scanmatch"
         label_bruteforce = "bruteforce"
 
-        # Single view with all trajectories
-        if ref_walls is not None and ref_walls.size > 0:
-            ax1.scatter(
-                ref_walls[:, 0],
-                ref_walls[:, 1],
-                s=0.8,
-                c="0.75",
-                alpha=0.35,
-                marker="s",
-                linewidths=0,
-                label="ref walls",
-            )
-        ax1.plot(gt[:, 0], gt[:, 1], color="tab:blue", label=label_gt, linewidth=1.8)
-        ax1.plot(od[:, 0], od[:, 1], color="tab:orange", label=label_baseline, linewidth=1.0, alpha=0.7)
-
+        series = [
+            (gt, "tab:blue", label_gt, 1.8, 1.0),
+            (od, "tab:orange", label_baseline, 1.0, 0.7),
+        ]
         if len(self.ai_xy) > 0:
-            ai = np.asarray(self.ai_xy, dtype=np.float32)
-            ax1.plot(ai[:, 0], ai[:, 1], color="tab:green", label=label_ai, linewidth=1.5)
-
+            series.append((np.asarray(self.ai_xy, dtype=np.float32), "tab:green", label_ai, 1.4, 0.9))
         if len(self.robak_xy) > 0:
-            rb = np.asarray(self.robak_xy, dtype=np.float32)
-            ax1.plot(rb[:, 0], rb[:, 1], color="tab:red", label=label_robak, linewidth=1.0, alpha=0.8)
-
+            series.append((np.asarray(self.robak_xy, dtype=np.float32), "tab:red", label_robak, 1.0, 0.85))
         if len(self.rywak_xy) > 0:
-            ry = np.asarray(self.rywak_xy, dtype=np.float32)
-            ax1.plot(ry[:, 0], ry[:, 1], color="tab:purple", label=label_rywak, linewidth=1.0, alpha=0.8)
-
+            series.append((np.asarray(self.rywak_xy, dtype=np.float32), "tab:purple", label_rywak, 1.0, 0.85))
         if len(self.sm_xy) > 0:
-            sm = np.asarray(self.sm_xy, dtype=np.float32)
-            ax1.plot(sm[:, 0], sm[:, 1], label=label_scanmatch, linewidth=1.0, alpha=0.8)
-
+            series.append((np.asarray(self.sm_xy, dtype=np.float32), "tab:brown", label_scanmatch, 1.0, 0.8))
         if len(self.bf_xy) > 0:
-            bf = np.asarray(self.bf_xy, dtype=np.float32)
-            ax1.plot(bf[:, 0], bf[:, 1], label=label_bruteforce, linewidth=1.0, alpha=0.8)
+            series.append((np.asarray(self.bf_xy, dtype=np.float32), "tab:pink", label_bruteforce, 1.0, 0.8))
 
-        poly1 = Polygon(
-            ref_poly,
-            fill=False,
-            edgecolor="gray",
-            linestyle="--",
-            linewidth=1.5,
-            label="ref map bounds",
-        )
-        ax1.add_patch(poly1)
+        def draw_reference(ax, label_bounds: bool):
+            if ref_walls is not None and ref_walls.size > 0:
+                ax.scatter(
+                    ref_walls[:, 0],
+                    ref_walls[:, 1],
+                    s=0.8,
+                    c="0.75",
+                    alpha=0.35,
+                    marker="s",
+                    linewidths=0,
+                    label="ref walls" if label_bounds else None,
+                )
+            poly = Polygon(
+                ref_poly,
+                fill=False,
+                edgecolor="gray",
+                linestyle="--",
+                linewidth=1.5,
+                label="ref map bounds" if label_bounds else None,
+            )
+            ax.add_patch(poly)
 
-        ax1.set_aspect("equal")
-        ax1.legend(
+        for axis, title in (
+            (ax_focus, "Trajektorie względem mapy referencyjnej"),
+            (ax_full, "Trajektorie (pełny widok)"),
+        ):
+            draw_reference(axis, label_bounds=(axis is ax_full))
+            for arr, color, label, linewidth, alpha in series:
+                axis.plot(arr[:, 0], arr[:, 1], color=color, label=label if axis is ax_full else None, linewidth=linewidth, alpha=alpha)
+            axis.set_aspect("equal")
+            axis.set_xlabel("x [m]")
+            axis.set_ylabel("y [m]")
+            axis.set_title(title)
+            axis.grid(True, alpha=0.3)
+
+        if ref_poly is not None and len(ref_poly) >= 3:
+            ref_x = ref_poly[:, 0]
+            ref_y = ref_poly[:, 1]
+            x_span = max(float(np.max(ref_x) - np.min(ref_x)), 1.0)
+            y_span = max(float(np.max(ref_y) - np.min(ref_y)), 1.0)
+            x_margin = max(1.0, 0.08 * x_span)
+            y_margin = max(1.0, 0.08 * y_span)
+            ax_focus.set_xlim(float(np.min(ref_x)) - x_margin, float(np.max(ref_x)) + x_margin)
+            ax_focus.set_ylim(float(np.min(ref_y)) - y_margin, float(np.max(ref_y)) + y_margin)
+
+        ax_full.legend(
             loc="center left",
             bbox_to_anchor=(1.02, 0.5),
             borderaxespad=0.0,
         )
-        ax1.set_xlabel("x [m]")
-        ax1.set_ylabel("y [m]")
-        ax1.set_title("Trajektorie (pełny widok)")
-        ax1.grid(True, alpha=0.3)
-
-        fig.tight_layout(rect=[0.0, 0.0, 0.80, 1.0])
+        fig.suptitle("Trajektorie (układ lokalny od spawnu)", fontsize=13)
+        fig.tight_layout(rect=[0.0, 0.0, 0.84, 0.96])
         fig.savefig(path, dpi=150)
         plt.close()
 
@@ -1222,11 +1449,10 @@ class EvalNode(Node):
             plt.close()
             return
 
-        plt.figure(figsize=(12, 5))
+        fig, (ax_pos, ax_theta) = plt.subplots(2, 1, figsize=(12, 7.2), sharex=True)
 
-        # baseline (odom)
-        plt.plot(t, np.sqrt(err[:, 0] ** 2 + err[:, 1] ** 2), label="pos err baseline")
-        plt.plot(t, np.abs(eth), label="|theta| baseline")
+        ax_pos.plot(t, np.sqrt(err[:, 0] ** 2 + err[:, 1] ** 2), label="baseline", linewidth=1.6)
+        ax_theta.plot(t, np.abs(eth), label="baseline", linewidth=1.6)
 
         def _plot_series(ts_list, err_xy_list, err_th_list, label_prefix, alpha=0.7):
             if len(ts_list) == 0 or len(err_xy_list) == 0:
@@ -1237,8 +1463,8 @@ class EvalNode(Node):
             n = min(tt.shape[0], e_xy.shape[0], e_th.shape[0])
             if n <= 0:
                 return
-            plt.plot(tt[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label=f"pos err {label_prefix}", alpha=alpha)
-            plt.plot(tt[:n], np.abs(e_th[:n]), label=f"|theta| {label_prefix}", alpha=alpha)
+            ax_pos.plot(tt[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label=label_prefix, alpha=alpha)
+            ax_theta.plot(tt[:n], np.abs(e_th[:n]), label=label_prefix, alpha=alpha)
 
         _plot_series(self.ts_sm, self.err_xy_sm, self.err_th_sm, "scanmatch")
         _plot_series(self.ts_bf, self.err_xy_bf, self.err_th_bf, "bruteforce")
@@ -1252,22 +1478,77 @@ class EvalNode(Node):
             e_th = np.asarray(self.err_th_ai, dtype=np.float32)
             n = min(t_ai.shape[0], e_xy.shape[0], e_th.shape[0])
             if n > 0:
-                plt.plot(t_ai[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label="pos err AI")
-                plt.plot(t_ai[:n], np.abs(e_th[:n]), label="|theta| AI", alpha=0.7)
+                ax_pos.plot(t_ai[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label="AI", linewidth=1.6)
+                ax_theta.plot(t_ai[:n], np.abs(e_th[:n]), label="AI", alpha=0.9, linewidth=1.6)
             if self.ai_start_time is not None:
-                plt.axvline(x=self.ai_start_time, color='gray', linestyle='--', alpha=0.7, label=f"AI start (t={self.ai_start_time:.1f}s)")
+                ax_pos.axvline(x=self.ai_start_time, color="gray", linestyle="--", alpha=0.7)
+                ax_theta.axvline(x=self.ai_start_time, color="gray", linestyle="--", alpha=0.7)
 
-        plt.legend(loc='best')
-        plt.xlabel("t [s]")
-        plt.ylabel("error [m / rad]")
-        plt.title("Błędy pozycji i orientacji")
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(path, dpi=150)
-        plt.close()
+        ax_pos.set_title("Błąd pozycji")
+        ax_pos.set_ylabel("error [m]")
+        ax_pos.grid(True, alpha=0.3)
+        ax_pos.legend(loc="best")
+
+        ax_theta.set_title("Błąd orientacji")
+        ax_theta.set_xlabel("t [s]")
+        ax_theta.set_ylabel("|error| [rad]")
+        ax_theta.grid(True, alpha=0.3)
+        ax_theta.legend(loc="best")
+
+        fig.tight_layout()
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+
+    def _collect_map_layers(self):
+        if self.ref_occ is None:
+            return []
+
+        layers = [{"key": "ref", "title": "ref", "data": self.ref_occ.astype(np.float32)}]
+
+        def _append_occ(key, title, msg):
+            if msg is None:
+                return
+            occ, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, msg)
+            layers.append({"key": key, "title": title, "data": occ.astype(np.float32)})
+
+        _append_occ("baseline", "baseline", self.map_baseline)
+        _append_occ("ai", "ai", self.map_ai)
+
+        if getattr(self, "map_robak", None) is not None:
+            mr, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, self.map_robak)
+            layers.append({"key": "robak", "title": "robak", "data": mr.astype(np.float32)})
+        else:
+            _occ, known, prob = self._points_occ_known("robak")
+            if prob is not None and known is not None and np.count_nonzero(known) > 0:
+                display = np.where(known, prob, 0.5).astype(np.float32)
+                layers.append({"key": "robak", "title": "robak (prob)", "data": display})
+
+        if getattr(self, "map_rywak", None) is not None:
+            my, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, self.map_rywak)
+            layers.append({"key": "rywak", "title": "rywak", "data": my.astype(np.float32)})
+        else:
+            _occ, known, prob = self._points_occ_known("rywak")
+            if prob is not None and known is not None and np.count_nonzero(known) > 0:
+                display = np.where(known, prob, 0.5).astype(np.float32)
+                layers.append({"key": "rywak", "title": "rywak (prob)", "data": display})
+
+        return layers
+
+    def _save_map_layers(self, path):
+        layers = self._collect_map_layers()
+        if not layers:
+            return
+
+        payload = {
+            "rotate_180": np.asarray([1 if self.maps_rotate_180 else 0], dtype=np.uint8),
+        }
+        for item in layers:
+            payload[str(item["key"])] = np.asarray(item["data"], dtype=np.float32)
+        np.savez_compressed(path, **payload)
 
     def _plot_maps(self, path):
-        if self.ref_occ is None:
+        layers = self._collect_map_layers()
+        if not layers:
             plt.figure()
             plt.text(0.5, 0.5, "No reference map loaded", ha="center", va="center")
             plt.axis("off")
@@ -1276,39 +1557,7 @@ class EvalNode(Node):
             plt.close()
             return
 
-        ref = self.ref_occ.astype(np.uint8)
-        ref_name = "ref"
-        if self.maps_rotate_180:
-            ref_name = "ref"
-        maps = [(ref_name, ref)]
-
-        def _append_occ(name, msg):
-            if msg is None:
-                return
-            occ, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, msg)
-            occ = occ.astype(np.uint8)
-            maps.append((name, occ))
-
-        _append_occ("baseline", self.map_baseline)
-        _append_occ("ai", self.map_ai)
-
-        # --- Robak map (prefer occupancy grid from slam_toolbox, fallback to points) ---
-        if getattr(self, "map_robak", None) is not None:
-            mr, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, self.map_robak)
-            mr = mr.astype(np.uint8)
-            maps.append(("robak", mr))
-        elif getattr(self, "points_map_robak", None) is not None:
-            maps.append(("robak (points)", self.points_map_robak.astype(np.uint8)))
-
-        # --- Rywak map (prefer occupancy grid from slam_toolbox, fallback to points) ---
-        if getattr(self, "map_rywak", None) is not None:
-            my, _known = project_map_to_ref_grid(self.ref_info, self.ref_occ.shape, self.map_rywak)
-            my = my.astype(np.uint8)
-            maps.append(("rywak", my))
-        elif getattr(self, "points_map_rywak", None) is not None:
-            maps.append(("rywak (points)", self.points_map_rywak.astype(np.uint8)))
-
-        n_maps = len(maps)
+        n_maps = len(layers)
         if n_maps <= self.maps_max_cols:
             nrows = 1
             ncols = n_maps
@@ -1319,13 +1568,13 @@ class EvalNode(Node):
         fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 4.2 * nrows), squeeze=False)
         axes_flat = axes.ravel()
 
-        for i, (name, arr) in enumerate(maps):
+        for i, item in enumerate(layers):
             ax = axes_flat[i]
-            disp = arr
+            disp = np.asarray(item["data"], dtype=np.float32)
             if self.maps_rotate_180:
                 disp = np.rot90(disp, 2)
             ax.imshow(disp, origin="lower", cmap="gray", vmin=0, vmax=1, interpolation="nearest")
-            ax.set_title(name)
+            ax.set_title(str(item["title"]))
             ax.set_xticks([])
             ax.set_yticks([])
 

@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="microwave">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>0 0 0.16 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.54 0.39 0.32</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.16 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.54 0.39 0.32</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.72 0.72 0.74 1</ambient>
+          <diffuse>0.72 0.72 0.74 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

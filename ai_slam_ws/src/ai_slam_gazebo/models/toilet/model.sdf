@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="toilet">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>-0.003873 0.134001 0.582097 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.551631 1.09406 1.18218</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>-0.003873 0.134001 0.582097 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.551631 1.09406 1.18218</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.68 0.68 0.68 1</ambient>
+          <diffuse>0.68 0.68 0.68 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

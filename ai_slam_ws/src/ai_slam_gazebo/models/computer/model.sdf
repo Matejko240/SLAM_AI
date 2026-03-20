@@ -1,0 +1,50 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="computer">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>0 0 0.12 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.34 0.08 0.24</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.12 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.34 0.08 0.24</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.22 1</ambient>
+          <diffuse>0.2 0.2 0.22 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+      <collision name="collision_2">
+        <pose>0.28 0 0.18 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.12 0.22 0.36</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_2">
+        <pose>0.28 0 0.18 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.12 0.22 0.36</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.18 0.18 0.2 1</ambient>
+          <diffuse>0.18 0.18 0.2 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

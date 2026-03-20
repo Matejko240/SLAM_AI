@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="office_table">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>-0.000328 -0.000776 0.538111 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>2.19999 1.32388 1.09455</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>-0.000328 -0.000776 0.538111 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>2.19999 1.32388 1.09455</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.68 0.68 0.68 1</ambient>
+          <diffuse>0.68 0.68 0.68 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

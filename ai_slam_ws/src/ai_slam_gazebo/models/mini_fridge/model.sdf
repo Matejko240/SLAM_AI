@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="mini_fridge">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>-0.002041 0.002974 0.524481 0 0 1.570796</pose>
+        <geometry>
+          <box>
+            <size>0.699729 0.708116 1.06716</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>-0.002041 0.002974 0.524481 0 0 1.570796</pose>
+        <geometry>
+          <box>
+            <size>0.699729 0.708116 1.06716</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.68 0.68 0.68 1</ambient>
+          <diffuse>0.68 0.68 0.68 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

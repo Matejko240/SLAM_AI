@@ -12,6 +12,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 
 from .common import (
+    atomic_write_bytes,
     ensure_dir,
     parse_filter_mode,
     passes_motion_filter,
@@ -324,6 +325,8 @@ class DatasetRecorderRywak(Node):
 
         X = np.stack(self.X).astype(np.float32)  # (N,362)
         Y = np.stack(self.Y).astype(np.float32)  # (N,2)
+        linear_speed_abs = np.abs(Y[:, 0]).astype(np.float32)
+        angular_speed_abs = np.abs(Y[:, 1]).astype(np.float32)
 
         meta = {
             "seed": np.int64(self.seed),
@@ -345,17 +348,19 @@ class DatasetRecorderRywak(Node):
             "odom_sync_nearest_count": np.int64(self.odom_nearest_count),
             "sample_accept_count": np.int64(self.sample_accept_count),
             "sample_filter_reject_count": np.int64(self.sample_filter_reject_count),
+            "label_linear_speed_abs_mean_mps": np.float32(np.mean(linear_speed_abs)),
+            "label_linear_speed_abs_p95_mps": np.float32(np.percentile(linear_speed_abs, 95)),
+            "label_linear_speed_abs_max_mps": np.float32(np.max(linear_speed_abs)),
+            "label_angular_speed_abs_mean_radps": np.float32(np.mean(angular_speed_abs)),
+            "label_angular_speed_abs_p95_radps": np.float32(np.percentile(angular_speed_abs, 95)),
+            "label_angular_speed_abs_max_radps": np.float32(np.max(angular_speed_abs)),
         }
 
         ensure_dir(self.out_dir)
         try:
             buffer = io.BytesIO()
             np.savez_compressed(buffer, X=X, Y=Y, meta=meta)
-            buffer.seek(0)
-            with open(self.dataset_path, "wb") as f:
-                f.write(buffer.read())
-                f.flush()
-                os.fsync(f.fileno())
+            atomic_write_bytes(self.dataset_path, buffer.getvalue())
         except Exception as e:
             self.get_logger().error(f"[Rywak] Failed to save dataset: {e}")
             rclpy.shutdown()

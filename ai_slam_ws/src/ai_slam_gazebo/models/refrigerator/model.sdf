@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="refrigerator">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>-0.007078 0.009991 0.837838 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.781084 0.825312 1.66079</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>-0.007078 0.009991 0.837838 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.781084 0.825312 1.66079</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.68 0.68 0.68 1</ambient>
+          <diffuse>0.68 0.68 0.68 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

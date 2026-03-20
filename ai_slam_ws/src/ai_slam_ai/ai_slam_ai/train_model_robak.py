@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from .common import seed_all, ensure_dir, Normalizer
+from .common import seed_all, ensure_dir, Normalizer, wait_for_npz_dataset
 from .experiment_logger import ExperimentLogger
 
 
@@ -98,13 +98,14 @@ class TrainModelRobak(Node):
             rclpy.shutdown()
             return
 
-        t0 = time.time()
         self.get_logger().info(f"[Robak] Waiting for dataset (timeout {self.dataset_wait_timeout:.0f}s): {self.dataset_path}")
-        while not os.path.exists(self.dataset_path) and (time.time() - t0) < self.dataset_wait_timeout:
-            time.sleep(0.5)
+        dataset_ready, dataset_error = wait_for_npz_dataset(self.dataset_path, self.dataset_wait_timeout)
 
-        if not os.path.exists(self.dataset_path):
-            self.get_logger().error(f"[Robak] Dataset not found: {self.dataset_path}")
+        if not dataset_ready:
+            if dataset_error is not None and os.path.exists(self.dataset_path):
+                self.get_logger().error(f"[Robak] Dataset is incomplete or unreadable: {self.dataset_path} ({dataset_error})")
+            else:
+                self.get_logger().error(f"[Robak] Dataset not found: {self.dataset_path}")
             rclpy.shutdown()
             return
 
@@ -119,9 +120,9 @@ class TrainModelRobak(Node):
                 batch_size=self.batch_size,
             )
 
-        data = np.load(self.dataset_path, allow_pickle=True)
-        X = data["X_pairs"].astype(np.float32)  # (N,2,360)
-        Y = data["Y"].astype(np.float32)        # (N,3)
+        with np.load(self.dataset_path, allow_pickle=True) as data:
+            X = data["X_pairs"].astype(np.float32)  # (N,2,360)
+            Y = data["Y"].astype(np.float32)        # (N,3)
 
         n = int(X.shape[0])
         if n < 100:
@@ -176,7 +177,15 @@ class TrainModelRobak(Node):
         best_val = float("inf")
         best_state = None
         wait = 0
-        history = {"seed": self.seed, "epochs": []}
+        history = {
+            "seed": self.seed,
+            "architecture": "RobakConv1D(2x360)",
+            "lr": self.lr,
+            "batch_size": self.batch_size,
+            "val_ratio": self.val_ratio,
+            "patience": self.patience,
+            "epochs": [],
+        }
 
         for epoch in range(1, self.max_epochs + 1):
             model.train()

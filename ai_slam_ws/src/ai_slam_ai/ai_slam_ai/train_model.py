@@ -6,7 +6,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 
-from .common import seed_all, ensure_dir, Normalizer
+from .common import seed_all, ensure_dir, Normalizer, wait_for_npz_dataset
 from .experiment_logger import ExperimentLogger
 
 import torch
@@ -91,13 +91,14 @@ class TrainModel(Node):
             rclpy.shutdown()
             return
 
-        t0 = time.time()
         self.get_logger().info(f"Czekam na dataset (timeout: {self.dataset_wait_timeout:.0f}s)...")
-        while not os.path.exists(self.dataset_path) and time.time() - t0 < self.dataset_wait_timeout:
-            time.sleep(0.5)
+        dataset_ready, dataset_error = wait_for_npz_dataset(self.dataset_path, self.dataset_wait_timeout)
 
-        if not os.path.exists(self.dataset_path):
-            self.get_logger().error(f"Dataset not found: {self.dataset_path}")
+        if not dataset_ready:
+            if dataset_error is not None and os.path.exists(self.dataset_path):
+                self.get_logger().error(f"Dataset is incomplete or unreadable: {self.dataset_path} ({dataset_error})")
+            else:
+                self.get_logger().error(f"Dataset not found: {self.dataset_path}")
             self._save_zero_model()
             rclpy.shutdown()
             return
@@ -120,10 +121,10 @@ class TrainModel(Node):
             batch_size=self.batch_size
         )
 
-        data = np.load(self.dataset_path, allow_pickle=True)
-        X_scan = data["X_scan"].astype(np.float32)
-        X_odom = data["X_odom"].astype(np.float32)
-        Y = data["Y"].astype(np.float32)
+        with np.load(self.dataset_path, allow_pickle=True) as data:
+            X_scan = data["X_scan"].astype(np.float32)
+            X_odom = data["X_odom"].astype(np.float32)
+            Y = data["Y"].astype(np.float32)
 
         X = np.concatenate([X_scan, X_odom], axis=1)
         n = X.shape[0]
@@ -177,7 +178,15 @@ class TrainModel(Node):
         best_state = None
         wait = 0
 
-        history = {"seed": self.seed, "epochs": []}
+        history = {
+            "seed": self.seed,
+            "architecture": "MLP(in->256->128->64->3)",
+            "lr": self.lr,
+            "batch_size": self.batch_size,
+            "val_ratio": self.val_ratio,
+            "patience": self.patience,
+            "epochs": [],
+        }
 
         for epoch in range(1, self.max_epochs + 1):
             model.train()

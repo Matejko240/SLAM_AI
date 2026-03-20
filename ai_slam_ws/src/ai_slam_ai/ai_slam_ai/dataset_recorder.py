@@ -13,7 +13,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 
-from .common import ensure_dir, seed_all, wrap, xytheta_from_odom, xytheta_from_pose_stamped
+from .common import atomic_write_bytes, ensure_dir, seed_all, wrap, xytheta_from_odom, xytheta_from_pose_stamped
 from .experiment_logger import ExperimentLogger
 
 
@@ -401,12 +401,7 @@ class DatasetRecorder(Node):
         try:
             buffer = io.BytesIO()
             np.savez_compressed(buffer, X_scan=X_scan, X_odom=X_odom, Y=Y, meta=meta)
-            buffer.seek(0)
-
-            with open(self.dataset_path, "wb") as f:
-                f.write(buffer.read())
-                f.flush()
-                os.fsync(f.fileno())
+            atomic_write_bytes(self.dataset_path, buffer.getvalue())
 
             self.get_logger().info(
                 f"Dataset file created: {os.path.exists(self.dataset_path)}, "

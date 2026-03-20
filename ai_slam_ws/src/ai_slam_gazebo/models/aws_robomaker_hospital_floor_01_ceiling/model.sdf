@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="aws_robomaker_hospital_floor_01_ceiling">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>0 0 2.95 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>32 52 0.04</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 2.95 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>32 52 0.04</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.93 0.93 0.93 1</ambient>
+          <diffuse>0.93 0.93 0.93 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

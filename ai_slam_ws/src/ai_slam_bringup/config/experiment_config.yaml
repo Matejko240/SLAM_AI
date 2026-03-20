@@ -1,287 +1,291 @@
-# ============================================================================
-# AI SLAM - Centralna Konfiguracja Eksperymentu
-# ============================================================================
-# Ten plik zawiera wszystkie parametry eksperymentu w jednym miejscu.
-# Używaj tego pliku do konfiguracji czasów, trenowania, ewaluacji itp.
-#
-# Użycie:
-#   ros2 launch ai_slam_bringup demo.launch.py config:=experiment_config.yaml
-# ============================================================================
-
-# --- OGÓLNE USTAWIENIA EKSPERYMENTU ---
 experiment:
-  mode: "ai"                    # "baseline" - tylko SLAM, "ai" - pełny pipeline z AI
-  phase: "full"
-  seed: 123                     # Seed dla powtarzalności (odom_corruptor, driver, trening)
-  gui: false                   # true = włącz GUI Gazebo, false = headless (szybsze)
-
-# --- SYMULACJA / ŚWIAT (Gazebo) ---
+  mode: ai
+  phase: full
+  seed: 123
+  gui: false
 simulation:
-  train_world: "world_train_house.sdf"  # Mapa do treningu
-  test_world: "world_test_house.sdf"    # Mapa do testów
-
-# --- TORy / TRACKI (włączanie/wyłączanie) ---
+  train_world: world_office.sdf
+  test_world: world_hospital.sdf
+  spawn_poses:
+    world_house.sdf:
+      x: 5
+      y: 0
+      z: 0.1
+      yaw: 0
+    world_office.sdf:
+      x: 0.03
+      y: 2.27
+      z: 0.1
+      yaw: 0
+    world_hospital.sdf:
+      x: 0.72
+      y: 11.6
+      z: 0.1
+      yaw: 0
 tracks:
-  tor1_baseline: true        # baseline slam_toolbox (zostaw)
-  tor2_ai_slam: true         # AI slam_toolbox (zostaw)
-  tor3_local: false           # przeszukanie lokalne (scan_matcher - localmap)
-  tor4_bruteforce: false     # przegląd zupełny (scan_matcher - bruteforce, ciężkie)
-  tor5_robak: true          # model Robaka skan1 + skan2 = delta pose,
-  tor6_rywak: true          # model Rywaka d_theta1 + d_theta2 + delta_scan => v,w ==(delta time)=> delta pose
-
-# --- PARAMETRY TORÓW ScanMatcher (Tor3/Tor4) ---
+  tor1_baseline: true
+  tor2_ai_slam: true
+  tor3_local: false
+  tor4_bruteforce: false
+  tor5_robak: true
+  tor6_rywak: true
 scan_matcher:
   tor3:
-    method: "localmap"
+    method: localmap
     localmap_scans: 15
-    localmap_radius: 5.0
+    localmap_radius: 5
     localmap_min_points: 150
     max_points: 180
-    warn_step_ms: 90.0
+    warn_step_ms: 90
     publish_every_n: 1
   tor4:
-    method: "bruteforce"
+    method: bruteforce
     publish_every_n: 5
     bf_range_xy: 0.15
     bf_range_th: 0.25
     bf_step_xy: 0.01
     bf_step_th: 0.01
 robak:
-  offsets: [1]               # inferencja online używa par kolejnych skanów (offset=1)
-  dataset_duration: 30.0
-  max_samples: 20000
-  min_pair_dist: 0.03        # minimalne przesunięcie między skanami używanymi do próbki [m]
-  min_pair_dyaw: 0.05        # minimalna zmiana yaw między skanami [rad]
-  min_pair_dt_sec: 0.0       # opcjonalny minimalny odstęp czasu między skanami [s]
-  pair_filter_mode: "any"    # any = ruch liniowy lub obrót, all = oba warunki naraz
-  max_pair_dist: 0.08        # odrzuć zbyt dalekie pary (często outliery synchronizacji)
-  max_pair_dyaw: 0.25
+  offsets:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 8
+  - 10
+  - 12
+  dataset_duration: 60
+  max_samples: 40000
+  min_pair_dist: 0
+  min_pair_dyaw: 0
+  min_pair_dt_sec: 0
+  pair_filter_mode: any
+  max_pair_dist: 1
+  max_pair_dyaw: 3.141592653589793
   sync_tolerance_sec: 0.08
-  sync_pair_gap_sec: 0.20
+  sync_pair_gap_sec: 0.2
   interpolate_gt: true
-  label_frame: "local"
-  augment_noise_std_scale: 0.01   # ALSAI-like: szum proporcjonalny do zasięgu
-  augment_cut_fraction: 0.15      # szansa maskowania losowego segmentu skanu
+  label_frame: local
+  augment_noise_std_scale: 0.01
+  augment_cut_fraction: 0.15
   augment_cut_max_points: 20
-  infer_max_step_trans: 0.12      # max translacja jednego kroku [m]
-  infer_max_step_yaw: 0.35        # max rotacja jednego kroku [rad]
-  infer_delta_ema_alpha: 0.55     # wygładzanie predykcji delta (0-1)
-  infer_odom_heading_alpha: 0.30  # dociąganie yaw do odometrii (0=off)
+  infer_max_step_trans: 0.12
+  infer_max_step_yaw: 0.35
+  infer_delta_ema_alpha: 0.55
+  infer_odom_heading_alpha: 0.3
   infer_odom_sync_tolerance_sec: 0.08
-  infer_odom_delta_xy_alpha: 0.50
-  infer_odom_delta_yaw_alpha: 0.60
-  infer_odom_pose_xy_alpha: 0.08   # kotwiczenie absolutnego x,y do odometrii (baza)
-  infer_odom_pose_xy_gain: 0.16    # dodatkowe kotwiczenie gdy błąd x,y narasta
+  infer_odom_delta_xy_alpha: 0.5
+  infer_odom_delta_yaw_alpha: 0.6
+  infer_odom_pose_xy_alpha: 0.08
+  infer_odom_pose_xy_gain: 0.16
 rywak:
-  dataset_duration: 30.0
-  max_samples: 20000
-  odom_label_topic: "/odom_raw"
+  dataset_duration: 60
+  max_samples: 30000
+  odom_label_topic: /odom_raw
   sync_tolerance_sec: 0.08
-  interpolate_odom: false         # bardziej stabilne między uruchomieniami (nearest zamiast pełnej interpolacji)
-  sync_pair_gap_sec: 0.20         # max odstęp (s) pomiędzy próbkami odom do interpolacji
-  delta_scan_clip: 2.0
-  min_sample_dist: 0.03           # minimalne przesunięcie między kolejnymi zaakceptowanymi skanami [m]
-  min_sample_dyaw: 0.04           # minimalna zmiana yaw między zaakceptowanymi skanami [rad]
-  min_sample_dt_sec: 0.0          # opcjonalny minimalny odstęp czasu między próbkami [s]
-  min_delta_scan_rms: 0.04        # minimalna RMS różnica skanu, by odsiać prawie identyczne próbki
-  sample_filter_mode: "any"       # any = wystarczy ruch/obrót/zmiana skanu
-  hidden_dims: [192, 96, 48]
-  dropout: 0.10
+  interpolate_odom: false
+  sync_pair_gap_sec: 0.2
+  delta_scan_clip: 2
+  min_sample_dist: 0
+  min_sample_dyaw: 0
+  min_sample_dt_sec: 0
+  min_delta_scan_rms: 0.02
+  sample_filter_mode: any
+  hidden_dims:
+  - 192
+  - 96
+  - 48
+  dropout: 0.1
   weight_decay: 0.0001
-  huber_delta: 1.0
+  huber_delta: 1
   input_noise_std: 0.02
-  clip_grad_norm: 1.0
-  loss_v_weight: 1.0
+  clip_grad_norm: 1
+  loss_v_weight: 1
   loss_w_weight: 1.5
-  v_clip_abs: 0.45
-  w_clip_abs: 1.20
+  v_clip_abs: 1.2
+  w_clip_abs: 3
   fuse_odom_v_weight: 0.45
   fuse_odom_w_weight: 0.75
   fuse_odom_v_gain: 0.25
-  fuse_odom_w_gain: 0.20
-  vel_ema_alpha: 0.60
+  fuse_odom_w_gain: 0.2
+  vel_ema_alpha: 0.6
   anchor_yaw_to_odom: 0.65
-  anchor_xy_to_odom: 0.06         # kotwiczenie absolutnego x,y do odometrii (baza)
-  anchor_xy_to_odom_gain: 0.18    # dodatkowe kotwiczenie gdy dryft pozycji rośnie
-  heading_for_xy_odom_weight: 0.90
-  xy_step_odom_weight: 0.50
-  xy_step_odom_gain: 0.30
-  max_integration_dt: 0.20
-
-# --- CZASY EKSPERYMENTU (w sekundach) ---
+  anchor_xy_to_odom: 0.06
+  anchor_xy_to_odom_gain: 0.18
+  heading_for_xy_odom_weight: 0.9
+  xy_step_odom_weight: 0.5
+  xy_step_odom_gain: 0.3
+  max_integration_dt: 0.2
 timing:
-  # Faza 1: Zbieranie danych
-  dataset_duration: 30.0        # Czas zbierania datasetu (faza 1)
-  dataset_start_delay: 5.0      # Opóźnienie startu zbierania (po spawnie robota)
-  
-  # Faza 2: Trening modelu  
-  dataset_wait_timeout: 1000.0   # Max czas oczekiwania na dataset przed treningiem
-  
-  # Faza 3-4: Inferencja i ewaluacja
-  eval_duration: 30.0    
-  
-  # Wewnętrzne opóźnienia (zaawansowane)
-  bridge_delay: 3.0             # Opóźnienie startu bridge'a Gazebo
-  spawn_delay: 5.0              # Opóźnienie spawnowania robota
-  slam_configure_delay: 2.0     # Opóźnienie konfiguracji SLAM toolbox
-
-# --- PARAMETRY ZBIERANIA DANYCH (dataset_recorder) ---
+  dataset_duration: 60
+  dataset_start_delay: 5
+  dataset_wait_timeout: 1000
+  eval_duration: 30
+  bridge_delay: 3
+  spawn_delay: 5
+  slam_configure_delay: 2
 dataset:
-  max_samples: 20000             # Maksymalna liczba próbek w datasecie
-  sample_rate: 10.0             # Próbki na sekundę (Hz)
-  scan_topic: "/scan_slam"           # Topic skanów LiDAR
-  odom_topic: "/odom"           # Topic odometrii (corrupted)
-  gt_topic: "/ground_truth_pose" # Topic ground truth
-  sync_tolerance_sec: 0.08      # Maks. różnica czasu między skanem a dopasowanym odom/GT
-  sync_pair_gap_sec: 0.20       # Maks. luka między próbkami przy interpolacji
-  interpolate_odom: true        # true = interpoluj odometrię do czasu skanu
-  interpolate_gt: true          # true = interpoluj GT do czasu skanu, żeby nie tracić próbek przy rzadszym GT
-
-# --- PARAMETRY GROUND TRUTH (gt_pose_publisher) ---
+  max_samples: 20000
+  sample_rate: 10
+  scan_topic: /scan_slam
+  odom_topic: /odom
+  gt_topic: /ground_truth_pose
+  sync_tolerance_sec: 0.08
+  sync_pair_gap_sec: 0.2
+  interpolate_odom: true
+  interpolate_gt: true
 ground_truth:
-  use_tf_world: true            # true = preferuj pozycję robota z /tf_world (Gazebo dynamic_pose)
-  tf_world_topic: "/tf_world"   # Topic z TFMessage z world frame
-  tf_world_timeout_sec: 0.5     # Fallback do /odom_raw jeśli brak świeżych danych z tf_world
-  publish_odom_fallback: false  # false = nie mieszaj /odom_raw z GT na tym samym topicu
-  restamp_output_to_now: true   # true = publikuj GT z aktualnym czasem symulacji, nie ze stemplem bridge'a
-  propagate_tf_world_with_odom: true  # po złapaniu tf_world podtrzymuj GT odometrią między klatkami tf_world
-  model_name_hint: "diffbot"    # Podpowiedź nazwy modelu w child_frame_id
-  base_link_hint: "base_link"   # Podpowiedź nazwy linku bazowego
-  world_frame_hint: "world"     # Oczekiwana nazwa frame świata
-  heuristic_max_score: 15.0     # Wyższy próg = mniej "no_match", ale większe ryzyko złego dopasowania
-  heuristic_bootstrap_max_score: 64.0 # Luźniejszy próg tylko dla pierwszego złapania GT z anonimowych tf_world
-  heuristic_max_step_m: 0.8     # Maks. krok [m] między kolejnymi klatkami GT (ciągłość toru)
-  debug_every_n: 5000           # Częstotliwość logów diagnostycznych GT
-
-# --- PARAMETRY TRENOWANIA (train_model) ---
+  use_tf_world: true
+  tf_world_topic: /tf_world
+  tf_world_timeout_sec: 0.5
+  use_gz_pose_info: true
+  publish_odom_fallback: false
+  restamp_output_to_now: true
+  propagate_tf_world_with_odom: true
+  gz_pose_entity_hint: diffbot
+  model_name_hint: diffbot
+  base_link_hint: base_link
+  world_frame_hint: world
+  heuristic_max_score: 15
+  heuristic_bootstrap_max_score: 64
+  heuristic_max_step_m: 0.8
+  debug_every_n: 5000
 training:
-  # Architektura sieci
-  architecture: "mlp"           # "mlp" (obecnie jedyna opcja)
-  hidden_layers: [256, 128, 64] # Rozmiary warstw ukrytych
-  
-  # Hiperparametry trenowania
-  max_epochs: 200               # Maksymalna liczba epok
-  patience: 20                  # Early stopping - liczba epok bez poprawy
-  min_delta: 0.00001            # Minimalna poprawa dla early stopping
-  learning_rate: 0.001          # Learning rate (Adam optimizer)
-  batch_size: 128               # Rozmiar batcha
-  validation_ratio: 0.2         # Proporcja danych walidacyjnych (0.0-1.0)
-  
-  # Opcje
-  skip_if_model_exists: true    # Pomiń trening jeśli model już istnieje
-
-# --- PARAMETRY INFERENCJI (infer_node) ---
+  architecture: mlp
+  hidden_layers:
+  - 256
+  - 128
+  - 64
+  max_epochs: 200
+  patience: 20
+  min_delta: 1.0e-05
+  learning_rate: 0.001
+  batch_size: 128
+  validation_ratio: 0.2
+  skip_if_model_exists: true
 inference:
-  scan_topic: "/scan_slam_ai"   # Topic skanów do inferencji AI (musi zgadzać się z frame base_link_ai)
-  odom_topic: "/odom"           # Topic odometrii wejściowej
-  output_pose_topic: "/pose_ai" # Topic publikowania poprawionej pozycji
-  output_odom_topic: "/odom_ai" # Topic publikowania poprawionej odometrii
+  scan_topic: /scan_slam_ai
+  odom_topic: /odom
+  output_pose_topic: /pose_ai
+  output_odom_topic: /odom_ai
   tf_parent_frame: odom_ai
   tf_child_frame: base_link_ai
-  model_wait_timeout: 300.0     # Max czas oczekiwania na model (sekundy)
-
-# --- PARAMETRY SLAM (slam_toolbox) ---
+  model_wait_timeout: 300
 slam:
-  # Wspólne parametry dla baseline i AI
   common:
-    mode: "mapping"
-    scan_topic: "/scan_slam"
-    base_frame: "base_link"
+    mode: mapping
+    scan_topic: /scan_slam
+    base_frame: base_link
     publish_tf: true
     publish_map: true
     publish_pose: true
   resolution: 0.05
-  max_laser_range: 10.0
+  max_laser_range: 10
   minimum_time_interval: 0.25
   minimum_travel_distance: 0.15
   minimum_travel_heading: 0.08
-  transform_timeout: 0.20
-  tf_buffer_duration: 30.0
-  map_update_interval: 3.0
+  transform_timeout: 0.2
+  tf_buffer_duration: 30
+  map_update_interval: 3
   enable_interactive_mode: false
-  # Różnice dla wariantów
-  baseline:
-    # może być puste (dziedziczy z common)
+  baseline: null
   ai:
     scan_topic: /scan_slam_ai
     base_frame: base_link_ai
     odom_frame: odom_ai
     map_frame: map_ai
-    minimum_time_interval: 0.20
-    tf_buffer_duration: 120.0
-
+    minimum_time_interval: 0.2
+    tf_buffer_duration: 120
   robak:
     scan_topic: /scan_slam_robak
     base_frame: base_link_robak
     odom_frame: odom_robak
     map_frame: map_robak
-
   rywak:
     scan_topic: /scan_slam_rywak
     base_frame: base_link_rywak
     odom_frame: odom_rywak
     map_frame: map_rywak
-
-# --- PARAMETRY EWALUACJI (eval_node) ---
 evaluation:
-  # Mapy
-  reference_map_yaml: ""        # Ścieżka do mapy referencyjnej (puste = domyślna)
-  map_topic_baseline: "/map"    # Topic mapy baseline
-  map_topic_ai: "/map_ai"       # Topic mapy AI
-  maps_rotate_180: true         # Obrót wizualizacji map (ref + wszystkie metody) o 180 stopni
-  maps_max_cols: 3              # Maks. liczba kolumn zanim maps.png przejdzie do 2 wierszy
-  points_min_translation: 0.05  # minimalne przesunięcie pozy do dodania kolejnych punktów fallback mapy [m]
-  points_min_rotation: 0.08     # minimalna zmiana yaw pozy do dodania punktów [rad]
-  points_min_time_gap_sec: 0.0  # opcjonalny minimalny odstęp czasu między stemplowaniami [s]
-  points_filter_mode: "any"     # any = przesunięcie lub obrót wystarczy do stemplowania punktów
-  
-  # Metryki
-  compute_rmse: true            # Oblicz RMSE (xy, theta)
-  compute_iou: true             # Oblicz IOU map
-  
-  # Wizualizacje
-  save_trajectory_plot: true    # Zapisz wykres trajektorii
-  save_error_plot: true         # Zapisz wykres błędów
-  save_map_comparison: true     # Zapisz porównanie map
-
-# --- PARAMETRY ODOMETRII (odom_corruptor) ---
+  reference_map_yaml: reference_map.yaml
+  map_topic_baseline: /map
+  map_topic_ai: /map_ai
+  maps_rotate_180: true
+  maps_max_cols: 3
+  points_min_translation: 0.05
+  points_min_rotation: 0.08
+  points_min_time_gap_sec: 0
+  points_filter_mode: any
+  points_use_probabilities: true
+  points_occ_logodds_hit: 0.85
+  points_free_logodds_miss: 0.4
+  points_logodds_min: -4
+  points_logodds_max: 4
+  compute_rmse: true
+  compute_iou: true
+  save_trajectory_plot: true
+  save_error_plot: true
+  save_map_comparison: true
 odometry:
-  # Parametry szumu (random walk)
-  rw_sigma_xy: 0.005            # Sigma szumu pozycyjnego (m/sqrt(s))
-  rw_sigma_theta: 0.003         # Sigma szumu kątowego (rad/sqrt(s))
-  
-  # Frames
-  input_topic: "/odom_raw"      # Topic wejściowej odometrii (z Gazebo)
-  output_topic: "/odom"         # Topic wyjściowej odometrii (corrupted)
-  frame_id: "odom"              # Frame ID odometrii
-  child_frame_id: "base_link"   # Child frame ID
-
-# --- PARAMETRY ROBOTA (auto_driver) ---
+  rw_sigma_xy: 0.005
+  rw_sigma_theta: 0.003
+  input_topic: /odom_raw
+  output_topic: /odom
+  frame_id: odom
+  child_frame_id: base_link
 driver:
-  linear_velocity: 0.3          # Prędkość liniowa (m/s)
-  angular_velocity: 0.90         # Prędkość kątowa (rad/s)
-  turn_probability: 0.005        # Prawdopodobieństwo skrętu (per tick)
-  obstacle_threshold: 0.5      # Próg detekcji przeszkody (m)
-  side_threshold: 0.35          # Próg boczny (m)
-  emergency_threshold: 0.25     # Próg awaryjny (m)
+  linear_velocity: 0.45
+  angular_velocity: 1.2
+  motion_profile_enabled: true
+  linear_velocity_min: 0.15
+  linear_velocity_max: 1
+  angular_velocity_min: 0.4
+  angular_velocity_max: 3
+  profile_change_interval_sec: 2
+  profile_arc_probability: 0.4
+  profile_arc_fraction_min: 0.1
+  profile_arc_fraction_max: 0.35
+  explore_spin_probability: 0.25
+  explore_spin_min_sec: 1
+  explore_spin_max_sec: 2.2
+  forward_slowdown_min_factor: 0.35
+  turn_probability: 0.005
+  obstacle_threshold: 0.5
+  side_threshold: 0.35
+  emergency_threshold: 0.25
   explore_interval_ticks: 20
   explore_turn_probability: 0.08
-
   doorway_turn_probability: 0.25
-  doorway_opening_threshold: 2.0
+  doorway_opening_threshold: 2
   doorway_wall_threshold: 0.9
   doorway_turn_min_sec: 0.7
   doorway_turn_max_sec: 1.4
+  nav_sector_deg: 110
+  nav_gap_half_window_deg: 16
+  nav_safe_clearance: 0.52
+  nav_lookahead_cap: 4
+  nav_heading_gain: 1.8
+  nav_avoid_gain: 0.9
+  nav_min_linear_speed: 0.05
+  nav_heading_bias_max_deg: 55
+  nav_heading_bias_hold_sec: 4
+  nav_heading_smooth_alpha: 0.35
+  nav_novelty_lookahead_m: 1.5
+  nav_novelty_bonus: 0.95
+  nav_recent_cell_penalty: 1.25
+  robot_front_extent: 0.15
+  robot_rear_extent: 0.15
+  robot_half_width: 0.1
+  robot_safety_margin: 0.06
+  repeat_cell_size_m: 0.75
+  repeat_window_size: 36
+  repeat_unique_ratio_threshold: 0.62
+  repeat_escape_trigger: 4
+  repeat_escape_turn_sec: 3.2
+  repeat_escape_heading_deg: 105
   debug: false
   debug_every_n: 5
-# --- WYJŚCIE ---
 output:
-  base_dir: "out"               # Katalog bazowy na eksperymenty
-  # Automatycznie generowane:
-  # - out/exp_YYYYMMDD_HHMMSS/dataset.npz
-  # - out/exp_YYYYMMDD_HHMMSS/model.pt
-  # - out/exp_YYYYMMDD_HHMMSS/train_history.json
-  # - out/exp_YYYYMMDD_HHMMSS/experiment_metadata.json
-  # - out/exp_YYYYMMDD_HHMMSS/trajectory.png
-  # - out/exp_YYYYMMDD_HHMMSS/errors.png
-  # - out/exp_YYYYMMDD_HHMMSS/maps.png
+  base_dir: out

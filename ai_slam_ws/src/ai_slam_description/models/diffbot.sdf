@@ -26,6 +26,59 @@
         <geometry>
           <box><size>0.30 0.20 0.10</size></box>
         </geometry>
+        <material>
+          <ambient>0.90 0.12 0.12 1</ambient>
+          <diffuse>0.90 0.12 0.12 1</diffuse>
+          <specular>0.15 0.15 0.15 1</specular>
+        </material>
+      </visual>
+
+      <visual name="top_marker_visual">
+        <pose>0 0 0.26 0 0 0</pose>
+        <geometry>
+          <box><size>0.55 0.38 0.02</size></box>
+        </geometry>
+        <material>
+          <ambient>0.10 0.95 0.20 0.95</ambient>
+          <diffuse>0.10 0.95 0.20 0.95</diffuse>
+          <specular>0.05 0.05 0.05 1</specular>
+        </material>
+      </visual>
+
+      <visual name="heading_marker_visual">
+        <pose>0.18 0 0.285 0 0 0</pose>
+        <geometry>
+          <box><size>0.16 0.08 0.03</size></box>
+        </geometry>
+        <material>
+          <ambient>0.98 0.96 0.10 1</ambient>
+          <diffuse>0.98 0.96 0.10 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+
+      <visual name="mast_visual">
+        <pose>0 0 0.50 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.025</radius><length>0.45</length></cylinder>
+        </geometry>
+        <material>
+          <ambient>0.05 0.05 0.05 1</ambient>
+          <diffuse>0.05 0.05 0.05 1</diffuse>
+          <specular>0.10 0.10 0.10 1</specular>
+        </material>
+      </visual>
+
+      <visual name="mast_cap_visual">
+        <pose>0 0 0.74 0 0 0</pose>
+        <geometry>
+          <sphere><radius>0.055</radius></sphere>
+        </geometry>
+        <material>
+          <ambient>0.10 0.55 1.00 1</ambient>
+          <diffuse>0.10 0.55 1.00 1</diffuse>
+          <specular>0.10 0.10 0.10 1</specular>
+        </material>
       </visual>
     </link>
 
@@ -43,6 +96,16 @@
         <geometry>
           <cylinder><radius>0.035</radius><length>0.03</length></cylinder>
         </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>5.0</mu>
+              <mu2>5.0</mu2>
+              <slip1>0.0</slip1>
+              <slip2>0.0</slip2>
+            </ode>
+          </friction>
+        </surface>
       </collision>
       <visual name="left_wheel_visual">
         <geometry>
@@ -69,6 +132,16 @@
         <geometry>
           <cylinder><radius>0.035</radius><length>0.03</length></cylinder>
         </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>5.0</mu>
+              <mu2>5.0</mu2>
+              <slip1>0.0</slip1>
+              <slip2>0.0</slip2>
+            </ode>
+          </friction>
+        </surface>
       </collision>
       <visual name="right_wheel_visual">
         <geometry>
@@ -100,7 +173,7 @@
     </joint>
 
     <link name="laser_link">
-      <pose>-0.05 0 0.15 0 0 0</pose>
+      <pose>0 0 0.15 0 0 0</pose>
       <inertial>
         <mass>0.1</mass>
         <inertia>
@@ -114,6 +187,11 @@
         <geometry>
           <cylinder><radius>0.035</radius><length>0.05</length></cylinder>
         </geometry>
+        <material>
+          <ambient>0.12 0.12 0.12 1</ambient>
+          <diffuse>0.12 0.12 0.12 1</diffuse>
+          <specular>0.05 0.05 0.05 1</specular>
+        </material>
       </visual>
 
       <collision name="laser_collision">
@@ -147,27 +225,35 @@
     <link name="caster_link">
       <pose>0.115 0 0 0 0 0</pose>
       <inertial>
-        <mass>0.05</mass>
+        <mass>0.01</mass>
         <inertia>
-          <ixx>0.00002</ixx><ixy>0</ixy><ixz>0</ixz>
-          <iyy>0.00002</iyy><iyz>0</iyz>
-          <izz>0.00002</izz>
+          <ixx>0.000002</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000002</iyy><iyz>0</iyz>
+          <izz>0.000002</izz>
         </inertia>
       </inertial>
     <collision name="caster_collision">
+      <pose>0 0 -0.022 0 0 0</pose>
       <geometry>
-        <sphere><radius>0.035</radius></sphere>
+        <sphere><radius>0.012</radius></sphere>
       </geometry>
 
       <surface>
         <friction>
           <ode>
-            <mu>0.01</mu>
-            <mu2>0.01</mu2>
-            <slip1>1.0</slip1>
-            <slip2>1.0</slip2>
+            <mu>0.0001</mu>
+            <mu2>0.0001</mu2>
+            <slip1>10.0</slip1>
+            <slip2>10.0</slip2>
           </ode>
         </friction>
+        <contact>
+          <ode>
+            <min_depth>0.0001</min_depth>
+            <kp>100000.0</kp>
+            <kd>1.0</kd>
+          </ode>
+        </contact>
       </surface>
     </collision>
       <visual name="caster_visual">

@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from .common import seed_all, ensure_dir, Normalizer
+from .common import seed_all, ensure_dir, Normalizer, wait_for_npz_dataset
 from .experiment_logger import ExperimentLogger
 
 
@@ -118,13 +118,14 @@ class TrainModelRywak(Node):
             rclpy.shutdown()
             return
 
-        t0 = time.time()
         self.get_logger().info(f"[Rywak] Waiting for dataset (timeout {self.dataset_wait_timeout:.0f}s): {self.dataset_path}")
-        while not os.path.exists(self.dataset_path) and (time.time() - t0) < self.dataset_wait_timeout:
-            time.sleep(0.5)
+        dataset_ready, dataset_error = wait_for_npz_dataset(self.dataset_path, self.dataset_wait_timeout)
 
-        if not os.path.exists(self.dataset_path):
-            self.get_logger().error(f"[Rywak] Dataset not found: {self.dataset_path}")
+        if not dataset_ready:
+            if dataset_error is not None and os.path.exists(self.dataset_path):
+                self.get_logger().error(f"[Rywak] Dataset is incomplete or unreadable: {self.dataset_path} ({dataset_error})")
+            else:
+                self.get_logger().error(f"[Rywak] Dataset not found: {self.dataset_path}")
             rclpy.shutdown()
             return
 
@@ -139,9 +140,9 @@ class TrainModelRywak(Node):
                 batch_size=self.batch_size,
             )
 
-        data = np.load(self.dataset_path, allow_pickle=True)
-        X = data["X"].astype(np.float32)  # (N,in_dim)
-        Y = data["Y"].astype(np.float32)  # (N,2)
+        with np.load(self.dataset_path, allow_pickle=True) as data:
+            X = data["X"].astype(np.float32)  # (N,in_dim)
+            Y = data["Y"].astype(np.float32)  # (N,2)
 
         n = int(X.shape[0])
         if n < 100:

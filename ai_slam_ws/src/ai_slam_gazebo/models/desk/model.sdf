@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="desk">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>0 0 0.27 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.45 0.78 0.74</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.27 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.45 0.78 0.74</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.58 0.47 0.35 1</ambient>
+          <diffuse>0.58 0.47 0.35 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

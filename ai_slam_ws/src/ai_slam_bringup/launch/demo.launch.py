@@ -17,6 +17,9 @@ import os
 import yaml
 import math
 import re
+import copy
+import tempfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit
@@ -101,6 +104,31 @@ def merge_params(*param_dicts):
     return merged
 
 
+def coerce_slam_param_types(params: dict) -> dict:
+    """Wymusza zgodne typy parametrów slam_toolbox dla wartości z YAML configu."""
+    if not isinstance(params, dict):
+        return {}
+
+    float_keys = {
+        "resolution",
+        "max_laser_range",
+        "minimum_time_interval",
+        "minimum_travel_distance",
+        "minimum_travel_heading",
+        "transform_timeout",
+        "tf_buffer_duration",
+        "map_update_interval",
+    }
+
+    normalized = {}
+    for key, value in params.items():
+        if key in float_keys and isinstance(value, (int, float)) and not isinstance(value, bool):
+            normalized[key] = float(value)
+        else:
+            normalized[key] = value
+    return normalized
+
+
 def extract_world_name(world_path: str) -> str:
     """Próbuje odczytać nazwę świata z pliku SDF, fallback: nazwa pliku bez rozszerzenia."""
     fallback = os.path.splitext(os.path.basename(world_path))[0] or "default"
@@ -113,6 +141,151 @@ def extract_world_name(world_path: str) -> str:
     except Exception:
         pass
     return fallback
+
+
+DEFAULT_WORLD_SPAWN_POSES = {
+    "world_house.sdf": {"x": 5.0, "y": 0.0, "z": 0.10, "yaw": 0.0},
+    "world_house": {"x": 5.0, "y": 0.0, "z": 0.10, "yaw": 0.0},
+    "world_office.sdf": {"x": 0.03, "y": 2.27, "z": 0.10, "yaw": 0.0},
+    "world_office": {"x": 0.03, "y": 2.27, "z": 0.10, "yaw": 0.0},
+    "world_hospital.sdf": {"x": 0.72, "y": 11.60, "z": 0.10, "yaw": 0.0},
+    "world_hospital": {"x": 0.72, "y": 11.60, "z": 0.10, "yaw": 0.0},
+}
+
+
+def world_aliases(requested_world: str, world_path: str, world_name: str) -> list[str]:
+    aliases = []
+    candidates = [
+        requested_world,
+        os.path.basename(requested_world) if requested_world else "",
+        os.path.splitext(os.path.basename(requested_world))[0] if requested_world else "",
+        world_path,
+        os.path.basename(world_path) if world_path else "",
+        os.path.splitext(os.path.basename(world_path))[0] if world_path else "",
+        world_name,
+    ]
+    for candidate in candidates:
+        candidate = str(candidate).strip()
+        if candidate and candidate not in aliases:
+            aliases.append(candidate)
+    return aliases
+
+
+def _coerce_spawn_value(value, fallback: float) -> float:
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            return fallback
+    return fallback
+
+
+def resolve_spawn_pose(sim_cfg: dict, requested_world: str, world_path: str, world_name: str) -> dict:
+    aliases = world_aliases(requested_world, world_path, world_name)
+    spawn_poses_cfg = sim_cfg.get("spawn_poses", {}) if isinstance(sim_cfg, dict) else {}
+    spawn_pose_cfg = sim_cfg.get("spawn_pose", {}) if isinstance(sim_cfg, dict) else {}
+
+    base_pose = {"x": 0.0, "y": 0.0, "z": 0.10, "yaw": 0.0}
+    for alias in aliases:
+        if alias in DEFAULT_WORLD_SPAWN_POSES:
+            base_pose = dict(DEFAULT_WORLD_SPAWN_POSES[alias])
+            break
+
+    if isinstance(spawn_poses_cfg, dict):
+        for alias in aliases:
+            candidate = spawn_poses_cfg.get(alias)
+            if isinstance(candidate, dict):
+                base_pose.update(candidate)
+                break
+
+    if isinstance(spawn_pose_cfg, dict):
+        base_pose.update(spawn_pose_cfg)
+
+    return {
+        "x": _coerce_spawn_value(base_pose.get("x"), 0.0),
+        "y": _coerce_spawn_value(base_pose.get("y"), 0.0),
+        "z": _coerce_spawn_value(base_pose.get("z"), 0.10),
+        "yaw": _coerce_spawn_value(base_pose.get("yaw"), 0.0),
+    }
+
+
+def build_world_with_embedded_robot(base_world_path: str, model_sdf_path: str, robot_name: str, spawn_pose: dict) -> str:
+    """Tworzy tymczasowy plik świata z osadzonym modelem robota już na starcie Gazebo."""
+    world_tree = ET.parse(base_world_path)
+    world_root = world_tree.getroot()
+    world_elem = world_root.find("world")
+    if world_elem is None:
+        raise RuntimeError(f"World element not found in SDF: {base_world_path}")
+
+    model_tree = ET.parse(model_sdf_path)
+    model_root = model_tree.getroot()
+    model_elem = model_root.find("model")
+    if model_elem is None:
+        raise RuntimeError(f"Model element not found in SDF: {model_sdf_path}")
+
+    for child in list(world_elem):
+        child_name = child.get("name", "").strip()
+        if child.tag == "model" and child_name == robot_name:
+            world_elem.remove(child)
+
+    embedded_model = copy.deepcopy(model_elem)
+    embedded_model.set("name", robot_name)
+
+    pose_text = (
+        f"{spawn_pose['x']:.6f} "
+        f"{spawn_pose['y']:.6f} "
+        f"{spawn_pose['z']:.6f} "
+        f"0 0 {spawn_pose['yaw']:.6f}"
+    )
+    pose_elem = embedded_model.find("pose")
+    if pose_elem is None:
+        pose_elem = ET.Element("pose")
+        embedded_model.insert(0, pose_elem)
+    pose_elem.text = pose_text
+
+    world_elem.append(embedded_model)
+
+    if hasattr(ET, "indent"):
+        ET.indent(world_tree, space="  ")
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix=f"embedded_{os.path.splitext(os.path.basename(base_world_path))[0]}_",
+        suffix=".sdf",
+        delete=False,
+    )
+    tmp_path = tmp.name
+    tmp.close()
+    world_tree.write(tmp_path, encoding="utf-8", xml_declaration=True)
+    return tmp_path
+
+
+def source_package_dir(repo_root: str, package_name: str) -> str:
+    candidate = os.path.join(repo_root, "ai_slam_ws", "src", package_name)
+    return candidate if os.path.isdir(candidate) else ""
+
+
+def prefer_source_path(source_root: str, install_root: str, *parts: str) -> str:
+    rel_parts = [str(part).lstrip("/\\") for part in parts if str(part)]
+    if source_root:
+        source_candidate = os.path.join(source_root, *rel_parts)
+        if os.path.exists(source_candidate):
+            return source_candidate
+    return os.path.join(install_root, *rel_parts)
+
+
+def resolve_world_path(selected_world: str, gazebo_source_root: str, gazebo_install_root: str) -> str:
+    if os.path.isabs(selected_world):
+        return selected_world
+    normalized = str(selected_world).strip()
+    if normalized.startswith("worlds/") or normalized.startswith("worlds\\"):
+        rel_parts = normalized.split("/") if "/" in normalized else normalized.split("\\")
+        return prefer_source_path(gazebo_source_root, gazebo_install_root, *rel_parts)
+    return prefer_source_path(gazebo_source_root, gazebo_install_root, "worlds", normalized)
 
 
 def launch_setup(context, *args, **kwargs):
@@ -142,8 +315,27 @@ def launch_setup(context, *args, **kwargs):
     if phase not in ("full", "train", "test", "dataset"):
         phase = "full"
     world_sdf_arg = str(get_param("world_sdf", ["simulation", "world_sdf"], "__AUTO__"))
-    train_world_sdf = str(get_config_value(cfg, "simulation", "train_world", default="world_train_house.sdf"))
-    test_world_sdf = str(get_config_value(cfg, "simulation", "test_world", default="world_test_house.sdf"))
+    reference_map_yaml_arg = str(LaunchConfiguration("reference_map_yaml").perform(context))
+    evaluation_label = str(LaunchConfiguration("evaluation_label").perform(context))
+    if evaluation_label == "__USE_CONFIG__":
+        evaluation_label = ""
+    evaluation_output_subdir = str(LaunchConfiguration("evaluation_output_subdir").perform(context))
+    if evaluation_output_subdir == "__USE_CONFIG__":
+        evaluation_output_subdir = ""
+    finalize_experiment_arg = str(LaunchConfiguration("finalize_experiment").perform(context))
+    finalize_experiment = (
+        True
+        if finalize_experiment_arg == "__USE_CONFIG__"
+        else parse_bool(finalize_experiment_arg, default=True)
+    )
+    write_eval_metadata_arg = str(LaunchConfiguration("write_evaluation_metadata").perform(context))
+    write_evaluation_metadata = (
+        True
+        if write_eval_metadata_arg == "__USE_CONFIG__"
+        else parse_bool(write_eval_metadata_arg, default=True)
+    )
+    train_world_sdf = str(get_config_value(cfg, "simulation", "train_world", default="world_house.sdf"))
+    test_world_sdf = str(get_config_value(cfg, "simulation", "test_world", default="world_house.sdf"))
 
     # === CZASY ===
     eval_duration_sec = float(get_param("eval_duration_sec", ["timing", "eval_duration"], 60.0))
@@ -178,15 +370,18 @@ def launch_setup(context, *args, **kwargs):
     gt_use_tf_world = parse_bool(gt_cfg.get("use_tf_world", True), default=True)
     gt_tf_world_topic = str(gt_cfg.get("tf_world_topic", "/tf_world"))
     gt_tf_world_timeout = float(gt_cfg.get("tf_world_timeout_sec", 0.5))
+    gt_model_name_hint = str(gt_cfg.get("model_name_hint", "diffbot"))
+    gt_base_link_hint = str(gt_cfg.get("base_link_hint", "base_link"))
+    gt_world_frame_hint = str(gt_cfg.get("world_frame_hint", "world"))
+    gt_use_gz_pose_info = parse_bool(gt_cfg.get("use_gz_pose_info", True), default=True)
+    gt_gz_pose_info_topic = str(gt_cfg.get("gz_pose_info_topic", ""))
+    gt_gz_pose_entity_hint = str(gt_cfg.get("gz_pose_entity_hint", gt_model_name_hint))
     gt_publish_odom_fallback = parse_bool(gt_cfg.get("publish_odom_fallback", False), default=False)
     gt_restamp_output_to_now = parse_bool(gt_cfg.get("restamp_output_to_now", True), default=True)
     gt_propagate_tf_world_with_odom = parse_bool(
         gt_cfg.get("propagate_tf_world_with_odom", True),
         default=True,
     )
-    gt_model_name_hint = str(gt_cfg.get("model_name_hint", "diffbot"))
-    gt_base_link_hint = str(gt_cfg.get("base_link_hint", "base_link"))
-    gt_world_frame_hint = str(gt_cfg.get("world_frame_hint", "world"))
     gt_heuristic_max_score = float(gt_cfg.get("heuristic_max_score", 12.0))
     gt_heuristic_bootstrap_max_score = float(gt_cfg.get("heuristic_bootstrap_max_score", 64.0))
     gt_heuristic_max_step = float(gt_cfg.get("heuristic_max_step_m", 0.8))
@@ -225,6 +420,105 @@ def launch_setup(context, *args, **kwargs):
     driver_door_wall = float(get_config_value(cfg, "driver", "doorway_wall_threshold", default=0.9))
     driver_door_min = float(get_config_value(cfg, "driver", "doorway_turn_min_sec", default=0.7))
     driver_door_max = float(get_config_value(cfg, "driver", "doorway_turn_max_sec", default=1.4))
+    driver_motion_profile_enabled = parse_bool(
+        get_config_value(cfg, "driver", "motion_profile_enabled", default=False),
+        default=False,
+    )
+    driver_linear_vel_min = float(get_config_value(cfg, "driver", "linear_velocity_min", default=driver_linear_vel))
+    driver_linear_vel_max = float(get_config_value(cfg, "driver", "linear_velocity_max", default=driver_linear_vel))
+    driver_angular_vel_min = float(get_config_value(cfg, "driver", "angular_velocity_min", default=driver_angular_vel))
+    driver_angular_vel_max = float(get_config_value(cfg, "driver", "angular_velocity_max", default=driver_angular_vel))
+    driver_profile_change_interval = float(
+        get_config_value(cfg, "driver", "profile_change_interval_sec", default=2.5)
+    )
+    driver_profile_arc_probability = float(
+        get_config_value(cfg, "driver", "profile_arc_probability", default=0.35)
+    )
+    driver_profile_arc_fraction_min = float(
+        get_config_value(cfg, "driver", "profile_arc_fraction_min", default=0.12)
+    )
+    driver_profile_arc_fraction_max = float(
+        get_config_value(cfg, "driver", "profile_arc_fraction_max", default=0.45)
+    )
+    driver_explore_spin_probability = float(
+        get_config_value(cfg, "driver", "explore_spin_probability", default=0.18)
+    )
+    driver_explore_spin_min = float(
+        get_config_value(cfg, "driver", "explore_spin_min_sec", default=1.0)
+    )
+    driver_explore_spin_max = float(
+        get_config_value(cfg, "driver", "explore_spin_max_sec", default=2.4)
+    )
+    driver_forward_slowdown_min_factor = float(
+        get_config_value(cfg, "driver", "forward_slowdown_min_factor", default=0.45)
+    )
+    driver_nav_sector_deg = float(get_config_value(cfg, "driver", "nav_sector_deg", default=110.0))
+    driver_nav_gap_half_window_deg = float(
+        get_config_value(cfg, "driver", "nav_gap_half_window_deg", default=16.0)
+    )
+    driver_nav_safe_clearance = float(
+        get_config_value(cfg, "driver", "nav_safe_clearance", default=0.52)
+    )
+    driver_nav_lookahead_cap = float(
+        get_config_value(cfg, "driver", "nav_lookahead_cap", default=4.0)
+    )
+    driver_nav_heading_gain = float(
+        get_config_value(cfg, "driver", "nav_heading_gain", default=1.8)
+    )
+    driver_nav_avoid_gain = float(
+        get_config_value(cfg, "driver", "nav_avoid_gain", default=0.7)
+    )
+    driver_nav_min_linear_speed = float(
+        get_config_value(cfg, "driver", "nav_min_linear_speed", default=0.06)
+    )
+    driver_nav_heading_bias_max_deg = float(
+        get_config_value(cfg, "driver", "nav_heading_bias_max_deg", default=70.0)
+    )
+    driver_nav_heading_bias_hold_sec = float(
+        get_config_value(cfg, "driver", "nav_heading_bias_hold_sec", default=5.0)
+    )
+    driver_nav_heading_smooth_alpha = float(
+        get_config_value(cfg, "driver", "nav_heading_smooth_alpha", default=0.55)
+    )
+    driver_nav_novelty_lookahead_m = float(
+        get_config_value(cfg, "driver", "nav_novelty_lookahead_m", default=1.4)
+    )
+    driver_nav_novelty_bonus = float(
+        get_config_value(cfg, "driver", "nav_novelty_bonus", default=0.85)
+    )
+    driver_nav_recent_cell_penalty = float(
+        get_config_value(cfg, "driver", "nav_recent_cell_penalty", default=1.15)
+    )
+    driver_robot_front_extent = float(
+        get_config_value(cfg, "driver", "robot_front_extent", default=0.15)
+    )
+    driver_robot_rear_extent = float(
+        get_config_value(cfg, "driver", "robot_rear_extent", default=0.15)
+    )
+    driver_robot_half_width = float(
+        get_config_value(cfg, "driver", "robot_half_width", default=0.10)
+    )
+    driver_robot_safety_margin = float(
+        get_config_value(cfg, "driver", "robot_safety_margin", default=0.06)
+    )
+    driver_repeat_cell_size_m = float(
+        get_config_value(cfg, "driver", "repeat_cell_size_m", default=0.9)
+    )
+    driver_repeat_window_size = int(
+        get_config_value(cfg, "driver", "repeat_window_size", default=40)
+    )
+    driver_repeat_unique_ratio_threshold = float(
+        get_config_value(cfg, "driver", "repeat_unique_ratio_threshold", default=0.55)
+    )
+    driver_repeat_escape_trigger = int(
+        get_config_value(cfg, "driver", "repeat_escape_trigger", default=6)
+    )
+    driver_repeat_escape_turn_sec = float(
+        get_config_value(cfg, "driver", "repeat_escape_turn_sec", default=2.8)
+    )
+    driver_repeat_escape_heading_deg = float(
+        get_config_value(cfg, "driver", "repeat_escape_heading_deg", default=85.0)
+    )
     driver_debug = parse_bool(get_config_value(cfg, "driver", "debug", default=True), default=True)
     driver_debug_every_n = int(get_config_value(cfg, "driver", "debug_every_n", default=10))
 
@@ -311,7 +605,6 @@ def launch_setup(context, *args, **kwargs):
     rywak_val_ratio = float(rywak_cfg.get("val_ratio", validation_ratio))
     rywak_batch = int(rywak_cfg.get("batch_size", batch_size))
     rywak_pose_topic = str(rywak_cfg.get("pose_topic", "/pose_rywak"))
-
     # === SLAM TOOLBOX ===
     slam_cfg_root = get_config_value(cfg, "slam", default={})
     slam_common_cfg = get_config_value(cfg, "slam", "common", default={})
@@ -331,10 +624,18 @@ def launch_setup(context, *args, **kwargs):
                 continue
             slam_global_cfg[key] = value
 
-    slam_baseline_params = merge_params(slam_global_cfg, slam_common_cfg, slam_baseline_cfg)
-    slam_ai_params = merge_params(slam_global_cfg, slam_common_cfg, slam_ai_cfg)
-    slam_robak_params = merge_params(slam_global_cfg, slam_common_cfg, slam_robak_cfg)
-    slam_rywak_params = merge_params(slam_global_cfg, slam_common_cfg, slam_rywak_cfg)
+    slam_baseline_params = coerce_slam_param_types(
+        merge_params(slam_global_cfg, slam_common_cfg, slam_baseline_cfg)
+    )
+    slam_ai_params = coerce_slam_param_types(
+        merge_params(slam_global_cfg, slam_common_cfg, slam_ai_cfg)
+    )
+    slam_robak_params = coerce_slam_param_types(
+        merge_params(slam_global_cfg, slam_common_cfg, slam_robak_cfg)
+    )
+    slam_rywak_params = coerce_slam_param_types(
+        merge_params(slam_global_cfg, slam_common_cfg, slam_rywak_cfg)
+    )
         
     # === OUTPUT ===
     out_dir = str(get_param("out_dir", ["output", "base_dir"], "out"))
@@ -351,13 +652,72 @@ def launch_setup(context, *args, **kwargs):
     bringup_share = get_package_share_directory("ai_slam_bringup")
     eval_share = get_package_share_directory("ai_slam_eval")
     ros_gz_sim_share = get_package_share_directory("ros_gz_sim")
+    repo_root = os.path.abspath(os.path.join(bringup_share, "..", "..", "..", "..", ".."))
+    gazebo_source_share = source_package_dir(repo_root, "ai_slam_gazebo")
+    desc_source_share = source_package_dir(repo_root, "ai_slam_description")
+    bringup_source_share = source_package_dir(repo_root, "ai_slam_bringup")
+    eval_source_share = source_package_dir(repo_root, "ai_slam_eval")
+    office_external_root = os.path.join(
+        repo_root,
+        "niemoje",
+        "Dataset-of-Gazebo-Worlds-Models-and-Maps-master",
+        "worlds",
+        "office",
+        "extracted",
+    )
+    hospital_external_root = os.path.join(repo_root, "niemoje", "aws-robomaker-hospital-world-ros1")
+    existing_resource_paths = [p for p in os.environ.get("GZ_SIM_RESOURCE_PATH", "").split(os.pathsep) if p]
+    external_resource_paths = [
+        office_external_root,
+        os.path.join(office_external_root, "models"),
+        hospital_external_root,
+        os.path.join(hospital_external_root, "models"),
+        os.path.join(hospital_external_root, "worlds"),
+    ]
+    gz_resource_paths = []
+    for candidate_path in [
+        gazebo_source_share,
+        os.path.join(gazebo_source_share, "models") if gazebo_source_share else "",
+        os.path.join(gazebo_source_share, "media") if gazebo_source_share else "",
+        desc_source_share,
+        gazebo_share,
+        os.path.join(gazebo_share, "models"),
+        os.path.join(gazebo_share, "media"),
+        desc_share,
+        *external_resource_paths,
+        *existing_resource_paths,
+    ]:
+        if not candidate_path or not os.path.isdir(candidate_path):
+            continue
+        if candidate_path in gz_resource_paths:
+            continue
+        gz_resource_paths.append(candidate_path)
+    gazebo_model_paths = []
+    for candidate_path in [
+        os.path.join(gazebo_source_share, "models") if gazebo_source_share else "",
+        os.path.join(office_external_root, "models"),
+        os.path.join(hospital_external_root, "models"),
+        *[p for p in os.environ.get("GAZEBO_MODEL_PATH", "").split(os.pathsep) if p],
+    ]:
+        if not candidate_path or not os.path.isdir(candidate_path):
+            continue
+        if candidate_path in gazebo_model_paths:
+            continue
+        gazebo_model_paths.append(candidate_path)
 
     # World (można podać nazwę .sdf z ai_slam_gazebo/worlds/ lub ścieżkę absolutną)
     # World (launch-arg world_sdf ma pierwszeństwo nad configiem)
+    selected_world_sdf = ""
     world_path_cfg = str(get_config_value(cfg, "simulation", "world_path", default=""))
+    sim_cfg = get_config_value(cfg, "simulation", default={})
 
     if world_path_cfg:
-        world_path = world_path_cfg if os.path.isabs(world_path_cfg) else os.path.join(gazebo_share, world_path_cfg)
+        selected_world_sdf = world_path_cfg
+        world_path = (
+            world_path_cfg
+            if os.path.isabs(world_path_cfg)
+            else resolve_world_path(world_path_cfg, gazebo_source_share, gazebo_share)
+        )
     else:
         # Priorytet: launch-arg/config simulation.world_sdf -> auto wybór wg fazy.
         if world_sdf_arg and world_sdf_arg != "__AUTO__":
@@ -377,21 +737,45 @@ def launch_setup(context, *args, **kwargs):
                     )
                 selected_world_sdf = test_world_sdf
 
-        if os.path.isabs(selected_world_sdf):
-            world_path = selected_world_sdf
-        else:
-            world_path = os.path.join(gazebo_share, "worlds", selected_world_sdf)
+        world_path = resolve_world_path(selected_world_sdf, gazebo_source_share, gazebo_share)
+    if not os.path.isfile(world_path):
+        raise FileNotFoundError(
+            f"Gazebo world not found: '{world_path}'. "
+            f"Requested world='{world_path_cfg or world_sdf_arg or test_world_sdf}'."
+        )
     world_name = extract_world_name(world_path)
+    if not gt_gz_pose_info_topic:
+        gt_gz_pose_info_topic = f"/world/{world_name}/dynamic_pose/info"
+    spawn_pose = resolve_spawn_pose(sim_cfg, selected_world_sdf, world_path, world_name)
 
-    bridge_cfg = os.path.join(gazebo_share, "config", "bridge.yaml")
-    model_sdf = os.path.join(desc_share, "models", "diffbot.sdf")
-    urdf_path = os.path.join(desc_share, "urdf", "diffbot.urdf")
-    slam_params_baseline = os.path.join(bringup_share, "config", "slam_toolbox_baseline.yaml")
-    slam_params_ai = os.path.join(bringup_share, "config", "slam_toolbox_ai.yaml")
+    bridge_cfg = prefer_source_path(gazebo_source_share, gazebo_share, "config", "bridge.yaml")
+    model_sdf = prefer_source_path(desc_source_share, desc_share, "models", "diffbot.sdf")
+    urdf_path = prefer_source_path(desc_source_share, desc_share, "urdf", "diffbot.urdf")
+    slam_params_baseline = prefer_source_path(bringup_source_share, bringup_share, "config", "slam_toolbox_baseline.yaml")
+    slam_params_ai = prefer_source_path(bringup_source_share, bringup_share, "config", "slam_toolbox_ai.yaml")
+    world_launch_path = build_world_with_embedded_robot(world_path, model_sdf, "diffbot", spawn_pose)
     
     # Reference map
-    ref_map_cfg = str(get_config_value(cfg, "evaluation", "reference_map_yaml", default=""))
-    reference_map_yaml = ref_map_cfg if ref_map_cfg else os.path.join(eval_share, "maps", "reference_map.yaml")
+    if reference_map_yaml_arg and reference_map_yaml_arg != "__USE_CONFIG__":
+        ref_map_cfg = reference_map_yaml_arg
+    else:
+        ref_map_cfg = str(get_config_value(cfg, "evaluation", "reference_map_yaml", default=""))
+    if ref_map_cfg:
+        if os.path.isabs(ref_map_cfg):
+            reference_map_yaml = ref_map_cfg
+        else:
+            candidate_eval = prefer_source_path(eval_source_share, eval_share, "maps", ref_map_cfg)
+            candidate_cfg = (
+                os.path.join(os.path.dirname(resolved_config_path), ref_map_cfg)
+                if resolved_config_path
+                else ref_map_cfg
+            )
+            if os.path.exists(candidate_cfg):
+                reference_map_yaml = candidate_cfg
+            else:
+                reference_map_yaml = candidate_eval
+    else:
+        reference_map_yaml = prefer_source_path(eval_source_share, eval_share, "maps", "reference_map.yaml")
     eval_sync_tolerance = float(get_config_value(cfg, "evaluation", "sync_tolerance_sec", default=0.15))
     eval_maps_rotate_180 = parse_bool(get_config_value(cfg, "evaluation", "maps_rotate_180", default=True), default=True)
     eval_maps_max_cols = int(get_config_value(cfg, "evaluation", "maps_max_cols", default=3))
@@ -399,6 +783,22 @@ def launch_setup(context, *args, **kwargs):
     eval_points_min_rotation = float(get_config_value(cfg, "evaluation", "points_min_rotation", default=0.0))
     eval_points_min_time_gap_sec = float(get_config_value(cfg, "evaluation", "points_min_time_gap_sec", default=0.0))
     eval_points_filter_mode = str(get_config_value(cfg, "evaluation", "points_filter_mode", default="any"))
+    eval_points_use_probabilities = parse_bool(
+        get_config_value(cfg, "evaluation", "points_use_probabilities", default=True),
+        default=True,
+    )
+    eval_points_occ_logodds_hit = float(
+        get_config_value(cfg, "evaluation", "points_occ_logodds_hit", default=0.85)
+    )
+    eval_points_free_logodds_miss = float(
+        get_config_value(cfg, "evaluation", "points_free_logodds_miss", default=0.40)
+    )
+    eval_points_logodds_min = float(
+        get_config_value(cfg, "evaluation", "points_logodds_min", default=-4.0)
+    )
+    eval_points_logodds_max = float(
+        get_config_value(cfg, "evaluation", "points_logodds_max", default=4.0)
+    )
     
     gz_sim_launch_py = os.path.join(ros_gz_sim_share, "launch", "gz_sim.launch.py")
 
@@ -408,6 +808,12 @@ def launch_setup(context, *args, **kwargs):
     print("="*70)
     print(f"  Config file: {config_file or 'none (defaults)'}")
     print(f"  Mode: {mode}")
+    print(f"  World: {world_path}")
+    print(f"  World launch file: {world_launch_path}")
+    print(
+        "  Spawn: "
+        f"x={spawn_pose['x']:.2f}, y={spawn_pose['y']:.2f}, z={spawn_pose['z']:.2f}, yaw={spawn_pose['yaw']:.2f}"
+    )
     print(f"  Seed: {seed}")
     print(f"  GUI: {gui}")
     print(f"  Eval duration: {eval_duration_sec}s")
@@ -443,6 +849,15 @@ def launch_setup(context, *args, **kwargs):
     rywak_dataset_enabled = tor6_rywak_enabled and do_dataset_phase
     rywak_train_enabled = tor6_rywak_enabled and do_train_phase
     rywak_test_enabled  = tor6_rywak_enabled and do_test_phase
+    max_dataset_phase_duration = max(
+        dataset_duration_sec if do_dataset_phase else 0.0,
+        robak_dataset_duration if robak_dataset_enabled else 0.0,
+        rywak_dataset_duration if rywak_dataset_enabled else 0.0,
+    )
+    effective_dataset_wait_timeout = max(
+        dataset_wait_timeout,
+        max_dataset_phase_duration + 180.0 if max_dataset_phase_duration > 0.0 else dataset_wait_timeout,
+    )
     # tracki tylko w test/full (w train oszczędzamy CPU)
     tor3_local_enabled = tor3_local_enabled and do_eval_phase
     tor4_bruteforce_enabled = tor4_bruteforce_enabled and do_eval_phase
@@ -450,7 +865,7 @@ def launch_setup(context, *args, **kwargs):
     gz_launch_headless = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(gz_sim_launch_py),
         launch_arguments={
-            "gz_args": f"{world_path} -r -s --headless-rendering",
+            "gz_args": f"{world_launch_path} -r -s --headless-rendering",
             # We drive shutdown explicitly from dataset/train/eval completion handlers below.
             # Leaving Gazebo's own on-exit shutdown enabled causes duplicate shutdown events.
             "on_exit_shutdown": "False",
@@ -461,7 +876,7 @@ def launch_setup(context, *args, **kwargs):
     gz_launch_gui = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(gz_sim_launch_py),
         launch_arguments={
-            "gz_args": f"{world_path} -r",
+            "gz_args": f"{world_launch_path} -r",
             "on_exit_shutdown": "False",
         }.items(),
         condition=IfCondition(str(is_gui).lower()),
@@ -483,14 +898,6 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
         ros_arguments=["--ros-args", "-p", "log_level:=warn"],
         condition=IfCondition(str(gt_use_tf_world).lower()),
-    )
-
-    spawn = Node(
-        package="ros_gz_sim",
-        executable="create",
-        arguments=["-name", "diffbot", "-file", model_sdf, "-x", "0", "-y", "0", "-z", "0.10"],
-        output="screen",
-        shell=True,
     )
 
     robot_state_pub = Node(
@@ -612,6 +1019,9 @@ def launch_setup(context, *args, **kwargs):
             "frame_id": odom_frame_id,
             "use_tf_world": gt_use_tf_world,
             "tf_world_topic": gt_tf_world_topic,
+            "use_gz_pose_info": gt_use_gz_pose_info,
+            "gz_pose_info_topic": gt_gz_pose_info_topic,
+            "gz_pose_entity_hint": gt_gz_pose_entity_hint,
             "tf_world_timeout_sec": gt_tf_world_timeout,
             "publish_odom_fallback": gt_publish_odom_fallback,
             "restamp_output_to_now": gt_restamp_output_to_now,
@@ -662,6 +1072,42 @@ def launch_setup(context, *args, **kwargs):
             "doorway_wall_threshold": driver_door_wall,
             "doorway_turn_min_sec": driver_door_min,
             "doorway_turn_max_sec": driver_door_max,
+            "motion_profile_enabled": driver_motion_profile_enabled,
+            "linear_velocity_min": driver_linear_vel_min,
+            "linear_velocity_max": driver_linear_vel_max,
+            "angular_velocity_min": driver_angular_vel_min,
+            "angular_velocity_max": driver_angular_vel_max,
+            "profile_change_interval_sec": driver_profile_change_interval,
+            "profile_arc_probability": driver_profile_arc_probability,
+            "profile_arc_fraction_min": driver_profile_arc_fraction_min,
+            "profile_arc_fraction_max": driver_profile_arc_fraction_max,
+            "explore_spin_probability": driver_explore_spin_probability,
+            "explore_spin_min_sec": driver_explore_spin_min,
+            "explore_spin_max_sec": driver_explore_spin_max,
+            "forward_slowdown_min_factor": driver_forward_slowdown_min_factor,
+            "nav_sector_deg": driver_nav_sector_deg,
+            "nav_gap_half_window_deg": driver_nav_gap_half_window_deg,
+            "nav_safe_clearance": driver_nav_safe_clearance,
+            "nav_lookahead_cap": driver_nav_lookahead_cap,
+            "nav_heading_gain": driver_nav_heading_gain,
+            "nav_avoid_gain": driver_nav_avoid_gain,
+            "nav_min_linear_speed": driver_nav_min_linear_speed,
+            "nav_heading_bias_max_deg": driver_nav_heading_bias_max_deg,
+            "nav_heading_bias_hold_sec": driver_nav_heading_bias_hold_sec,
+            "nav_heading_smooth_alpha": driver_nav_heading_smooth_alpha,
+            "nav_novelty_lookahead_m": driver_nav_novelty_lookahead_m,
+            "nav_novelty_bonus": driver_nav_novelty_bonus,
+            "nav_recent_cell_penalty": driver_nav_recent_cell_penalty,
+            "robot_front_extent": driver_robot_front_extent,
+            "robot_rear_extent": driver_robot_rear_extent,
+            "robot_half_width": driver_robot_half_width,
+            "robot_safety_margin": driver_robot_safety_margin,
+            "repeat_cell_size_m": driver_repeat_cell_size_m,
+            "repeat_window_size": driver_repeat_window_size,
+            "repeat_unique_ratio_threshold": driver_repeat_unique_ratio_threshold,
+            "repeat_escape_trigger": driver_repeat_escape_trigger,
+            "repeat_escape_turn_sec": driver_repeat_escape_turn_sec,
+            "repeat_escape_heading_deg": driver_repeat_escape_heading_deg,
             "debug": driver_debug,
             "debug_every_n": driver_debug_every_n,
             "odom_topic": odom_in_topic,  # zwykle /odom_raw
@@ -853,7 +1299,7 @@ def launch_setup(context, *args, **kwargs):
             "out_dir": out_dir, 
             "experiment_id": experiment_id,
             "skip_if_model_exists": skip_if_model_exists,
-            "dataset_wait_timeout": dataset_wait_timeout,
+            "dataset_wait_timeout": effective_dataset_wait_timeout,
             "max_epochs": max_epochs,
             "patience": patience,
             "min_delta": min_delta,
@@ -931,7 +1377,7 @@ def launch_setup(context, *args, **kwargs):
             "model_name": robak_model_name,
             "history_name": robak_history_name,
             "skip_if_model_exists": skip_if_model_exists,
-            "dataset_wait_timeout": dataset_wait_timeout,
+            "dataset_wait_timeout": effective_dataset_wait_timeout,
             "max_epochs": robak_epochs,
             "patience": robak_patience,
             "min_delta": min_delta,
@@ -1014,7 +1460,7 @@ def launch_setup(context, *args, **kwargs):
             "model_name": rywak_model_name,
             "history_name": rywak_history_name,
             "skip_if_model_exists": skip_if_model_exists,
-            "dataset_wait_timeout": dataset_wait_timeout,
+            "dataset_wait_timeout": effective_dataset_wait_timeout,
             "max_epochs": rywak_epochs,
             "patience": rywak_patience,
             "min_delta": min_delta,
@@ -1083,6 +1529,15 @@ def launch_setup(context, *args, **kwargs):
             "duration_sec": eval_duration_sec,
             "config_snapshot_path": resolved_config_path,
             "reference_map_yaml": reference_map_yaml,
+            "spawn_x": spawn_pose["x"],
+            "spawn_y": spawn_pose["y"],
+            "spawn_yaw": spawn_pose["yaw"],
+            "gt_world_frame_hint": gt_world_frame_hint,
+            "world_name": world_name,
+            "evaluation_label": evaluation_label,
+            "artifact_subdir": evaluation_output_subdir,
+            "finalize_experiment": finalize_experiment,
+            "write_experiment_metadata": write_evaluation_metadata,
             "sync_tolerance_sec": eval_sync_tolerance,
             "maps_rotate_180": eval_maps_rotate_180,
             "maps_max_cols": eval_maps_max_cols,
@@ -1090,6 +1545,11 @@ def launch_setup(context, *args, **kwargs):
             "points_min_rotation": eval_points_min_rotation,
             "points_min_time_gap_sec": eval_points_min_time_gap_sec,
             "points_filter_mode": eval_points_filter_mode,
+            "points_use_probabilities": eval_points_use_probabilities,
+            "points_occ_logodds_hit": eval_points_occ_logodds_hit,
+            "points_free_logodds_miss": eval_points_free_logodds_miss,
+            "points_logodds_min": eval_points_logodds_min,
+            "points_logodds_max": eval_points_logodds_max,
             "pose_topic_ai": infer_pose_topic,
             "pose_topic_scanmatch": "/pose_scanmatch",
             "pose_topic_bruteforce": "/pose_bruteforce",
@@ -1109,7 +1569,8 @@ def launch_setup(context, *args, **kwargs):
 
     # Environment variables
     env_vars = [
-        SetEnvironmentVariable("GZ_SIM_RESOURCE_PATH", os.pathsep.join([gazebo_share, desc_share])),
+        SetEnvironmentVariable("GZ_SIM_RESOURCE_PATH", os.pathsep.join(gz_resource_paths)),
+        SetEnvironmentVariable("GAZEBO_MODEL_PATH", os.pathsep.join(gazebo_model_paths)),
         SetEnvironmentVariable("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/50_mesa.json"),
         SetEnvironmentVariable("MESA_GL_VERSION_OVERRIDE", "4.5"),
         SetEnvironmentVariable("MESA_GLSL_VERSION_OVERRIDE", "450"),
@@ -1128,25 +1589,96 @@ def launch_setup(context, *args, **kwargs):
     if rywak_train_enabled:
         train_targets.append(trainer_rywak)
 
-    _train_state = {"done": 0, "total": len(train_targets)}
+    auto_shutdown_train_handlers = []
+    dataset_targets = []
+    if do_dataset_phase:
+        dataset_targets.append(dataset_rec)
+    if robak_dataset_enabled:
+        dataset_targets.append(dataset_rec_robak)
+    if rywak_dataset_enabled:
+        dataset_targets.append(dataset_rec_rywak)
 
-    def _on_trainer_exit(context, *args, **kwargs):
-        _train_state["done"] += 1
-        done = _train_state["done"]
-        total = _train_state["total"]
+    _dataset_state = {"done": 0, "total": len(dataset_targets)}
 
-        if done >= total:
+    if phase == "train":
+        _train_phase_state = {
+            "train_done": 0,
+            "train_total": len(train_targets),
+            "dataset_done": 0,
+            "dataset_total": len(dataset_targets),
+        }
+
+        def _finish_train_phase_if_ready():
+            train_done = _train_phase_state["train_done"]
+            train_total = _train_phase_state["train_total"]
+            dataset_done = _train_phase_state["dataset_done"]
+            dataset_total = _train_phase_state["dataset_total"]
+            if train_done >= train_total and dataset_done >= dataset_total:
+                return [
+                    LogInfo(
+                        msg=(
+                            f"[AUTO] Training phase complete "
+                            f"(trainings {train_done}/{train_total}, datasets {dataset_done}/{dataset_total}). "
+                            "Shutting down simulation..."
+                        )
+                    ),
+                    EmitEvent(event=Shutdown()),
+                ]
             return [
-                LogInfo(msg=f"[AUTO] All trainings finished ({done}/{total}). Shutting down simulation..."),
-                EmitEvent(event=Shutdown())
+                LogInfo(
+                    msg=(
+                        f"[AUTO] Training phase progress: "
+                        f"trainings {train_done}/{train_total}, datasets {dataset_done}/{dataset_total}. "
+                        "Waiting for remaining processes..."
+                    )
+                )
             ]
-        else:
+
+        def _on_train_target_exit(context, *args, **kwargs):
+            _train_phase_state["train_done"] += 1
+            return _finish_train_phase_if_ready()
+
+        def _on_train_dataset_exit(context, *args, **kwargs):
+            _train_phase_state["dataset_done"] += 1
+            return _finish_train_phase_if_ready()
+
+        for target in train_targets:
+            auto_shutdown_train_handlers.append(
+                RegisterEventHandler(
+                    event_handler=OnProcessExit(
+                        target_action=target,
+                        on_exit=[OpaqueFunction(function=_on_train_target_exit)]
+                    ),
+                    condition=IfCondition(str(do_train_phase).lower()),
+                )
+            )
+        for target in dataset_targets:
+            auto_shutdown_train_handlers.append(
+                RegisterEventHandler(
+                    event_handler=OnProcessExit(
+                        target_action=target,
+                        on_exit=[OpaqueFunction(function=_on_train_dataset_exit)]
+                    ),
+                    condition=IfCondition(str(do_train_phase).lower()),
+                )
+            )
+    elif len(train_targets) > 0:
+        _train_state = {"done": 0, "total": len(train_targets)}
+
+        def _on_trainer_exit(context, *args, **kwargs):
+            _train_state["done"] += 1
+            done = _train_state["done"]
+            total = _train_state["total"]
+
+            if done >= total:
+                return [
+                    LogInfo(msg=f"[AUTO] All trainings finished ({done}/{total}). Shutting down simulation..."),
+                    EmitEvent(event=Shutdown())
+                ]
             return [
                 LogInfo(msg=f"[AUTO] Training process exited ({done}/{total}). Waiting for others...")
             ]
 
-    auto_shutdown_train_handlers = []
-    if _train_state["total"] > 0:
         for t in train_targets:
             auto_shutdown_train_handlers.append(
                 RegisterEventHandler(
@@ -1157,16 +1689,6 @@ def launch_setup(context, *args, **kwargs):
                     condition=IfCondition(str(do_train_phase).lower()),
                 )
             )
-
-    dataset_targets = []
-    if do_dataset_phase:
-        dataset_targets.append(dataset_rec)
-    if robak_dataset_enabled:
-        dataset_targets.append(dataset_rec_robak)
-    if rywak_dataset_enabled:
-        dataset_targets.append(dataset_rec_rywak)
-
-    _dataset_state = {"done": 0, "total": len(dataset_targets)}
 
     def _on_dataset_exit(context, *args, **kwargs):
         _dataset_state["done"] += 1
@@ -1211,7 +1733,6 @@ def launch_setup(context, *args, **kwargs):
         gz_launch_gui,
 
         TimerAction(period=bridge_delay, actions=[bridge, bridge_tf_world]),
-        TimerAction(period=spawn_delay, actions=[spawn]),
 
         robot_state_pub,
 
@@ -1278,6 +1799,11 @@ def generate_launch_description():
         DeclareLaunchArgument("mode", default_value="__USE_CONFIG__", description="baseline|ai"),
         DeclareLaunchArgument("phase", default_value="__USE_CONFIG__", description="full|train|test|dataset"),
         DeclareLaunchArgument("world_sdf", default_value="__USE_CONFIG__", description="Gazebo world SDF (filename in worlds/ or absolute path)"),
+        DeclareLaunchArgument("reference_map_yaml", default_value="__USE_CONFIG__", description="Reference map YAML (filename in maps/ or absolute path)"),
+        DeclareLaunchArgument("evaluation_label", default_value="__USE_CONFIG__", description="Human-readable evaluation scenario label"),
+        DeclareLaunchArgument("evaluation_output_subdir", default_value="__USE_CONFIG__", description="Optional evaluation artifact subdirectory inside experiment output"),
+        DeclareLaunchArgument("finalize_experiment", default_value="__USE_CONFIG__", description="Whether eval node should finalize experiment metadata and append summary"),
+        DeclareLaunchArgument("write_evaluation_metadata", default_value="__USE_CONFIG__", description="Whether eval node should update experiment metadata"),
         DeclareLaunchArgument("seed", default_value="__USE_CONFIG__", description="Random seed"),
         DeclareLaunchArgument("eval_duration_sec", default_value="__USE_CONFIG__", description="Evaluation duration"),
         DeclareLaunchArgument("dataset_duration_sec", default_value="__USE_CONFIG__", description="Dataset duration"),

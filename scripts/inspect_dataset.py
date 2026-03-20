@@ -22,11 +22,24 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 WORKSPACE_DIR = REPO_ROOT / "ai_slam_ws"
 REF_MAP_YAML = WORKSPACE_DIR / "src" / "ai_slam_eval" / "maps" / "reference_map.yaml"
+WORLD_REFERENCE_MAPS = {
+    "world_house.sdf": "reference_map.yaml",
+    "world_office.sdf": "reference_map_office.yaml",
+    "world_hospital.sdf": "reference_map_hospital.yaml",
+}
 
 SUMMARY_NAME = "dataset_inspection_summary.json"
 OVERVIEW_NAME = "dataset_inspection_overview.png"
 SCANS_NAME = "dataset_inspection_scans.png"
 LEGACY_NAME = "dataset_analysis.png"
+ROBAK_SUMMARY_NAME = "dataset_robak_coverage_summary.json"
+ROBAK_DISTANCE_NAME = "dataset_robak_coverage_distance.png"
+ROBAK_ROTATION_NAME = "dataset_robak_coverage_rotation.png"
+RYWAK_SUMMARY_NAME = "dataset_rywak_coverage_summary.json"
+RYWAK_LINEAR_NAME = "dataset_rywak_coverage_linear_velocity.png"
+RYWAK_ANGULAR_NAME = "dataset_rywak_coverage_angular_velocity.png"
+TRAINING_SUMMARY_NAME = "training_inspection_summary.json"
+EXPERIMENT_SUMMARY_NAME = "experiment_inspection_summary.json"
 
 
 def load_reference_map(yaml_path: Path) -> tuple[np.ndarray, float, list[float]]:
@@ -101,6 +114,122 @@ def save_figure(fig, path: Path) -> None:
 
 def wrap_angle(values: np.ndarray) -> np.ndarray:
     return np.arctan2(np.sin(values), np.cos(values)).astype(np.float32)
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    normalized = normalize_json_value(payload)
+    path.write_text(json.dumps(normalized, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def percentile_or_zero(values: np.ndarray, percentile: float) -> float:
+    if values.size == 0:
+        return 0.0
+    return float(np.percentile(values, percentile))
+
+
+def stats_1d(values: np.ndarray) -> dict[str, float]:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return {
+            "count": 0,
+            "min": 0.0,
+            "max": 0.0,
+            "mean": 0.0,
+            "median": 0.0,
+            "p95": 0.0,
+        }
+    return {
+        "count": int(arr.size),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+        "mean": float(np.mean(arr)),
+        "median": float(np.median(arr)),
+        "p95": percentile_or_zero(arr, 95.0),
+    }
+
+
+def load_history(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def update_results_artifacts(dataset_dir: Path, artifact_updates: dict[str, Path]) -> None:
+    results_path = dataset_dir / "results.json"
+    if not results_path.exists():
+        return
+
+    try:
+        payload = json.loads(results_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+        payload["artifacts"] = artifacts
+
+    changed = False
+    for key, path in artifact_updates.items():
+        if path.exists():
+            resolved = str(path.resolve())
+            if artifacts.get(key) != resolved:
+                artifacts[key] = resolved
+                changed = True
+
+    if not changed:
+        return
+
+    tmp_path = results_path.with_suffix(results_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(results_path)
+
+
+def resolve_reference_map_yaml(dataset_dir: Path) -> Path:
+    config_snapshot_path = dataset_dir / "config_snapshot.yaml"
+    if config_snapshot_path.exists():
+        try:
+            cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
+            sim_cfg = cfg.get("simulation", {}) if isinstance(cfg.get("simulation"), dict) else {}
+            train_world = str(sim_cfg.get("train_world", "")).strip()
+            mapped_ref_name = WORLD_REFERENCE_MAPS.get(train_world)
+            if mapped_ref_name:
+                mapped_ref_path = (WORKSPACE_DIR / "src" / "ai_slam_eval" / "maps" / mapped_ref_name).resolve()
+                if mapped_ref_path.exists():
+                    return mapped_ref_path
+            candidate = (
+                cfg.get("evaluation", {}).get("reference_map_yaml")
+                if isinstance(cfg.get("evaluation"), dict)
+                else None
+            )
+            if isinstance(candidate, str) and candidate.strip():
+                candidate_path = Path(candidate.strip())
+                if candidate_path.is_absolute() and candidate_path.exists():
+                    return candidate_path.resolve()
+                eval_maps_path = (WORKSPACE_DIR / "src" / "ai_slam_eval" / "maps" / candidate_path.name).resolve()
+                if eval_maps_path.exists():
+                    return eval_maps_path
+                cfg_relative = (config_snapshot_path.parent / candidate_path).resolve()
+                if cfg_relative.exists():
+                    return cfg_relative
+        except Exception:
+            pass
+
+    results_path = dataset_dir / "results.json"
+    if results_path.exists():
+        try:
+            payload = json.loads(results_path.read_text(encoding="utf-8"))
+            artifacts = payload.get("artifacts", {})
+            candidate = artifacts.get("reference_map_yaml")
+            if isinstance(candidate, str) and candidate:
+                candidate_path = Path(candidate).expanduser()
+                if candidate_path.exists():
+                    return candidate_path.resolve()
+        except Exception:
+            pass
+
+    return REF_MAP_YAML
 
 
 def reconstruct_gt_poses(odom: np.ndarray, corrections: np.ndarray) -> np.ndarray:
@@ -440,10 +569,10 @@ def render_scan_gallery(dataset_dir: Path, scans: np.ndarray) -> Path:
     return output_path
 
 
-def generate_report(dataset_dir: Path) -> dict[str, Path]:
+def generate_baseline_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[str, Any]]:
     dataset_path = dataset_dir / "dataset.npz"
     if not dataset_path.exists():
-        raise FileNotFoundError(f"Nie znaleziono pliku datasetu: {dataset_path}")
+        return {}, {}
 
     print(f"[DATASET] Wczytywanie: {dataset_path}")
     data = np.load(dataset_path, allow_pickle=True)
@@ -454,23 +583,19 @@ def generate_report(dataset_dir: Path) -> dict[str, Path]:
     meta = data["meta"].item() if "meta" in data else {}
     meta = meta if isinstance(meta, dict) else {}
 
-    ref_grid, ref_resolution, ref_origin = load_reference_map(REF_MAP_YAML)
+    ref_map_yaml = resolve_reference_map_yaml(dataset_dir)
+    ref_grid, ref_resolution, ref_origin = load_reference_map(ref_map_yaml)
     summary = compute_summary(scans, odom, gt, corrections, meta)
     summary.update(
         {
             "dataset_dir": str(dataset_dir.resolve()),
             "dataset_path": str(dataset_path.resolve()),
-            "reference_map_yaml": str(REF_MAP_YAML.resolve()),
+            "reference_map_yaml": str(ref_map_yaml.resolve()),
         }
     )
 
     overview_path = render_overview(dataset_dir, scans, odom, gt, corrections, summary, ref_grid, ref_resolution, ref_origin)
     scans_path = render_scan_gallery(dataset_dir, scans)
-    summary_path = dataset_dir / SUMMARY_NAME
-    summary = normalize_json_value(summary)
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    print(f"[DATASET] Zapisano podsumowanie: {summary_path}")
     print(f"[DATASET] Zapisano widok ogólny: {overview_path}")
     print(f"[DATASET] Zapisano galerię skanów: {scans_path}")
     print(
@@ -481,11 +606,396 @@ def generate_report(dataset_dir: Path) -> dict[str, Path]:
         f"rmse_xy={summary['correction_xy_rmse_m']:.4f} m"
     )
     return {
-        "summary": summary_path,
         "overview": overview_path,
         "scans": scans_path,
         "legacy": dataset_dir / LEGACY_NAME,
+    }, normalize_json_value(summary)
+
+
+def render_histogram_coverage(
+    output_path: Path,
+    values: np.ndarray,
+    *,
+    bins: np.ndarray,
+    title: str,
+    xlabel: str,
+    color: str,
+    annotations: list[str],
+    xlim: tuple[float, float] | None = None,
+    vertical_lines: list[tuple[float, str, str]] | None = None,
+) -> Path:
+    fig, ax = plt.subplots(figsize=(11.0, 5.6))
+    configure_figure(fig)
+    configure_axes(ax)
+
+    ax.hist(values, bins=bins, color=color, alpha=0.86, edgecolor="#0f172a")
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+
+    for line_x, label, line_color in vertical_lines or []:
+        ax.axvline(line_x, color=line_color, linestyle="--", linewidth=1.5, label=label)
+
+    if vertical_lines:
+        legend = ax.legend(loc="upper right")
+        legend.get_frame().set_facecolor("#111827")
+        legend.get_frame().set_edgecolor("#334155")
+        for text in legend.get_texts():
+            text.set_color("#e5eefc")
+
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Liczba próbek")
+    ax.text(
+        0.02,
+        0.98,
+        "\n".join(annotations),
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        color="#e5eefc",
+        fontsize=9,
+        bbox={"facecolor": "#0f172a", "edgecolor": "#334155", "boxstyle": "round,pad=0.4", "alpha": 0.86},
+    )
+    save_figure(fig, output_path)
+    return output_path
+
+
+def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    dataset_path = dataset_dir / "dataset_robak.npz"
+    if not dataset_path.exists():
+        return {}, {}
+
+    print(f"[ROBAK] Wczytywanie: {dataset_path}")
+    with np.load(dataset_path, allow_pickle=True) as data:
+        labels = np.asarray(data["Y"], dtype=np.float32)
+        meta = data["meta"].item() if "meta" in data else {}
+
+    if labels.size == 0:
+        return {}, {}
+
+    translation_cm = np.linalg.norm(labels[:, :2], axis=1).astype(np.float32) * 100.0
+    rotation_deg = np.rad2deg(wrap_angle(labels[:, 2])).astype(np.float32)
+
+    distance_summary = stats_1d(translation_cm)
+    rotation_abs_deg = np.abs(rotation_deg).astype(np.float32)
+    rotation_summary = stats_1d(rotation_deg)
+    rotation_abs_summary = stats_1d(rotation_abs_deg)
+
+    distance_target_50 = float(np.mean(translation_cm <= 50.0) * 100.0)
+    distance_target_100 = float(np.mean(translation_cm <= 100.0) * 100.0)
+    rotation_target_90 = float(np.mean(rotation_abs_deg <= 90.0) * 100.0)
+    rotation_target_180 = float(np.mean(rotation_abs_deg <= 180.0) * 100.0)
+    overflow_100cm = int(np.sum(translation_cm > 100.0))
+
+    distance_path = render_histogram_coverage(
+        dataset_dir / ROBAK_DISTANCE_NAME,
+        np.clip(translation_cm, 0.0, 100.0),
+        bins=np.linspace(0.0, 100.0, 41),
+        title="Robak: pokrycie przesunięć między skanami",
+        xlabel="Przesunięcie [cm]",
+        color="#f97316",
+        xlim=(0.0, 100.0),
+        vertical_lines=[
+            (50.0, "50 cm", "#a3e635"),
+            (100.0, "100 cm", "#38bdf8"),
+        ],
+        annotations=[
+            f"Próbki: {distance_summary['count']}",
+            f"Średnia / mediana: {distance_summary['mean']:.1f} / {distance_summary['median']:.1f} cm",
+            f"95 percentyl / max: {distance_summary['p95']:.1f} / {distance_summary['max']:.1f} cm",
+            f"Pokrycie 0-50 cm: {distance_target_50:.1f}%",
+            f"Pokrycie 0-100 cm: {distance_target_100:.1f}%",
+            f"> 100 cm: {overflow_100cm}",
+        ],
+    )
+    rotation_path = render_histogram_coverage(
+        dataset_dir / ROBAK_ROTATION_NAME,
+        rotation_deg,
+        bins=np.linspace(-180.0, 180.0, 49),
+        title="Robak: pokrycie rotacji między skanami",
+        xlabel="Rotacja [deg]",
+        color="#0ea5e9",
+        xlim=(-180.0, 180.0),
+        vertical_lines=[
+            (-90.0, "-90 deg", "#a3e635"),
+            (90.0, "+90 deg", "#a3e635"),
+        ],
+        annotations=[
+            f"Próbki: {rotation_summary['count']}",
+            f"Min / max: {rotation_summary['min']:.1f} / {rotation_summary['max']:.1f} deg",
+            f"Średnia |rot| / p95 |rot|: {rotation_abs_summary['mean']:.1f} / {rotation_abs_summary['p95']:.1f} deg",
+            f"Pokrycie |rot| <= 90 deg: {rotation_target_90:.1f}%",
+            f"Pokrycie |rot| <= 180 deg: {rotation_target_180:.1f}%",
+            f"Offsety: {normalize_json_value(meta.get('offsets', []))}",
+        ],
+    )
+
+    summary = {
+        "dataset_path": str(dataset_path.resolve()),
+        "sample_count": int(labels.shape[0]),
+        "translation_cm": distance_summary,
+        "rotation_deg_signed": rotation_summary,
+        "rotation_deg_abs": rotation_abs_summary,
+        "coverage_pct_0_50cm": distance_target_50,
+        "coverage_pct_0_100cm": distance_target_100,
+        "coverage_pct_abs_rotation_0_90deg": rotation_target_90,
+        "coverage_pct_abs_rotation_0_180deg": rotation_target_180,
+        "samples_above_100cm": overflow_100cm,
+        "meta": normalize_json_value(meta if isinstance(meta, dict) else {}),
     }
+    return {
+        "summary": dataset_dir / ROBAK_SUMMARY_NAME,
+        "distance": distance_path,
+        "rotation": rotation_path,
+    }, summary
+
+
+def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    dataset_path = dataset_dir / "dataset_rywak.npz"
+    if not dataset_path.exists():
+        return {}, {}
+
+    print(f"[RYWAK] Wczytywanie: {dataset_path}")
+    with np.load(dataset_path, allow_pickle=True) as data:
+        labels = np.asarray(data["Y"], dtype=np.float32)
+        meta = data["meta"].item() if "meta" in data else {}
+
+    if labels.size == 0:
+        return {}, {}
+
+    linear_velocity = labels[:, 0].astype(np.float32)
+    angular_velocity = labels[:, 1].astype(np.float32)
+    linear_abs = np.abs(linear_velocity).astype(np.float32)
+    angular_abs = np.abs(angular_velocity).astype(np.float32)
+
+    linear_summary = stats_1d(linear_abs)
+    angular_summary = stats_1d(angular_abs)
+    signed_linear_summary = stats_1d(linear_velocity)
+    signed_angular_summary = stats_1d(angular_velocity)
+
+    linear_target_1 = float(np.mean(linear_abs <= 1.0) * 100.0)
+    linear_target_2 = float(np.mean(linear_abs <= 2.0) * 100.0)
+    angular_target_3 = float(np.mean(angular_abs <= 3.0) * 100.0)
+    linear_over_2 = int(np.sum(linear_abs > 2.0))
+    angular_over_3 = int(np.sum(angular_abs > 3.0))
+
+    linear_path = render_histogram_coverage(
+        dataset_dir / RYWAK_LINEAR_NAME,
+        np.clip(linear_abs, 0.0, 2.0),
+        bins=np.linspace(0.0, 2.0, 41),
+        title="Rywak: pokrycie prędkości liniowej",
+        xlabel="|v| [m/s]",
+        color="#22c55e",
+        xlim=(0.0, 2.0),
+        vertical_lines=[
+            (1.0, "1 m/s", "#f97316"),
+            (2.0, "2 m/s", "#38bdf8"),
+        ],
+        annotations=[
+            f"Próbki: {linear_summary['count']}",
+            f"Średnia / mediana: {linear_summary['mean']:.3f} / {linear_summary['median']:.3f} m/s",
+            f"95 percentyl / max: {linear_summary['p95']:.3f} / {linear_summary['max']:.3f} m/s",
+            f"Pokrycie |v| <= 1 m/s: {linear_target_1:.1f}%",
+            f"Pokrycie |v| <= 2 m/s: {linear_target_2:.1f}%",
+            f"> 2 m/s: {linear_over_2}",
+        ],
+    )
+    angular_path = render_histogram_coverage(
+        dataset_dir / RYWAK_ANGULAR_NAME,
+        np.clip(angular_abs, 0.0, 3.0),
+        bins=np.linspace(0.0, 3.0, 37),
+        title="Rywak: pokrycie prędkości kątowej",
+        xlabel="|omega| [rad/s]",
+        color="#a855f7",
+        xlim=(0.0, 3.0),
+        vertical_lines=[(3.0, "3 rad/s", "#38bdf8")],
+        annotations=[
+            f"Próbki: {angular_summary['count']}",
+            f"Średnia / mediana: {angular_summary['mean']:.3f} / {angular_summary['median']:.3f} rad/s",
+            f"95 percentyl / max: {angular_summary['p95']:.3f} / {angular_summary['max']:.3f} rad/s",
+            f"Pokrycie |omega| <= 3 rad/s: {angular_target_3:.1f}%",
+            f"> 3 rad/s: {angular_over_3}",
+            f"Zakres signed omega: {signed_angular_summary['min']:.3f} .. {signed_angular_summary['max']:.3f}",
+        ],
+    )
+
+    summary = {
+        "dataset_path": str(dataset_path.resolve()),
+        "sample_count": int(labels.shape[0]),
+        "linear_velocity_abs_mps": linear_summary,
+        "linear_velocity_signed_mps": signed_linear_summary,
+        "angular_velocity_abs_radps": angular_summary,
+        "angular_velocity_signed_radps": signed_angular_summary,
+        "coverage_pct_abs_linear_0_1mps": linear_target_1,
+        "coverage_pct_abs_linear_0_2mps": linear_target_2,
+        "coverage_pct_abs_angular_0_3radps": angular_target_3,
+        "samples_above_2mps": linear_over_2,
+        "samples_above_3radps": angular_over_3,
+        "meta": normalize_json_value(meta if isinstance(meta, dict) else {}),
+    }
+    return {
+        "summary": dataset_dir / RYWAK_SUMMARY_NAME,
+        "linear_velocity": linear_path,
+        "angular_velocity": angular_path,
+    }, summary
+
+
+def render_training_curve(
+    history_path: Path,
+    output_path: Path,
+    *,
+    title: str,
+) -> tuple[Path, dict[str, Any]] | None:
+    history = load_history(history_path)
+    epochs = history.get("epochs", [])
+    if not isinstance(epochs, list) or not epochs:
+        return None
+
+    epoch_idx = np.asarray([int(item.get("epoch", idx + 1)) for idx, item in enumerate(epochs)], dtype=np.int32)
+    train_loss = np.asarray([float(item.get("train_loss", 0.0)) for item in epochs], dtype=np.float32)
+    val_loss = np.asarray([float(item.get("val_loss", 0.0)) for item in epochs], dtype=np.float32)
+    best_idx = int(np.argmin(val_loss))
+    best_epoch = int(epoch_idx[best_idx])
+    best_val = float(val_loss[best_idx])
+
+    fig, ax = plt.subplots(figsize=(10.8, 5.4))
+    configure_figure(fig)
+    configure_axes(ax)
+    ax.plot(epoch_idx, train_loss, color="#38bdf8", linewidth=2.0, label="Błąd uczenia")
+    ax.plot(epoch_idx, val_loss, color="#f97316", linewidth=2.0, label="Błąd walidacji")
+    ax.axvline(best_epoch, color="#a3e635", linestyle="--", linewidth=1.4, label=f"Best epoch = {best_epoch}")
+    ax.set_title(title)
+    ax.set_xlabel("Epoka")
+    ax.set_ylabel("Loss")
+    legend = ax.legend(loc="upper right")
+    legend.get_frame().set_facecolor("#111827")
+    legend.get_frame().set_edgecolor("#334155")
+    for text in legend.get_texts():
+        text.set_color("#e5eefc")
+    ax.text(
+        0.02,
+        0.98,
+        "\n".join(
+            [
+                f"Epoki: {len(epoch_idx)}",
+                f"Best val_loss: {best_val:.6f}",
+                f"Final train_loss: {float(train_loss[-1]):.6f}",
+                f"Final val_loss: {float(val_loss[-1]):.6f}",
+            ]
+        ),
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        color="#e5eefc",
+        fontsize=9,
+        bbox={"facecolor": "#0f172a", "edgecolor": "#334155", "boxstyle": "round,pad=0.4", "alpha": 0.86},
+    )
+    save_figure(fig, output_path)
+    return output_path, {
+        "history_path": str(history_path.resolve()),
+        "epoch_count": int(len(epoch_idx)),
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val,
+        "final_train_loss": float(train_loss[-1]),
+        "final_val_loss": float(val_loss[-1]),
+    }
+
+
+def generate_training_curves_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    specs = [
+        ("ai", dataset_dir / "train_history.json", dataset_dir / "training_curve_ai.png", "AI: błąd uczenia i walidacji"),
+        ("robak", dataset_dir / "train_history_robak.json", dataset_dir / "training_curve_robak.png", "Robak: błąd uczenia i walidacji"),
+        ("rywak", dataset_dir / "train_history_rywak.json", dataset_dir / "training_curve_rywak.png", "Rywak: błąd uczenia i walidacji"),
+    ]
+
+    artifact_paths: dict[str, Path] = {}
+    summary: dict[str, Any] = {}
+
+    for key, history_path, output_path, title in specs:
+        if not history_path.exists():
+            continue
+        rendered = render_training_curve(history_path, output_path, title=title)
+        if rendered is None:
+            continue
+        plot_path, model_summary = rendered
+        artifact_paths[key] = plot_path
+        summary[key] = model_summary
+        print(f"[TRAIN] Zapisano krzywą: {plot_path}")
+
+    if not summary:
+        return {}, {}
+
+    return artifact_paths, summary
+
+
+def generate_report(dataset_dir: Path) -> dict[str, Path]:
+    artifact_updates: dict[str, Path] = {}
+    combined_summary: dict[str, Any] = {}
+
+    baseline_artifacts, baseline_summary = generate_baseline_report(dataset_dir)
+    if baseline_artifacts:
+        artifact_updates.update(
+            {
+                "dataset_inspection_overview_png": baseline_artifacts["overview"],
+                "dataset_inspection_scans_png": baseline_artifacts["scans"],
+                "dataset_analysis_png": baseline_artifacts["legacy"],
+            }
+        )
+    if baseline_summary:
+        combined_summary.update(baseline_summary)
+
+    robak_artifacts, robak_summary = generate_robak_coverage_report(dataset_dir)
+    if robak_summary:
+        combined_summary["robak_coverage"] = robak_summary
+        write_json(robak_artifacts["summary"], robak_summary)
+        artifact_updates.update(
+            {
+                "dataset_robak_coverage_summary_json": robak_artifacts["summary"],
+                "dataset_robak_coverage_distance_png": robak_artifacts["distance"],
+                "dataset_robak_coverage_rotation_png": robak_artifacts["rotation"],
+            }
+        )
+        print(f"[ROBAK] Zapisano podsumowanie: {robak_artifacts['summary']}")
+
+    rywak_artifacts, rywak_summary = generate_rywak_coverage_report(dataset_dir)
+    if rywak_summary:
+        combined_summary["rywak_coverage"] = rywak_summary
+        write_json(rywak_artifacts["summary"], rywak_summary)
+        artifact_updates.update(
+            {
+                "dataset_rywak_coverage_summary_json": rywak_artifacts["summary"],
+                "dataset_rywak_coverage_linear_velocity_png": rywak_artifacts["linear_velocity"],
+                "dataset_rywak_coverage_angular_velocity_png": rywak_artifacts["angular_velocity"],
+            }
+        )
+        print(f"[RYWAK] Zapisano podsumowanie: {rywak_artifacts['summary']}")
+
+    training_artifacts, training_summary = generate_training_curves_report(dataset_dir)
+    if training_summary:
+        combined_summary["training_curves"] = training_summary
+        training_summary_path = dataset_dir / TRAINING_SUMMARY_NAME
+        write_json(training_summary_path, training_summary)
+        artifact_updates["training_inspection_summary_json"] = training_summary_path
+        for key, path in training_artifacts.items():
+            artifact_updates[f"training_curve_{key}_png"] = path
+        print(f"[TRAIN] Zapisano podsumowanie: {training_summary_path}")
+
+    if not combined_summary:
+        raise FileNotFoundError(
+            f"Nie znaleziono obsługiwanych artefaktów datasetu ani historii treningu w: {dataset_dir}"
+        )
+
+    summary_path = dataset_dir / SUMMARY_NAME
+    experiment_summary_path = dataset_dir / EXPERIMENT_SUMMARY_NAME
+    write_json(summary_path, combined_summary)
+    write_json(experiment_summary_path, combined_summary)
+    artifact_updates["dataset_inspection_summary_json"] = summary_path
+    artifact_updates["experiment_inspection_summary_json"] = experiment_summary_path
+    update_results_artifacts(dataset_dir, artifact_updates)
+
+    print(f"[REPORT] Zapisano podsumowanie zbiorcze: {summary_path}")
+    print(f"[REPORT] Zapisano podsumowanie eksperymentu: {experiment_summary_path}")
+    return {key: path for key, path in artifact_updates.items() if path.exists()}
 
 
 def parse_args() -> argparse.Namespace:

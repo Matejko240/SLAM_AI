@@ -1,5 +1,10 @@
 import math
+import os
+import shutil
+import subprocess
+import threading
 
+from builtin_interfaces.msg import Time as TimeMsg
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
@@ -31,6 +36,9 @@ class GTPosePublisher(Node):
         super().__init__("gt_pose_publisher")
         self.declare_parameter("in_topic", "/odom_raw")
         self.declare_parameter("tf_world_topic", "/tf_world")
+        self.declare_parameter("use_gz_pose_info", True)
+        self.declare_parameter("gz_pose_info_topic", "")
+        self.declare_parameter("gz_pose_entity_hint", "")
         self.declare_parameter("out_topic", "/ground_truth_pose")
         self.declare_parameter("frame_id", "odom")
         self.declare_parameter("use_tf_world", True)
@@ -48,6 +56,9 @@ class GTPosePublisher(Node):
 
         self.in_topic = str(self.get_parameter("in_topic").value)
         self.tf_world_topic = str(self.get_parameter("tf_world_topic").value)
+        self.use_gz_pose_info = bool(self.get_parameter("use_gz_pose_info").value)
+        self.gz_pose_info_topic = str(self.get_parameter("gz_pose_info_topic").value).strip()
+        self.gz_pose_entity_hint = str(self.get_parameter("gz_pose_entity_hint").value).lower().strip()
         self.out_topic = str(self.get_parameter("out_topic").value)
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.use_tf_world = bool(self.get_parameter("use_tf_world").value)
@@ -68,9 +79,12 @@ class GTPosePublisher(Node):
         self.sub_tf = None
         if self.use_tf_world:
             self.sub_tf = self.create_subscription(TFMessage, self.tf_world_topic, self.on_tf_world, 50)
+        self._gz_pose_proc = None
+        self._gz_pose_thread = None
 
         self.last_tf_world_stamp_sec = None
         self.n_tf_world = 0
+        self.n_gz_pose_info = 0
         self.n_tf_world_propagated = 0
         self.n_odom_fallback = 0
         self.n_odom_fallback_suppressed = 0
@@ -85,11 +99,14 @@ class GTPosePublisher(Node):
 
         self.get_logger().info(
             f"[GT] source: tf_world={self.use_tf_world} ({self.tf_world_topic}), "
+            f"gz_pose_info={self.use_gz_pose_info} ({self.gz_pose_info_topic or 'off'}), "
             f"fallback odom={self.in_topic}, out={self.out_topic}, "
             f"publish_odom_fallback={self.publish_odom_fallback}, "
             f"restamp_output_to_now={self.restamp_output_to_now}, "
             f"propagate_tf_world_with_odom={self.propagate_tf_world_with_odom}"
         )
+        if self.use_tf_world and self.use_gz_pose_info and self.gz_pose_info_topic:
+            self._start_gz_pose_reader()
 
     def _resolve_output_stamp(self, input_stamp, force_input_stamp: bool = False):
         """Wybiera stempel faktycznie użyty do publikacji GT."""
@@ -308,6 +325,198 @@ class GTPosePublisher(Node):
             )
         return True
 
+    def _gz_pose_match_score(self, name: str) -> int:
+        lname = str(name).strip().lower()
+        if not lname:
+            return 0
+
+        if self.gz_pose_entity_hint:
+            hints = [self.gz_pose_entity_hint]
+            scores = [120]
+        else:
+            hints = [self.model_name_hint, self.base_link_hint]
+            scores = [100, 80]
+        for hint, score in zip(hints, scores):
+            if not hint:
+                continue
+            if lname == hint or lname.endswith(f"::{hint}"):
+                return score
+            if f"::{hint}::" in lname or hint in lname.split("::"):
+                return max(score - 10, 1)
+            if hint in lname:
+                return max(score - 20, 1)
+        return 0
+
+    def _start_gz_pose_reader(self):
+        gz_bin = shutil.which("gz")
+        if not gz_bin:
+            fallback_bin = "/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz"
+            gz_bin = fallback_bin if os.path.exists(fallback_bin) else ""
+        if not gz_bin:
+            self.get_logger().warn("[GT] gz binary not found; cannot use Gazebo pose info for ground truth.")
+            return
+
+        try:
+            self._gz_pose_proc = subprocess.Popen(
+                [gz_bin, "topic", "-e", "-t", self.gz_pose_info_topic],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as exc:
+            self._gz_pose_proc = None
+            self.get_logger().warn(f"[GT] Failed to start gz pose reader: {exc}")
+            return
+
+        self._gz_pose_thread = threading.Thread(target=self._gz_pose_reader_loop, daemon=True)
+        self._gz_pose_thread.start()
+
+    def _stop_gz_pose_reader(self):
+        proc = self._gz_pose_proc
+        self._gz_pose_proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _handle_gz_pose_candidate(self, stamp_sec: int, stamp_nsec: int, pose: dict):
+        if not pose:
+            return
+        if self._gz_pose_match_score(pose.get("name", "")) <= 0:
+            return
+
+        position = pose.get("position", {})
+        orientation = pose.get("orientation", {})
+        stamp = TimeMsg(sec=int(stamp_sec or 0), nanosec=int(stamp_nsec or 0))
+        pos = (
+            float(position.get("x", 0.0)),
+            float(position.get("y", 0.0)),
+            float(position.get("z", 0.0)),
+        )
+        quat = (
+            float(orientation.get("x", 0.0)),
+            float(orientation.get("y", 0.0)),
+            float(orientation.get("z", 0.0)),
+            float(orientation.get("w", 1.0)),
+        )
+        self._publish_tf_world_pose(
+            stamp,
+            self.world_frame_hint or self.frame_id,
+            pos,
+            quat,
+            ("(gz_pose_info)", str(pose.get("name", ""))),
+        )
+        self.n_gz_pose_info += 1
+        if self.debug_every_n > 0 and self.n_gz_pose_info % self.debug_every_n == 0:
+            self.get_logger().info(
+                f"[GT] gz pose publishes={self.n_gz_pose_info}, "
+                f"entity={pose.get('name', '')}"
+            )
+
+    def _gz_pose_reader_loop(self):
+        proc = self._gz_pose_proc
+        if proc is None or proc.stdout is None:
+            return
+
+        stamp_sec = 0
+        stamp_nsec = 0
+        in_header = False
+        in_stamp = False
+        in_pose = False
+        subsection = None
+        pose = None
+
+        try:
+            for raw_line in proc.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                if not in_pose:
+                    if line == "header {":
+                        in_header = True
+                        in_stamp = False
+                        continue
+                    if in_header:
+                        if line == "stamp {":
+                            in_stamp = True
+                            continue
+                        if line == "}":
+                            if in_stamp:
+                                in_stamp = False
+                            else:
+                                in_header = False
+                            continue
+                        if in_stamp:
+                            if line.startswith("sec:"):
+                                try:
+                                    stamp_sec = int(line.split(":", 1)[1].strip())
+                                except Exception:
+                                    pass
+                            elif line.startswith("nsec:"):
+                                try:
+                                    stamp_nsec = int(line.split(":", 1)[1].strip())
+                                except Exception:
+                                    pass
+                            continue
+                    if line == "pose {":
+                        in_pose = True
+                        subsection = None
+                        pose = {
+                            "name": "",
+                            "position": {},
+                            "orientation": {},
+                        }
+                        continue
+                    continue
+
+                if line == "position {":
+                    subsection = "position"
+                    continue
+                if line == "orientation {":
+                    subsection = "orientation"
+                    continue
+                if line == "}":
+                    if subsection is not None:
+                        subsection = None
+                    else:
+                        self._handle_gz_pose_candidate(stamp_sec, stamp_nsec, pose or {})
+                        in_pose = False
+                        pose = None
+                    continue
+
+                if subsection == "position":
+                    if ":" in line:
+                        key, value = line.split(":", 1)
+                        try:
+                            pose["position"][key.strip()] = float(value.strip())
+                        except Exception:
+                            pass
+                    continue
+
+                if subsection == "orientation":
+                    if ":" in line:
+                        key, value = line.split(":", 1)
+                        try:
+                            pose["orientation"][key.strip()] = float(value.strip())
+                        except Exception:
+                            pass
+                    continue
+
+                if line.startswith("name:"):
+                    pose["name"] = line.split(":", 1)[1].strip().strip('"')
+        except Exception as exc:
+            if rclpy.ok():
+                self.get_logger().warn(f"[GT] Gazebo pose reader stopped: {exc}")
+
     def on_tf_world(self, msg: TFMessage):
         best = None
         best_score = -1
@@ -420,6 +629,10 @@ class GTPosePublisher(Node):
             force_input_stamp=True,
         )
         self.n_odom_fallback += 1
+
+    def destroy_node(self):
+        self._stop_gz_pose_reader()
+        return super().destroy_node()
 
 
 def main():

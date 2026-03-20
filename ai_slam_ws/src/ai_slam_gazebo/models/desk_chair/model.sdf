@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="desk_chair">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>0.001581 0.000308 0.612847 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.33</radius>
+            <length>1.23</length>
+          </cylinder>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0.001581 0.000308 0.612847 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.33</radius>
+            <length>1.23</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.68 0.68 0.68 1</ambient>
+          <diffuse>0.68 0.68 0.68 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

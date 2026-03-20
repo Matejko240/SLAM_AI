@@ -340,6 +340,7 @@ class ExperimentLogger:
         os.makedirs(self.out_dir, exist_ok=True)
         
         self.metadata_path = os.path.join(self.out_dir, self.METADATA_FILENAME)
+        self._dirty_sections: set[str] = set()
         
         # Sprawdź czy istnieje poprzedni log w tym katalogu
         if os.path.exists(self.metadata_path):
@@ -351,6 +352,23 @@ class ExperimentLogger:
             self._experiment_start = datetime.fromisoformat(self.log.created_at).timestamp()
         except Exception:
             self._experiment_start = time.time()
+
+    def _mark_section_dirty(self, section: str):
+        """Oznacza sekcję jako zmodyfikowaną przez bieżący proces."""
+        if section:
+            self._dirty_sections.add(str(section))
+
+    def _reset_section(self, section: str):
+        """Resetuje sekcję metadanych przed ponownym uruchomieniem etapu."""
+        if section == "dataset":
+            self.log.dataset = DatasetMetadata()
+        elif section == "training":
+            self.log.training = TrainingMetadata()
+        elif section == "inference":
+            self.log.inference = InferenceMetadata()
+        elif section == "evaluation":
+            self.log.evaluation = EvaluationMetadata()
+        self._mark_section_dirty(section)
     
     def _find_or_create_experiment_id(self) -> str:
         """
@@ -472,9 +490,7 @@ class ExperimentLogger:
     def start_dataset_collection(self, seed: int, duration_sec: float, max_samples: int,
                                   scan_topic: str, odom_topic: str, gt_topic: str):
         """Rozpoczyna logowanie zbierania datasetu."""
-        # Nie nadpisuj jeśli już zakończone
-        if self.log.dataset.timing.is_completed():
-            return
+        self._reset_section("dataset")
         self.log.dataset.timing.start()
         self.log.dataset.set_parameters(
             seed=seed, duration_sec=duration_sec, max_samples=max_samples,
@@ -486,9 +502,7 @@ class ExperimentLogger:
     def end_dataset_collection(self, n_samples: int, scan_dim: int,
                                 actual_duration_sec: float, file_path: str):
         """Kończy logowanie zbierania datasetu."""
-        # Nie nadpisuj jeśli już zakończone
-        if self.log.dataset.timing.is_completed():
-            return
+        self._mark_section_dirty("dataset")
         self.log.dataset.timing.end()
         
         samples_per_second = n_samples / actual_duration_sec if actual_duration_sec > 0 else 0
@@ -510,9 +524,7 @@ class ExperimentLogger:
     def start_training(self, seed: int, max_epochs: int, patience: int,
                        min_delta: float, lr: float, val_ratio: float, batch_size: int):
         """Rozpoczyna logowanie treningu."""
-        # Nie nadpisuj jeśli już zakończone
-        if self.log.training.timing.is_completed():
-            return
+        self._reset_section("training")
         self.log.training.timing.start()
         self.log.training.set_parameters(
             seed=seed, max_epochs=max_epochs, patience=patience,
@@ -524,6 +536,7 @@ class ExperimentLogger:
     def set_training_dataset_info(self, n_total: int, n_train: int, n_val: int,
                                    input_dim: int, output_dim: int = 3):
         """Ustawia informacje o datasecie użytym do treningu."""
+        self._mark_section_dirty("training")
         self.log.training.set_dataset_info(
             n_total=n_total, n_train=n_train, n_val=n_val,
             input_dim=input_dim, output_dim=output_dim
@@ -532,6 +545,7 @@ class ExperimentLogger:
     
     def set_training_model_info(self, architecture: str, model):
         """Ustawia informacje o architekturze modelu."""
+        self._mark_section_dirty("training")
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         self.log.training.set_model_info(
@@ -545,6 +559,7 @@ class ExperimentLogger:
                      final_train_loss: float, early_stopped: bool,
                      model_path: str, history_path: str):
         """Kończy logowanie treningu."""
+        self._mark_section_dirty("training")
         self.log.training.timing.end()
         self.log.training.set_training_results(
             epochs_run=epochs_run, best_epoch=best_epoch,
@@ -561,6 +576,7 @@ class ExperimentLogger:
     def start_inference(self, seed: int, scan_topic: str, odom_topic: str,
                         pose_topic: str, tf_parent: str, tf_child: str, model_path: str):
         """Rozpoczyna logowanie inferencji."""
+        self._reset_section("inference")
         self.log.inference.timing.start()
         self.log.inference.set_parameters(
             seed=seed, scan_topic=scan_topic, odom_topic=odom_topic,
@@ -573,6 +589,7 @@ class ExperimentLogger:
     def end_inference(self, n_predictions: int, total_duration_sec: float,
                       avg_inference_time_ms: float):
         """Kończy logowanie inferencji."""
+        self._mark_section_dirty("inference")
         self.log.inference.timing.end()
         self.log.inference.set_statistics(
             n_predictions=n_predictions,
@@ -585,6 +602,7 @@ class ExperimentLogger:
     def update_inference_statistics(self, n_predictions: int, total_duration_sec: float,
                                     avg_inference_time_ms: float):
         """Aktualizuje statystyki inferencji bez oznaczania etapu jako zakończonego."""
+        self._mark_section_dirty("inference")
         self.log.inference.set_statistics(
             n_predictions=n_predictions,
             total_duration_sec=total_duration_sec,
@@ -597,6 +615,7 @@ class ExperimentLogger:
     def start_evaluation(self, seed: int, mode: str, duration_sec: float,
                          reference_map_yaml: str):
         """Rozpoczyna logowanie ewaluacji."""
+        self._reset_section("evaluation")
         self.log.evaluation.timing.start()
         self.log.evaluation.set_parameters(
             seed=seed, mode=mode, duration_sec=duration_sec,
@@ -612,6 +631,7 @@ class ExperimentLogger:
                        iou_map_robak: Optional[float] = None,
                        iou_map_rywak: Optional[float] = None):
         """Kończy logowanie ewaluacji."""
+        self._mark_section_dirty("evaluation")
         self.log.evaluation.timing.end()
         self.log.evaluation.set_metrics(
             rmse_xy_baseline=rmse_xy_baseline, rmse_theta_baseline=rmse_theta_baseline,
@@ -686,6 +706,19 @@ class ExperimentLogger:
                 result[key] = self._merge_dict(result[key], value)
         return result
 
+    def _merge_dict_prefer_saved(self, current: dict, saved: dict) -> dict:
+        """Scala słowniki tak, by wartości z dysku były nadrzędne nad lokalnym snapshotem."""
+        result = saved.copy()
+        for key, value in current.items():
+            if key not in result:
+                result[key] = value
+            elif isinstance(value, dict) and isinstance(result.get(key), dict):
+                if key == "timing":
+                    result[key] = self._merge_timing(result[key], value)
+                else:
+                    result[key] = self._merge_dict_prefer_saved(value, result[key])
+        return result
+
     def save(self):
         """
         Zapisuje log do pliku JSON w sposób bezpieczny dla wielu procesów (wiele node'ów).
@@ -713,12 +746,17 @@ class ExperimentLogger:
                         with open(self.metadata_path, "r", encoding="utf-8") as f:
                             saved_data = json.load(f)
 
+                        dirty_sections = set(self._dirty_sections)
                         for section in ["dataset", "training", "inference", "evaluation"]:
                             if section in saved_data and saved_data[section]:
-                                current_data[section] = self._merge_dict(
-                                    current_data.get(section, {}) or {},
-                                    saved_data[section],
-                                )
+                                current_section = current_data.get(section, {}) or {}
+                                if section in dirty_sections:
+                                    current_data[section] = current_section
+                                else:
+                                    current_data[section] = self._merge_dict_prefer_saved(
+                                        current_section,
+                                        saved_data[section],
+                                    )
 
                         # Notatki – unikaj duplikatów
                         existing_notes = list(saved_data.get("notes", []) or [])
@@ -756,6 +794,7 @@ class ExperimentLogger:
                         os.fsync(f.fileno())
 
                     os.replace(tmp_path, self.metadata_path)
+                    self._dirty_sections.clear()
                 finally:
                     try:
                         if os.path.exists(tmp_path):

@@ -25,6 +25,11 @@ VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.12" / "site-packages"
 ROS_DISTRO = os.environ.get("ROS_DISTRO", "jazzy")
 ROS_SETUP = Path(f"/opt/ros/{ROS_DISTRO}/setup.bash")
 WS_SETUP = REPO_ROOT / "ai_slam_ws" / "install" / "setup.bash"
+WORLD_REFERENCE_MAPS = {
+    "world_house.sdf": "reference_map.yaml",
+    "world_office.sdf": "reference_map_office.yaml",
+    "world_hospital.sdf": "reference_map_hospital.yaml",
+}
 
 
 def resolve_config_path(raw_value: str) -> Path:
@@ -88,6 +93,10 @@ def slugify(text: str) -> str:
     return normalized[:48]
 
 
+def reference_map_for_world(world_name: str) -> str:
+    return WORLD_REFERENCE_MAPS.get(str(world_name).strip(), "reference_map.yaml")
+
+
 def build_experiment_id(name: str) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = slugify(name)
@@ -101,6 +110,8 @@ def create_temp_config(
     dataset_duration: float | None,
     eval_duration: float | None,
     experiment_name: str,
+    dataset_world: str | None = None,
+    test_world: str | None = None,
     forced_experiment_id: str | None = None,
 ) -> tuple[Path, str]:
     payload = load_yaml(base_config_path)
@@ -110,8 +121,19 @@ def create_temp_config(
         set_nested(payload, ["timing", "dataset_duration"], float(dataset_duration))
         set_nested(payload, ["robak", "dataset_duration"], float(dataset_duration))
         set_nested(payload, ["rywak", "dataset_duration"], float(dataset_duration))
+        current_wait = float(get_cfg_value(payload, "timing", "dataset_wait_timeout", default=120.0))
+        set_nested(payload, ["timing", "dataset_wait_timeout"], max(current_wait, float(dataset_duration) + 180.0))
     if eval_duration is not None:
         set_nested(payload, ["timing", "eval_duration"], float(eval_duration))
+    if dataset_world:
+        set_nested(payload, ["simulation", "train_world"], str(dataset_world))
+    if test_world:
+        set_nested(payload, ["simulation", "test_world"], str(test_world))
+        set_nested(payload, ["evaluation", "reference_map_yaml"], reference_map_for_world(str(test_world)))
+
+    evaluation_cfg = payload.get("evaluation")
+    if isinstance(evaluation_cfg, dict):
+        evaluation_cfg.pop("test_scenarios", None)
 
     set_nested(payload, ["dashboard_quick_launch", "base_config"], str(base_config_path))
     if dataset_duration is not None:
@@ -120,6 +142,10 @@ def create_temp_config(
         set_nested(payload, ["dashboard_quick_launch", "eval_duration"], float(eval_duration))
     if experiment_name.strip():
         set_nested(payload, ["dashboard_quick_launch", "requested_name"], experiment_name.strip())
+    if dataset_world:
+        set_nested(payload, ["dashboard_quick_launch", "dataset_world"], str(dataset_world))
+    if test_world:
+        set_nested(payload, ["dashboard_quick_launch", "test_world"], str(test_world))
     set_nested(payload, ["dashboard_quick_launch", "generated_experiment_id"], experiment_id)
 
     TEMP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -418,6 +444,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", default="", help="Przyjazna nazwa uruchomienia. Zostanie dołączona do experiment_id.")
     parser.add_argument("--dataset-duration", type=float, default=None, help="Wspólny czas datasetu dla AI, Robaka i Rywaka.")
     parser.add_argument("--eval-duration", type=float, default=None, help="Czas testu i ewaluacji.")
+    parser.add_argument("--dataset-world", default="", help="Świat używany do zbierania datasetu.")
+    parser.add_argument("--test-world", default="", help="Świat używany do testu i ewaluacji.")
     parser.add_argument("--experiment-id", default="", help="Istniejący eksperyment do treningu lub testu.")
     return parser.parse_args()
 
@@ -444,6 +472,8 @@ def main() -> int:
         dataset_duration=args.dataset_duration,
         eval_duration=args.eval_duration,
         experiment_name=args.name,
+        dataset_world=args.dataset_world.strip() or None,
+        test_world=args.test_world.strip() or None,
         forced_experiment_id=args.experiment_id.strip() or None,
     )
 

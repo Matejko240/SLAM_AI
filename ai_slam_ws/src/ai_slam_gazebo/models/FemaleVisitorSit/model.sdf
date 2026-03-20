@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="FemaleVisitorSit">
+    <static>true</static>
+    <link name="link">
+      <pose>0 0 0.825 0 0 0</pose>
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>0.28</radius>
+            <length>1.65</length>
+          </cylinder>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.28</radius>
+            <length>1.65</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.35 0.55 0.75 1</ambient>
+          <diffuse>0.35 0.55 0.75 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

@@ -1,6 +1,8 @@
 import math
 import os
 import random
+import time
+import zipfile
 from dataclasses import dataclass
 import numpy as np
 
@@ -25,6 +27,40 @@ def seed_all(seed: int):
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
+
+
+def atomic_write_bytes(path: str, payload: bytes) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        ensure_dir(directory)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "wb") as f:
+        f.write(payload)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
+def wait_for_npz_dataset(
+    path: str,
+    timeout_sec: float,
+    *,
+    poll_interval_sec: float = 0.5,
+) -> tuple[bool, Exception | None]:
+    deadline = time.time() + max(0.0, float(timeout_sec))
+    last_error: Exception | None = None
+
+    while time.time() < deadline:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            try:
+                with np.load(path, allow_pickle=True) as data:
+                    _ = list(data.keys())
+                return True, None
+            except (EOFError, ValueError, OSError, zipfile.BadZipFile) as exc:
+                last_error = exc
+        time.sleep(max(0.05, float(poll_interval_sec)))
+
+    return False, last_error
 
 
 def wrap(a: float) -> float:

@@ -109,8 +109,9 @@ if [ -z "$EXP_ID" ]; then
 fi
 
 # --- 2. Parsowanie Konfiguracji (bezpiecznie przez YAML) ---
-read -r TRAIN_MAP TEST_MAP DATASET_TIME EVAL_TIME < <(
+mapfile -t CONFIG_LINES < <(
 python3 - "$CONFIG_PATH" <<'PY'
+import json
 import sys
 import yaml
 
@@ -120,20 +121,68 @@ with open(cfg_path, "r", encoding="utf-8") as f:
 
 sim = cfg.get("simulation", {}) or {}
 timing = cfg.get("timing", {}) or {}
+evaluation = cfg.get("evaluation", {}) or {}
 
-train_map = sim.get("train_world", "world_train_house.sdf")
-test_map = sim.get("test_world", "world_test_house.sdf")
+train_map = str(sim.get("train_world", "world_house.sdf"))
+default_test_map = str(sim.get("test_world", "world_house.sdf"))
+default_ref_map = str(evaluation.get("reference_map_yaml", "reference_map.yaml"))
 dataset_time = timing.get("dataset_duration", 30.0)
 eval_time = timing.get("eval_duration", 60.0)
 
-print(f"{train_map} {test_map} {dataset_time} {eval_time}")
+scenarios = []
+for idx, item in enumerate(evaluation.get("test_scenarios", []) or [], start=1):
+    if not isinstance(item, dict):
+        continue
+    world = str(item.get("world") or item.get("test_world") or "").strip()
+    if not world:
+        continue
+    label = str(item.get("label") or item.get("name") or f"test_{idx:02d}").strip()
+    ref_map = str(item.get("reference_map_yaml") or default_ref_map).strip()
+    scenarios.append(
+        {
+            "label": label or f"test_{idx:02d}",
+            "world": world,
+            "reference_map_yaml": ref_map or default_ref_map,
+        }
+    )
+
+if not scenarios:
+    scenarios = [
+        {
+            "label": "test_primary",
+            "world": default_test_map,
+            "reference_map_yaml": default_ref_map,
+        }
+    ]
+
+print(f"TRAIN_MAP\t{train_map}")
+print(f"DATASET_TIME\t{dataset_time}")
+print(f"EVAL_TIME\t{eval_time}")
+for scenario in scenarios:
+    print("SCENARIO\t" + json.dumps(scenario, ensure_ascii=False))
 PY
 )
 
-TRAIN_MAP="${TRAIN_MAP:-world_train_house.sdf}"
-TEST_MAP="${TEST_MAP:-world_test_house.sdf}"
-DATASET_TIME="${DATASET_TIME:-30.0}"
-EVAL_TIME="${EVAL_TIME:-60.0}"
+TRAIN_MAP="world_house.sdf"
+DATASET_TIME="30.0"
+EVAL_TIME="60.0"
+TEST_SCENARIOS=()
+for line in "${CONFIG_LINES[@]}"; do
+    key="${line%%$'\t'*}"
+    value="${line#*$'\t'}"
+    case "$key" in
+        TRAIN_MAP) TRAIN_MAP="$value" ;;
+        DATASET_TIME) DATASET_TIME="$value" ;;
+        EVAL_TIME) EVAL_TIME="$value" ;;
+        SCENARIO) TEST_SCENARIOS+=("$value") ;;
+    esac
+done
+
+slugify() {
+    printf '%s' "$1" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//; s/__+/_/g'
+}
 
 echo "=========================================================="
 echo "ID EKSPERYMENTU: $EXP_ID"
@@ -166,22 +215,71 @@ echo ""
 echo "--- Trening zakończony. Weryfikacja wyników... ---"
 echo ""
 
-# Sprawdzamy model w głównym folderze out/
-MODEL_PATH="out/$EXP_ID/model.pt"
+# Sprawdzamy komplet artefaktów treningu dla wszystkich aktywnych torów.
+mapfile -t TRAIN_EXPECTED_FILES < <(
+python3 - "$CONFIG_PATH" <<'PY'
+import sys
+import yaml
 
-if [ ! -f "$MODEL_PATH" ]; then
-    # Fallback
-    if [ -f "ai_slam_ws/out/$EXP_ID/model.pt" ]; then
-        MODEL_PATH="ai_slam_ws/out/$EXP_ID/model.pt"
-    else
-        echo "BŁĄD: Plik modelu nie istnieje: $MODEL_PATH"
-        # Spróbujmy posprzątać przed wyjściem
-        "$CLEANUP_SCRIPT" || true
-        exit 1
-    fi
+cfg_path = sys.argv[1]
+with open(cfg_path, "r", encoding="utf-8") as f:
+    cfg = yaml.safe_load(f) or {}
+
+experiment = cfg.get("experiment", {}) or {}
+tracks = cfg.get("tracks", {}) or {}
+robak = cfg.get("robak", {}) or {}
+rywak = cfg.get("rywak", {}) or {}
+
+mode = str(experiment.get("mode", "ai")).strip().lower()
+if mode == "ai":
+    print("model.pt")
+    print("train_history.json")
+
+if bool(tracks.get("tor5_robak", False)):
+    print(str(robak.get("model_name", "model_robak.pt")))
+    print(str(robak.get("history_name", "train_history_robak.json")))
+
+if bool(tracks.get("tor6_rywak", False)):
+    print(str(rywak.get("model_name", "model_rywak.pt")))
+    print(str(rywak.get("history_name", "train_history_rywak.json")))
+PY
+)
+
+TRAIN_DIR_PRIMARY="out/$EXP_ID"
+TRAIN_DIR_FALLBACK="ai_slam_ws/out/$EXP_ID"
+TRAIN_OUTPUT_DIR=""
+
+if [ -d "$TRAIN_DIR_PRIMARY" ]; then
+    TRAIN_OUTPUT_DIR="$TRAIN_DIR_PRIMARY"
+elif [ -d "$TRAIN_DIR_FALLBACK" ]; then
+    TRAIN_OUTPUT_DIR="$TRAIN_DIR_FALLBACK"
 fi
 
-echo "SUKCES: Model znaleziony ($MODEL_PATH)."
+if [ -z "$TRAIN_OUTPUT_DIR" ]; then
+    echo "BŁĄD: Nie znaleziono katalogu wynikowego treningu: $TRAIN_DIR_PRIMARY"
+    "$CLEANUP_SCRIPT" || true
+    exit 1
+fi
+
+MISSING_TRAIN_ARTIFACTS=()
+for expected_name in "${TRAIN_EXPECTED_FILES[@]}"; do
+    [ -n "$expected_name" ] || continue
+    expected_path="$TRAIN_OUTPUT_DIR/$expected_name"
+    if [ ! -s "$expected_path" ]; then
+        MISSING_TRAIN_ARTIFACTS+=("$expected_name")
+    fi
+done
+
+if [ "${#MISSING_TRAIN_ARTIFACTS[@]}" -gt 0 ]; then
+    echo "BŁĄD: Brakuje artefaktów treningu w $TRAIN_OUTPUT_DIR:"
+    for missing_name in "${MISSING_TRAIN_ARTIFACTS[@]}"; do
+        echo "  - $missing_name"
+    done
+    "$CLEANUP_SCRIPT" || true
+    exit 1
+fi
+
+echo "SUKCES: Artefakty treningu zapisane w $TRAIN_OUTPUT_DIR."
 echo "Przechodzę do fazy testów..."
 
 # Czyszczenie między fazami (ważne, żeby zamknąć poprzednie Gazebo)
@@ -189,31 +287,128 @@ echo "--- Czyszczenie przed Faza 2 ---"
 "$CLEANUP_SCRIPT" || true
 sleep 5 # Dłuższa pauza, żeby Gazebo na pewno zniknęło
 
-echo "Start FAZY 2..."
+SCENARIO_COUNT="${#TEST_SCENARIOS[@]}"
+if [ "$SCENARIO_COUNT" -le 0 ]; then
+    echo "BŁĄD: Brak scenariuszy testowych w konfiguracji."
+    "$CLEANUP_SCRIPT" || true
+    exit 1
+fi
 
+echo "Start FAZY 2..."
 echo "=========================================================="
 echo "FAZA 2: TEST / EWALUACJA"
-echo "Mapa: $TEST_MAP"
 echo "ID: $EXP_ID"
-echo "Czas testu: $EVAL_TIME s"
+echo "Liczba scenariuszy: $SCENARIO_COUNT"
+echo "Czas testu na scenariusz: $EVAL_TIME s"
 echo "=========================================================="
 
-TEST_LAUNCH_RC=0
-set +e
-ros2 launch ai_slam_bringup demo.launch.py \
-    config:=$CONFIG_FILE \
-    phase:=test \
-    world_sdf:=$TEST_MAP \
-    experiment_id:=$EXP_ID \
-    eval_duration_sec:=$EVAL_TIME \
-    "$@"
-TEST_LAUNCH_RC=$?
-set -e
+SCENARIO_RESULT_PATHS=()
+for idx in "${!TEST_SCENARIOS[@]}"; do
+    scenario_json="${TEST_SCENARIOS[$idx]}"
+    IFS=$'\t' read -r TEST_LABEL TEST_MAP TEST_REF_MAP < <(
+    python3 - "$scenario_json" <<'PY'
+import json
+import sys
 
-if [ "$TEST_LAUNCH_RC" -ne 0 ]; then
+scenario = json.loads(sys.argv[1])
+print(f"{scenario.get('label', 'test')}\t{scenario.get('world', '')}\t{scenario.get('reference_map_yaml', '')}")
+PY
+    )
+
+    if [ -z "$TEST_MAP" ]; then
+        echo "BŁĄD: Pusty world w scenariuszu testowym #$((idx + 1))."
+        "$CLEANUP_SCRIPT" || true
+        exit 1
+    fi
+
+    SCENARIO_SLUG="$(slugify "$TEST_LABEL")"
+    if [ -z "$SCENARIO_SLUG" ]; then
+        SCENARIO_SLUG="scenario_$((idx + 1))"
+    fi
+
+    OUTPUT_SUBDIR=""
+    FINALIZE_EXPERIMENT="true"
+    WRITE_EVAL_METADATA="true"
+    if [ "$SCENARIO_COUNT" -gt 1 ]; then
+        OUTPUT_SUBDIR="evaluations/${SCENARIO_SLUG}"
+        FINALIZE_EXPERIMENT="false"
+        WRITE_EVAL_METADATA="false"
+        if [ "$idx" -eq $((SCENARIO_COUNT - 1)) ]; then
+            FINALIZE_EXPERIMENT="true"
+            WRITE_EVAL_METADATA="true"
+        fi
+    fi
+
     echo ""
-    echo "OSTRZEŻENIE: Faza testowa zakończona kodem $TEST_LAUNCH_RC."
-    echo "Sprawdzam, czy results.json został zapisany..."
+    echo "----------------------------------------------------------"
+    echo "SCENARIUSZ $((idx + 1))/$SCENARIO_COUNT"
+    echo "Etykieta: $TEST_LABEL"
+    echo "Świat: $TEST_MAP"
+    echo "Mapa referencyjna: $TEST_REF_MAP"
+    if [ -n "$OUTPUT_SUBDIR" ]; then
+        echo "Artefakty ewaluacji: out/$EXP_ID/$OUTPUT_SUBDIR"
+    fi
+    echo "----------------------------------------------------------"
+
+    TEST_CMD=(
+        ros2 launch ai_slam_bringup demo.launch.py
+        "config:=$CONFIG_FILE"
+        "phase:=test"
+        "world_sdf:=$TEST_MAP"
+        "reference_map_yaml:=$TEST_REF_MAP"
+        "evaluation_label:=$TEST_LABEL"
+        "finalize_experiment:=$FINALIZE_EXPERIMENT"
+        "write_evaluation_metadata:=$WRITE_EVAL_METADATA"
+        "experiment_id:=$EXP_ID"
+        "eval_duration_sec:=$EVAL_TIME"
+    )
+    if [ -n "$OUTPUT_SUBDIR" ]; then
+        TEST_CMD+=("evaluation_output_subdir:=$OUTPUT_SUBDIR")
+    fi
+    TEST_CMD+=("$@")
+
+    TEST_LAUNCH_RC=0
+    set +e
+    "${TEST_CMD[@]}"
+    TEST_LAUNCH_RC=$?
+    set -e
+
+    if [ "$TEST_LAUNCH_RC" -ne 0 ]; then
+        echo ""
+        echo "OSTRZEŻENIE: Scenariusz '$TEST_LABEL' zakończony kodem $TEST_LAUNCH_RC."
+        echo "Sprawdzam, czy results.json został mimo to zapisany..."
+    fi
+
+    if [ -n "$OUTPUT_SUBDIR" ]; then
+        SCENARIO_RESULTS_PATH="out/$EXP_ID/$OUTPUT_SUBDIR/results.json"
+        SCENARIO_RESULTS_FALLBACK="ai_slam_ws/out/$EXP_ID/$OUTPUT_SUBDIR/results.json"
+    else
+        SCENARIO_RESULTS_PATH="out/$EXP_ID/results.json"
+        SCENARIO_RESULTS_FALLBACK="ai_slam_ws/out/$EXP_ID/results.json"
+    fi
+
+    if [ -f "$SCENARIO_RESULTS_PATH" ]; then
+        :
+    elif [ -f "$SCENARIO_RESULTS_FALLBACK" ]; then
+        SCENARIO_RESULTS_PATH="$SCENARIO_RESULTS_FALLBACK"
+    else
+        echo "BŁĄD: Plik wyników nie istnieje: $SCENARIO_RESULTS_PATH"
+        "$CLEANUP_SCRIPT" || true
+        exit 1
+    fi
+
+    SCENARIO_RESULT_PATHS+=("$SCENARIO_RESULTS_PATH")
+
+    if [ "$idx" -lt $((SCENARIO_COUNT - 1)) ]; then
+        echo "--- Czyszczenie przed kolejnym scenariuszem testowym ---"
+        "$CLEANUP_SCRIPT" || true
+        sleep 5
+    fi
+done
+
+if [ "$SCENARIO_COUNT" -gt 1 ]; then
+    echo "--- Agregowanie wyników wielu scenariuszy testowych ---"
+    python3 scripts/aggregate_multi_test_results.py "out/$EXP_ID" "${SCENARIO_RESULT_PATHS[@]}"
 fi
 
 RESULTS_PATH="out/$EXP_ID/results.json"
@@ -230,6 +425,9 @@ fi
 echo ""
 echo "PEŁNY CYKL ZAKOŃCZONY"
 echo "Wyniki: out/$EXP_ID"
+
+echo "--- Generowanie raportów datasetu i treningu ---"
+python3 scripts/inspect_dataset.py "out/$EXP_ID" || true
 
 # === FINALNE CZYSZCZENIE ===
 echo "--- Zamykanie wszystkich procesów (cleanup) ---"

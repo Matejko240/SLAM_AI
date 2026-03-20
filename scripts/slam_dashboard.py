@@ -541,12 +541,218 @@ def safe_resolve_local_path(raw_path: str) -> Path:
     return candidate
 
 
+def delete_experiment_dir(experiment_id: str) -> dict[str, Any]:
+    experiment_id = str(experiment_id or "").strip()
+    if not experiment_id:
+        raise ValueError("Brak identyfikatora eksperymentu.")
+    if not experiment_id.startswith("exp_"):
+        raise ValueError("Nieprawidłowy identyfikator eksperymentu.")
+
+    exp_dir = resolve_experiment_dir(experiment_id)
+    out_alias = OUT_DIR / experiment_id
+    grouped_alias = (OUT_DIR / "experiments" / experiment_id)
+
+    removed_paths: list[str] = []
+    for alias in (out_alias, grouped_alias):
+        try:
+            if alias.exists() or alias.is_symlink():
+                if alias.is_symlink() and alias.resolve() == exp_dir:
+                    alias.unlink()
+                    removed_paths.append(str(alias.resolve()) if alias.exists() else str(alias))
+        except FileNotFoundError:
+            continue
+
+    if exp_dir.exists():
+        shutil.rmtree(exp_dir)
+        removed_paths.append(str(exp_dir))
+
+    for alias in (out_alias, grouped_alias):
+        try:
+            if alias.exists() or alias.is_symlink():
+                if alias.is_symlink():
+                    alias.unlink()
+                    removed_paths.append(str(alias))
+                elif alias.is_dir():
+                    shutil.rmtree(alias)
+                    removed_paths.append(str(alias))
+        except FileNotFoundError:
+            continue
+
+    return {
+        "deleted_id": experiment_id,
+        "deleted_dir": str(exp_dir),
+        "removed_paths": removed_paths,
+    }
+
+
 def load_trajectory_npz(experiment_id: str) -> np.lib.npyio.NpzFile:
     exp_dir = resolve_experiment_dir(experiment_id)
     traj_path = exp_dir / "trajectory_data.npz"
     if not traj_path.exists():
         raise FileNotFoundError(f"Brak pliku trajectory_data.npz dla {experiment_id}")
     return np.load(traj_path, allow_pickle=True)
+
+
+def load_map_layers_npz(experiment_id: str) -> np.lib.npyio.NpzFile:
+    exp_dir = resolve_experiment_dir(experiment_id)
+    results = read_json(exp_dir / "results.json")
+    artifacts = results.get("artifacts", {}) if isinstance(results, dict) else {}
+    map_layers_path = Path(str(artifacts.get("map_layers_npz", exp_dir / "map_layers.npz")))
+    if not map_layers_path.exists():
+        raise FileNotFoundError(
+            f"Brak pliku map_layers.npz dla {experiment_id}. "
+            "Uruchom nową ewaluację po aktualizacji pipeline, aby zapisać przełączalne warstwy map."
+        )
+    return np.load(map_layers_path, allow_pickle=True)
+
+
+def wrap_angle_scalar(value: float) -> float:
+    return float((float(value) + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def inverse_pose_transform_xy_scalar(x: float, y: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
+    dx = float(x) - float(tx)
+    dy = float(y) - float(ty)
+    c = float(np.cos(float(yaw)))
+    s = float(np.sin(float(yaw)))
+    return (
+        c * dx + s * dy,
+        -s * dx + c * dy,
+    )
+
+
+def read_pgm_size(path: Path) -> tuple[int, int]:
+    with path.open("rb") as handle:
+        magic = handle.readline()
+        if not magic.startswith(b"P5") and not magic.startswith(b"P2"):
+            raise ValueError(f"Unsupported PGM header in {path}")
+        while True:
+            line = handle.readline()
+            if not line:
+                raise ValueError(f"Unexpected EOF in {path}")
+            if line.startswith(b"#"):
+                continue
+            width, height = [int(token) for token in line.split()]
+            return width, height
+
+
+def load_reference_overlay(experiment_id: str, max_points: int = 30000) -> dict[str, Any] | None:
+    try:
+        exp_dir = resolve_experiment_dir(experiment_id)
+    except FileNotFoundError:
+        return None
+
+    results = read_json(exp_dir / "results.json")
+    artifacts = results.get("artifacts", {}) if isinstance(results, dict) else {}
+    ref_yaml_path = Path(str(artifacts.get("reference_map_yaml", "")))
+    if not ref_yaml_path.exists():
+        return None
+
+    try:
+        ref_cfg = yaml.safe_load(ref_yaml_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+
+    image_name = str(ref_cfg.get("image", "")).strip()
+    if not image_name:
+        return None
+    image_path = (ref_yaml_path.parent / image_name).resolve()
+    if not image_path.exists():
+        return None
+
+    spawn_x = 0.0
+    spawn_y = 0.0
+    spawn_yaw = 0.0
+    config_snapshot_path = Path(str(artifacts.get("config_snapshot_yaml", exp_dir / "config_snapshot.yaml")))
+    if config_snapshot_path.exists():
+        try:
+            cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
+            spawn_poses = cfg.get("simulation", {}).get("spawn_poses", {}) or {}
+            world_name = str(results.get("world_name", "")).strip()
+            candidate_keys = [world_name, f"{world_name}.sdf"] if world_name else []
+            for key in candidate_keys:
+                pose = spawn_poses.get(key)
+                if isinstance(pose, dict):
+                    spawn_x = float(pose.get("x", 0.0))
+                    spawn_y = float(pose.get("y", 0.0))
+                    spawn_yaw = float(pose.get("yaw", 0.0))
+                    break
+        except Exception:
+            pass
+
+    resolution = float(ref_cfg.get("resolution", 0.05))
+    origin_vals = ref_cfg.get("origin", [-3.0, -3.0, 0.0]) or [-3.0, -3.0, 0.0]
+    while len(origin_vals) < 3:
+        origin_vals.append(0.0)
+    ox_local, oy_local = inverse_pose_transform_xy_scalar(
+        float(origin_vals[0]),
+        float(origin_vals[1]),
+        spawn_x,
+        spawn_y,
+        spawn_yaw,
+    )
+    oyaw_local = wrap_angle_scalar(float(origin_vals[2]) - float(spawn_yaw))
+
+    try:
+        width, height = read_pgm_size(image_path)
+    except Exception:
+        return None
+
+    local_corners = np.array(
+        [
+            [0.0, 0.0],
+            [width * resolution, 0.0],
+            [width * resolution, height * resolution],
+            [0.0, height * resolution],
+        ],
+        dtype=np.float32,
+    )
+    c = float(np.cos(oyaw_local))
+    s = float(np.sin(oyaw_local))
+    polygon = np.zeros_like(local_corners)
+    polygon[:, 0] = ox_local + c * local_corners[:, 0] - s * local_corners[:, 1]
+    polygon[:, 1] = oy_local + s * local_corners[:, 0] + c * local_corners[:, 1]
+
+    occ_points = None
+    try:
+        with image_path.open("rb") as handle:
+            magic = handle.readline()
+            while True:
+                line = handle.readline()
+                if not line.startswith(b"#"):
+                    dims = line
+                    break
+            width_px, height_px = [int(token) for token in dims.split()]
+            maxval = int(handle.readline().strip())
+            raw = handle.read()
+            dtype = np.uint8 if maxval < 256 else ">u2"
+            pgm = np.frombuffer(raw, dtype=dtype).reshape((height_px, width_px))
+        occ = pgm < 128
+        ii, jj = np.nonzero(occ)
+        if ii.size > 0:
+            if ii.size > max_points:
+                step = int(np.ceil(ii.size / float(max_points)))
+                ii = ii[::step]
+                jj = jj[::step]
+            x_local = (jj.astype(np.float32) + 0.5) * resolution
+            y_local = (ii.astype(np.float32) + 0.5) * resolution
+            occ_points = np.column_stack([
+                ox_local + c * x_local - s * y_local,
+                oy_local + s * x_local + c * y_local,
+            ]).astype(np.float32)
+    except Exception:
+        occ_points = None
+
+    return {
+        "polygon": polygon,
+        "bounds": (
+            float(np.min(polygon[:, 0])),
+            float(np.max(polygon[:, 0])),
+            float(np.min(polygon[:, 1])),
+            float(np.max(polygon[:, 1])),
+        ),
+        "points": occ_points,
+    }
 
 
 def wrap_angle_array(values: np.ndarray) -> np.ndarray:
@@ -839,8 +1045,24 @@ def discover_experiments() -> list[dict[str, Any]]:
             "dataset_inspection_scans_png": exp_dir / "dataset_inspection_scans.png",
             "dataset_inspection_summary_json": exp_dir / "dataset_inspection_summary.json",
             "dataset_analysis_png": exp_dir / "dataset_analysis.png",
+            "experiment_inspection_summary_json": exp_dir / "experiment_inspection_summary.json",
+            "dataset_robak_coverage_summary_json": exp_dir / "dataset_robak_coverage_summary.json",
+            "dataset_robak_coverage_distance_png": exp_dir / "dataset_robak_coverage_distance.png",
+            "dataset_robak_coverage_rotation_png": exp_dir / "dataset_robak_coverage_rotation.png",
+            "dataset_rywak_coverage_summary_json": exp_dir / "dataset_rywak_coverage_summary.json",
+            "dataset_rywak_coverage_linear_velocity_png": exp_dir / "dataset_rywak_coverage_linear_velocity.png",
+            "dataset_rywak_coverage_angular_velocity_png": exp_dir / "dataset_rywak_coverage_angular_velocity.png",
+            "training_inspection_summary_json": exp_dir / "training_inspection_summary.json",
+            "training_curve_ai_png": exp_dir / "training_curve_ai.png",
+            "training_curve_robak_png": exp_dir / "training_curve_robak.png",
+            "training_curve_rywak_png": exp_dir / "training_curve_rywak.png",
         }
         metrics = results.get("metrics", {})
+        eval_samples = None
+        if isinstance(metrics, dict):
+            eval_samples = metrics.get("n_evaluation_samples")
+        if eval_samples in (None, "", "brak"):
+            eval_samples = metadata.get("evaluation", {}).get("metrics", {}).get("n_evaluation_samples")
         artifact_map = {
             key: value
             for key, value in artifacts.items()
@@ -856,7 +1078,7 @@ def discover_experiments() -> list[dict[str, Any]]:
                 "created_at": metadata.get("created_at"),
                 "dataset_samples": metadata.get("dataset", {}).get("statistics", {}).get("n_samples"),
                 "train_epochs": metadata.get("training", {}).get("training_results", {}).get("epochs_run"),
-                "eval_samples": metadata.get("evaluation", {}).get("metrics", {}).get("n_evaluation_samples"),
+                "eval_samples": eval_samples,
                 "metrics": metrics,
                 "diagnostics": results.get("diagnostics", {}),
                 "datasets": datasets,
@@ -1095,6 +1317,8 @@ def build_job_command(payload: dict[str, Any]) -> tuple[str, str]:
         run_name = str(payload.get("name", "")).strip()
         dataset_duration = str(payload.get("dataset_duration", "")).strip()
         eval_duration = str(payload.get("eval_duration", "")).strip()
+        dataset_world = str(payload.get("dataset_world", "")).strip()
+        test_world = str(payload.get("test_world", "")).strip()
         experiment_id = str(payload.get("experiment_id", "")).strip()
         if mode not in {"dataset", "dataset_train", "full_cycle", "train_existing", "test_existing", "train_test_existing"}:
             raise ValueError("Nieznany tryb szybkiego uruchomienia.")
@@ -1121,6 +1345,10 @@ def build_job_command(payload: dict[str, Any]) -> tuple[str, str]:
             command += f" --name {shlex.quote(run_name)}"
         if eval_duration:
             command += f" --eval-duration {shlex.quote(eval_duration)}"
+        if dataset_world:
+            command += f" --dataset-world {shlex.quote(dataset_world)}"
+        if test_world:
+            command += f" --test-world {shlex.quote(test_world)}"
         if experiment_id:
             command += f" --experiment-id {shlex.quote(experiment_id)}"
         label_map = {
@@ -1198,7 +1426,23 @@ def plot_trajectory_image(
 
     fig, ax = plt.subplots(figsize=(8, 6))
     apply_plot_style(fig, ax)
+    overlay = load_reference_overlay(experiment_id)
+    if overlay and isinstance(overlay.get("points"), np.ndarray) and overlay["points"].size > 0:
+        pts = overlay["points"]
+        ax.scatter(pts[:, 0], pts[:, 1], s=0.8, c="#bfc7d3", alpha=0.25, marker="s", linewidths=0, label="ref walls")
+    if overlay and isinstance(overlay.get("polygon"), np.ndarray):
+        poly = np.asarray(overlay["polygon"], dtype=np.float32)
+        ax.plot(
+            np.append(poly[:, 0], poly[0, 0]),
+            np.append(poly[:, 1], poly[0, 1]),
+            linestyle="--",
+            linewidth=1.2,
+            color="#94a3b8",
+            alpha=0.9,
+            label="ref map bounds",
+        )
     plotted = 0
+    overall_bounds: list[tuple[float, float, float, float]] = []
     for series_name in series_names:
         spec = POSITION_SERIES.get(series_name)
         if spec is None:
@@ -1211,6 +1455,14 @@ def plot_trajectory_image(
             continue
         arr = arr.reshape((-1, 3))
         ax.plot(arr[:, 0], arr[:, 1], label=label, linewidth=1.6, color=color)
+        overall_bounds.append(
+            (
+                float(np.nanmin(arr[:, 0])),
+                float(np.nanmax(arr[:, 0])),
+                float(np.nanmin(arr[:, 1])),
+                float(np.nanmax(arr[:, 1])),
+            )
+        )
         plotted += 1
 
     if plotted == 0:
@@ -1225,8 +1477,21 @@ def plot_trajectory_image(
     style_plot_legend(ax)
     if x_min is not None or x_max is not None:
         ax.set_xlim(left=x_min, right=x_max)
+    elif overlay:
+        xmin, xmax, _ymin, _ymax = overlay["bounds"]
+        margin = max(1.0, 0.08 * max(xmax - xmin, 1.0))
+        ax.set_xlim(xmin - margin, xmax + margin)
     if y_min is not None or y_max is not None:
         ax.set_ylim(bottom=y_min, top=y_max)
+    elif overlay:
+        _xmin, _xmax, ymin, ymax = overlay["bounds"]
+        margin = max(1.0, 0.08 * max(ymax - ymin, 1.0))
+        ax.set_ylim(ymin - margin, ymax + margin)
+    elif overall_bounds:
+        ymin = min(item[2] for item in overall_bounds)
+        ymax = max(item[3] for item in overall_bounds)
+        margin = max(0.5, 0.08 * max(ymax - ymin, 1.0))
+        ax.set_ylim(ymin - margin, ymax + margin)
     return figure_to_png(fig)
 
 
@@ -1254,6 +1519,8 @@ def plot_error_image(
     apply_plot_style(fig, ax)
     plotted = 0
     used_sources: set[str] = set()
+    series_min: list[float] = []
+    series_max: list[float] = []
 
     for series_name in series_names:
         spec = ERROR_SERIES.get(series_name)
@@ -1287,7 +1554,11 @@ def plot_error_image(
         if not np.any(mask):
             continue
 
-        ax.plot(time_arr[mask], value_arr[mask], label=label, linewidth=1.4, color=color)
+        visible_values = value_arr[mask]
+        ax.plot(time_arr[mask], visible_values, label=label, linewidth=1.4, color=color)
+        if visible_values.size:
+            series_min.append(float(np.nanmin(visible_values)))
+            series_max.append(float(np.nanmax(visible_values)))
         plotted += 1
 
     if plotted == 0:
@@ -1313,7 +1584,89 @@ def plot_error_image(
     style_plot_legend(ax)
     if y_min is not None or y_max is not None:
         ax.set_ylim(bottom=y_min, top=y_max)
+    elif series_min and series_max:
+        data_min = min(series_min)
+        data_max = max(series_max)
+        span = max(data_max - data_min, 1e-6)
+        pad = max(0.03 * span, 0.02 if is_orientation else 0.05)
+        lower = max(0.0, data_min - pad) if np.all(np.asarray(series_min) >= 0.0) else data_min - pad
+        upper = data_max + pad
+        if upper <= lower:
+            upper = lower + (0.1 if is_orientation else 0.5)
+        ax.set_ylim(lower, upper)
     return figure_to_png(fig)
+
+
+MAP_LAYER_LABELS = {
+    "ref": "Mapa referencyjna",
+    "baseline": "Baseline",
+    "ai": "AI",
+    "robak": "Robak",
+    "rywak": "Rywak",
+}
+
+
+def plot_maps_image(experiment_id: str, series_names: list[str]) -> bytes:
+    try:
+        data = load_map_layers_npz(experiment_id)
+    except Exception as exc:
+        return make_placeholder_figure("Mapy", str(exc))
+
+    try:
+        rotate_180 = False
+        if "rotate_180" in data.files:
+            rotate_arr = np.asarray(data["rotate_180"]).reshape((-1,))
+            rotate_180 = bool(int(rotate_arr[0])) if rotate_arr.size else False
+
+        selected = [name for name in series_names if name in MAP_LAYER_LABELS]
+        if not selected:
+            return make_placeholder_figure("Mapy", "Nie wybrano żadnej warstwy mapy.")
+
+        layers: list[tuple[str, np.ndarray]] = []
+        for name in selected:
+            if name not in data.files:
+                continue
+            arr = np.asarray(data[name], dtype=np.float32)
+            if arr.size == 0:
+                continue
+            if rotate_180:
+                arr = np.rot90(arr, 2)
+            layers.append((name, arr))
+
+        if not layers:
+            return make_placeholder_figure(
+                "Mapy",
+                "Wybrane warstwy nie są dostępne w tym eksperymencie. "
+                "Dla starszych eksperymentów trzeba uruchomić nową ewaluację.",
+            )
+
+        n_maps = len(layers)
+        ncols = min(3, n_maps)
+        nrows = int(math.ceil(n_maps / float(ncols)))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.4 * nrows), squeeze=False)
+        fig.patch.set_facecolor("#0f1724")
+        axes_flat = axes.ravel()
+
+        for idx, (name, arr) in enumerate(layers):
+            ax = axes_flat[idx]
+            ax.set_facecolor("#151d2d")
+            ax.imshow(arr, origin="lower", cmap="gray", vmin=0.0, vmax=1.0, interpolation="nearest")
+            ax.set_title(MAP_LAYER_LABELS.get(name, name), color="#f8fafc")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_color("#334155")
+
+        for idx in range(n_maps, len(axes_flat)):
+            axes_flat[idx].axis("off")
+
+        fig.suptitle(f"Mapy: {experiment_id}", color="#f8fafc", fontsize=12)
+        return figure_to_png(fig)
+    finally:
+        try:
+            data.close()
+        except Exception:
+            pass
 
 
 def plot_comparison_image(group: str, param_key: str, metric_key: str) -> bytes:
@@ -1617,6 +1970,8 @@ HTML_PAGE = """<!doctype html>
       min-width: 0;
       width: min(100%, 320px);
       max-width: 320px;
+      position: sticky;
+      top: 20px;
     }
     .panel {
       background: var(--panel);
@@ -1722,18 +2077,39 @@ HTML_PAGE = """<!doctype html>
       gap: 10px;
     }
     .workspace-tabs {
-      display: flex;
-      flex-wrap: wrap;
+      display: grid;
       gap: 10px;
-      margin-bottom: 18px;
+    }
+    .workspace-nav-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
     }
     .workspace-tab {
+      width: 100%;
+      justify-content: flex-start;
+      text-align: left;
       background: rgba(15, 23, 42, 0.92);
       border: 1px solid rgba(148, 163, 184, 0.18);
       color: var(--ink);
       box-shadow: none;
     }
     .workspace-tab.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+      color: #08110d;
+      box-shadow: 0 14px 30px rgba(74, 222, 128, 0.2);
+    }
+    .analysis-subtabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .analysis-subtab {
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      color: var(--ink);
+    }
+    .analysis-subtab.active {
       background: linear-gradient(135deg, var(--accent), var(--accent-dark));
       color: #08110d;
       box-shadow: 0 14px 30px rgba(74, 222, 128, 0.2);
@@ -1822,11 +2198,16 @@ HTML_PAGE = """<!doctype html>
       display: block;
       font-size: 1.25rem;
       margin-top: 4px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .metric small {
       display: block;
       margin-top: 6px;
       color: var(--muted);
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .metric-columns {
       display: grid;
@@ -1951,6 +2332,9 @@ HTML_PAGE = """<!doctype html>
       display: block;
       margin-top: 6px;
       font-size: 1.34rem;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .inspection-kpi.status-good, .inspection-group.status-good {
       border-color: rgba(74, 222, 128, 0.38);
@@ -2177,25 +2561,34 @@ HTML_PAGE = """<!doctype html>
       </div>
     </section>
 
-    <section class="workspace-tabs">
-      <button id="workspace-tab-analysis" class="workspace-tab active" data-workspace-tab="analysis" onclick="setWorkspace('analysis')">Analiza</button>
-      <button id="workspace-tab-experiments" class="workspace-tab" data-workspace-tab="experiments" onclick="setWorkspace('experiments')">Eksperymenty</button>
-      <button id="workspace-tab-settings" class="workspace-tab" data-workspace-tab="settings" onclick="setWorkspace('settings')">Ustawienia</button>
-    </section>
-
     <div class="layout">
       <aside class="stack sidebar">
-        <section class="panel controls" data-workspaces="analysis experiments">
+        <section class="panel controls">
+          <h2>Widoki</h2>
+          <p class="workspace-nav-note">Ta sama nawigacja jest zawsze po lewej stronie, niezależnie od aktywnego widoku.</p>
+          <div class="workspace-tabs">
+            <button id="workspace-tab-analysis" class="workspace-tab active" data-workspace-tab="analysis" onclick="setWorkspace('analysis')">Analiza</button>
+            <button id="workspace-tab-experiments" class="workspace-tab" data-workspace-tab="experiments" onclick="setWorkspace('experiments')">Eksperymenty</button>
+            <button id="workspace-tab-settings" class="workspace-tab" data-workspace-tab="settings" onclick="setWorkspace('settings')">Ustawienia</button>
+          </div>
+        </section>
+
+        <section class="panel controls">
           <h2>Eksperyment</h2>
           <label>Wybierz eksperyment
             <select id="experiment-select" onchange="renderExperiment()"></select>
           </label>
           <p class="section-note" id="state-note">Ładowanie stanu dashboardu...</p>
           <div id="experiment-meta" class="muted"></div>
+          <div class="button-row">
+            <button class="secondary" onclick="loadState()">Odśwież listę</button>
+            <button id="delete-experiment-button" class="ghost" onclick="deleteSelectedExperiment()">Usuń wybrany</button>
+          </div>
+          <p class="section-note" id="delete-experiment-note">Usuwanie czyści katalog eksperymentu z <code>out/experiments</code> oraz alias w <code>out/</code>.</p>
           <div class="dataset-list" id="dataset-list"></div>
         </section>
 
-        <section class="panel controls" data-workspaces="experiments">
+        <section class="panel controls">
           <h2>Szybki Start</h2>
           <p class="section-note" id="quick-launch-config-note">Ładowanie ustawień szybkiego startu...</p>
           <label>Nazwa nowego uruchomienia
@@ -2207,6 +2600,14 @@ HTML_PAGE = """<!doctype html>
             </label>
             <label>Czas testu i ewaluacji [s]
               <input id="quick-eval-duration" placeholder="np. 100.0" oninput="renderQuickLaunchPanel()">
+            </label>
+          </div>
+          <div class="two">
+            <label>Świat datasetu
+              <select id="quick-dataset-world" onchange="renderQuickLaunchPanel()"></select>
+            </label>
+            <label>Świat testu
+              <select id="quick-test-world" onchange="renderQuickLaunchPanel()"></select>
             </label>
           </div>
           <div class="quick-step-grid">
@@ -2240,7 +2641,7 @@ HTML_PAGE = """<!doctype html>
           <p class="section-note quick-helper" id="quick-launch-process-note">Ładowanie aktywnych torów z configu...</p>
         </section>
 
-        <section class="panel controls" data-workspaces="experiments">
+        <section class="panel controls">
           <h2>Zadania</h2>
           <div id="job-list" class="job-list"></div>
           <label>Log zadania
@@ -2248,7 +2649,7 @@ HTML_PAGE = """<!doctype html>
           </label>
         </section>
 
-        <section class="panel controls" data-workspaces="settings">
+        <section class="panel controls">
           <h2>Indeks funkcji</h2>
           <p class="section-note" id="function-summary">Ładowanie indeksu funkcji...</p>
           <div class="artifact-list">
@@ -2259,7 +2660,18 @@ HTML_PAGE = """<!doctype html>
       </aside>
 
       <main class="stack">
-        <section class="panel stack" data-workspaces="analysis">
+        <section class="panel controls" data-workspaces="analysis">
+          <h2>Analiza</h2>
+          <p class="section-note">Wybierz część analizy do pokazania po prawej stronie.</p>
+          <div class="analysis-subtabs">
+            <button id="analysis-tab-experiment" class="analysis-subtab active" onclick="setAnalysisView('experiment')">Pojedynczy eksperyment</button>
+            <button id="analysis-tab-dataset" class="analysis-subtab" onclick="setAnalysisView('dataset')">Dataset</button>
+            <button id="analysis-tab-sweeps" class="analysis-subtab" onclick="setAnalysisView('sweeps')">Sweepy</button>
+            <button id="analysis-tab-other" class="analysis-subtab" onclick="setAnalysisView('other')">Reszta</button>
+          </div>
+        </section>
+
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="experiment">
           <div>
             <h2>Metryki</h2>
             <p class="section-note">Błędy RMSE są po lewej, IoU map po prawej.</p>
@@ -2286,7 +2698,7 @@ HTML_PAGE = """<!doctype html>
           </div>
         </section>
 
-        <section class="panel stack" data-workspaces="analysis">
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="dataset">
           <div>
             <h2>Raport Datasetu</h2>
             <p class="section-note">Raport generowany jest dla <code>dataset.npz</code> z wybranego eksperymentu i zapisuje czytelne artefakty do folderu eksperymentu.</p>
@@ -2315,7 +2727,7 @@ HTML_PAGE = """<!doctype html>
           </div>
         </section>
 
-        <section class="panel stack" data-workspaces="analysis">
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="other">
           <div>
             <h2>Porównanie Parametrów</h2>
             <p class="section-note">Wykres pokazuje RMSE albo IoU względem wybranego parametru Robaka, Rywaka lub filtracji map. Starsze eksperymenty bez snapshotu configu mogą nie mieć pełnego kompletu parametrów.</p>
@@ -2393,7 +2805,7 @@ HTML_PAGE = """<!doctype html>
           <p class="section-note" id="sweep-note">Wybierz eksperyment źródłowy, parametr oraz zakres wartości.</p>
         </section>
 
-        <section class="panel stack" data-workspaces="analysis">
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="sweeps">
           <div>
             <h2>Analiza Jednego Sweepa</h2>
             <p class="section-note">Tutaj porównujesz wyniki tylko dla jednego, konkretnego sweepa uruchomionego na stałym źródłowym datasecie.</p>
@@ -2448,21 +2860,24 @@ HTML_PAGE = """<!doctype html>
           <textarea id="config-editor" spellcheck="false" oninput="markConfigDirty()"></textarea>
         </section>
 
-        <section class="panel stack" data-workspaces="analysis">
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="experiment">
           <div>
             <h2>Wykres trajektorii</h2>
             <p class="section-note">Zakres osi X/Y podajesz w metrach. Kliknięcie na obraz otwiera pełny podgląd.</p>
           </div>
           <div class="checkboxes" id="trajectory-series"></div>
           <div class="two">
-            <label>X min [m]<input id="traj-x-min" placeholder="-2.0"></label>
-            <label>X max [m]<input id="traj-x-max" placeholder="2.0"></label>
+            <label>X min [m]<input id="traj-x-min" placeholder="auto"></label>
+            <label>X max [m]<input id="traj-x-max" placeholder="auto"></label>
           </div>
           <div class="two">
-            <label>Y min [m]<input id="traj-y-min" placeholder="-2.0"></label>
-            <label>Y max [m]<input id="traj-y-max" placeholder="2.0"></label>
+            <label>Y min [m]<input id="traj-y-min" placeholder="auto"></label>
+            <label>Y max [m]<input id="traj-y-max" placeholder="auto"></label>
           </div>
-          <button onclick="refreshPlots()">Generuj wykresy</button>
+          <div class="button-row">
+            <button onclick="refreshPlots()">Generuj wykresy</button>
+            <button class="secondary" onclick="resetTrajectoryAxes()">Auto zakres osi</button>
+          </div>
           <div class="plot-grid">
             <div class="plot-card">
               <div class="plot-actions">
@@ -2481,11 +2896,12 @@ HTML_PAGE = """<!doctype html>
           </div>
         </section>
 
-        <section class="panel stack" data-workspaces="analysis">
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="experiment">
           <div>
             <h2>Wykres błędu</h2>
             <p class="section-note">Na osi OY jednostka jest jawna: metry dla błędu pozycji albo radiany/stopnie dla błędu orientacji.</p>
             <p class="flash" id="error-availability">Sprawdzanie dostępności danych błędu...</p>
+            <p class="section-note">Puste pola zakresu oznaczają automatyczne dopasowanie do pełnego zakresu widocznych danych.</p>
           </div>
           <div class="checkboxes" id="error-series"></div>
           <div class="three">
@@ -2496,12 +2912,15 @@ HTML_PAGE = """<!doctype html>
                 <option value="orientation_deg">Orientacja [deg]</option>
               </select>
             </label>
-            <label>Czas min [s]<input id="err-time-min" placeholder="0"></label>
-            <label>Czas max [s]<input id="err-time-max" placeholder="60"></label>
+            <label>Czas min [s]<input id="err-time-min" placeholder="auto"></label>
+            <label>Czas max [s]<input id="err-time-max" placeholder="auto"></label>
           </div>
           <div class="two">
-            <label>OY min<input id="err-y-min" placeholder="0"></label>
-            <label>OY max<input id="err-y-max" placeholder="1.0"></label>
+            <label>OY min<input id="err-y-min" placeholder="auto"></label>
+            <label>OY max<input id="err-y-max" placeholder="auto"></label>
+          </div>
+          <div class="button-row">
+            <button class="secondary" onclick="resetErrorAxes()">Auto zakres błędu</button>
           </div>
           <div class="plot-grid">
             <div class="plot-card">
@@ -2521,13 +2940,25 @@ HTML_PAGE = """<!doctype html>
           </div>
         </section>
 
-        <section class="panel stack" data-workspaces="analysis">
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="experiment">
           <div>
             <h2>Mapa i diagnostyka</h2>
             <p class="section-note">Poniżej widać też diagnostykę filtrowania punktów fallback mapy dla Robaka i Rywaka.</p>
           </div>
           <div id="map-diagnostics" class="muted"></div>
+          <div class="checkboxes" id="maps-series"></div>
+          <p class="section-note">Widok niestandardowy działa dla eksperymentów, które mają zapisane warstwy w <code>map_layers.npz</code>.</p>
+          <div class="button-row">
+            <button class="secondary" onclick="refreshPlots()">Odśwież mapy</button>
+          </div>
           <div class="plot-grid">
+            <div class="plot-card">
+              <div class="plot-actions">
+                <h3>Mapy niestandardowe</h3>
+                <button class="ghost" onclick="openImageModalById('maps-custom', 'Mapy niestandardowe')">Powiększ</button>
+              </div>
+              <img id="maps-custom" alt="Mapy niestandardowe" onclick="openImageModalById('maps-custom', 'Mapy niestandardowe')">
+            </div>
             <div class="plot-card">
               <div class="plot-actions">
                 <h3>`maps.png`</h3>
@@ -2538,7 +2969,7 @@ HTML_PAGE = """<!doctype html>
           </div>
         </section>
 
-        <section class="panel" data-workspaces="analysis">
+        <section class="panel" data-workspaces="analysis" data-analysis-sections="experiment">
           <h2>Artefakty</h2>
           <div id="artifact-list" class="artifact-list"></div>
         </section>
@@ -2568,6 +2999,7 @@ HTML_PAGE = """<!doctype html>
       currentConfigName: null,
       currentConfigParsed: null,
       currentWorkspace: 'analysis',
+      currentAnalysisView: 'experiment',
       configDirty: false,
       configRenderTimer: null,
     };
@@ -3141,8 +3573,43 @@ HTML_PAGE = """<!doctype html>
       }
       return fallback;
     }
+    function stringConfigValue(path, fallback = '') {
+      const value = getPathValue(state.currentConfigParsed, path);
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+      return fallback;
+    }
+    function quickWorldOptions() {
+      return [
+        { value: 'world_house.sdf', label: 'world_house.sdf' },
+        { value: 'world_office.sdf', label: 'world_office.sdf' },
+        { value: 'world_hospital.sdf', label: 'world_hospital.sdf' },
+      ];
+    }
+    function ensureSelectOptions(select, options, selectedValue) {
+      if (!select) {
+        return;
+      }
+      const normalizedSelected = String(selectedValue || '').trim();
+      const uniqueOptions = [...options];
+      if (normalizedSelected && !uniqueOptions.some((entry) => entry.value === normalizedSelected)) {
+        uniqueOptions.push({ value: normalizedSelected, label: normalizedSelected });
+      }
+      const currentMarkup = uniqueOptions
+        .map((entry) => `<option value="${escapeHtml(entry.value)}">${escapeHtml(entry.label)}</option>`)
+        .join('');
+      if (select.innerHTML !== currentMarkup) {
+        select.innerHTML = currentMarkup;
+      }
+      select.value = normalizedSelected || uniqueOptions[0]?.value || '';
+    }
     function setWorkspace(workspace) {
       state.currentWorkspace = workspace;
+      renderWorkspace();
+    }
+    function setAnalysisView(view) {
+      state.currentAnalysisView = view;
       renderWorkspace();
     }
     function renderWorkspace() {
@@ -3157,6 +3624,20 @@ HTML_PAGE = """<!doctype html>
       });
       document.querySelectorAll('[data-workspace-tab]').forEach((button) => {
         button.classList.toggle('active', button.dataset.workspaceTab === state.currentWorkspace);
+      });
+      document.querySelectorAll('[data-analysis-sections]').forEach((node) => {
+        const sections = String(node.dataset.analysisSections || '')
+          .trim()
+          .split(' ')
+          .filter(Boolean);
+        const shouldHide =
+          state.currentWorkspace !== 'analysis' ||
+          (sections.length > 0 && !sections.includes(state.currentAnalysisView));
+        node.hidden = shouldHide;
+        node.classList.toggle('workspace-hidden', shouldHide);
+      });
+      document.querySelectorAll('[id^="analysis-tab-"]').forEach((button) => {
+        button.classList.toggle('active', button.id === `analysis-tab-${state.currentAnalysisView}`);
       });
     }
     function hasMetricValue(value) {
@@ -3188,7 +3669,12 @@ HTML_PAGE = """<!doctype html>
     }
 
     function metricCard(label, value, note = '') {
-      return `<div class="metric"><span class="muted">${label}</span><strong>${coalesce(value, 'brak')}</strong>${note ? `<small>${note}</small>` : ''}</div>`;
+      const safeLabel = escapeHtml(label);
+      const renderedValue = String(coalesce(value, 'brak'));
+      const renderedNote = String(coalesce(note, ''));
+      const valueTitle = escapeHtml(renderedValue);
+      const noteTitle = escapeHtml(renderedNote);
+      return `<div class="metric"><span class="muted">${safeLabel}</span><strong title="${valueTitle}">${escapeHtml(renderedValue)}</strong>${renderedNote ? `<small title="${noteTitle}">${escapeHtml(renderedNote)}</small>` : ''}</div>`;
     }
 
     function formatMetric(value, digits = 4) {
@@ -3817,9 +4303,61 @@ HTML_PAGE = """<!doctype html>
           inspectionGroupCard('Mapa punktowa', 'Ile danych wizualizacyjnych weszło do raportu i z ilu skanów je zebrano.', [
             metricCard('Punkty mapy', formatInspectionNumber(summary.sampled_map_point_count || 0, 0)),
             metricCard('Skanów do wizualizacji', formatInspectionNumber(summary.sampled_map_scan_count || 0, 0)),
-            metricCard('Mapa referencyjna', pathTail(summary.reference_map_yaml, 'brak'), pathTail(summary.dataset_dir, '')),
+            metricCard(
+              'Mapa referencyjna',
+              truncateMiddleLabel(pathTail(summary.reference_map_yaml, 'brak'), 20, 12),
+              `exp: ${compactExperimentLabel(pathTail(summary.dataset_dir, ''), 26)}`
+            ),
           ], quality.map),
         ];
+        if (summary.robak_coverage) {
+          const robak = summary.robak_coverage;
+          groups.push(
+            inspectionGroupCard('Pokrycie Robak', 'Histogramy dla dopasowania skanów zapisano jako osobne artefakty PNG.', [
+              metricCard('Próbki', formatInspectionNumber(robak.sample_count, 0)),
+              metricCard('0-50 cm', `${formatInspectionNumber(robak.coverage_pct_0_50cm, 1)} %`),
+              metricCard('0-100 cm', `${formatInspectionNumber(robak.coverage_pct_0_100cm, 1)} %`),
+              metricCard('|rot| <= 90 deg', `${formatInspectionNumber(robak.coverage_pct_abs_rotation_0_90deg, 1)} %`),
+              metricCard('|rot| <= 180 deg', `${formatInspectionNumber(robak.coverage_pct_abs_rotation_0_180deg, 1)} %`),
+              metricCard('Max przesunięcie', `${formatInspectionNumber(robak.translation_cm && robak.translation_cm.max, 1)} cm`),
+            ])
+          );
+        }
+        if (summary.rywak_coverage) {
+          const rywak = summary.rywak_coverage;
+          groups.push(
+            inspectionGroupCard('Pokrycie Rywak', 'Osobne histogramy prędkości liniowej i kątowej zapisano w katalogu eksperymentu.', [
+              metricCard('Próbki', formatInspectionNumber(rywak.sample_count, 0)),
+              metricCard('|v| <= 1 m/s', `${formatInspectionNumber(rywak.coverage_pct_abs_linear_0_1mps, 1)} %`),
+              metricCard('|v| <= 2 m/s', `${formatInspectionNumber(rywak.coverage_pct_abs_linear_0_2mps, 1)} %`),
+              metricCard('|omega| <= 3 rad/s', `${formatInspectionNumber(rywak.coverage_pct_abs_angular_0_3radps, 1)} %`),
+              metricCard('Max |v|', `${formatInspectionNumber(rywak.linear_velocity_abs_mps && rywak.linear_velocity_abs_mps.max, 3)} m/s`),
+              metricCard('Max |omega|', `${formatInspectionNumber(rywak.angular_velocity_abs_radps && rywak.angular_velocity_abs_radps.max, 3)} rad/s`),
+            ])
+          );
+        }
+        if (summary.training_curves) {
+          const training = summary.training_curves;
+          const cards = [];
+          [['ai', 'AI'], ['robak', 'Robak'], ['rywak', 'Rywak']].forEach(([key, label]) => {
+            const model = training[key];
+            if (!model) {
+              return;
+            }
+            cards.push(
+              metricCard(
+                `${label}: best epoch`,
+                formatInspectionNumber(model.best_epoch, 0),
+                `best val=${formatInspectionNumber(model.best_val_loss, 6)}, epochs=${formatInspectionNumber(model.epoch_count, 0)}`
+              )
+            );
+          });
+          if (cards.length > 0) {
+            groups.push(
+              inspectionGroupCard('Krzywe Treningu', 'Dla każdej sieci zapisano osobny wykres błędu uczenia i walidacji po epokach.', cards)
+            );
+          }
+        }
         summaryGrid.innerHTML = `
           <div class="inspection-hero">${heroCards.join('')}</div>
           <div class="inspection-groups">${groups.join('')}</div>
@@ -3966,6 +4504,7 @@ HTML_PAGE = """<!doctype html>
       const rmseGrid = document.getElementById('rmse-grid');
       const iouGrid = document.getElementById('iou-grid');
       const errorAvailability = document.getElementById('error-availability');
+      const deleteButton = document.getElementById('delete-experiment-button');
 
       if (!exp) {
         meta.textContent = 'Brak eksperymentów w katalogu out/.';
@@ -3975,9 +4514,16 @@ HTML_PAGE = """<!doctype html>
         rmseGrid.innerHTML = '';
         iouGrid.innerHTML = '';
         errorAvailability.textContent = '';
+        if (deleteButton) {
+          deleteButton.disabled = true;
+        }
         renderDatasetInspection(null);
         renderQuickLaunchPanel();
         return;
+      }
+
+      if (deleteButton) {
+        deleteButton.disabled = false;
       }
 
       const compactId = compactExperimentLabel(exp.id, 42);
@@ -4048,6 +4594,26 @@ HTML_PAGE = """<!doctype html>
       refreshPlots();
     }
 
+    function resetTrajectoryAxes() {
+      ['traj-x-min', 'traj-x-max', 'traj-y-min', 'traj-y-max'].forEach((id) => {
+        const node = document.getElementById(id);
+        if (node) {
+          node.value = '';
+        }
+      });
+      refreshPlots();
+    }
+
+    function resetErrorAxes() {
+      ['err-time-min', 'err-time-max', 'err-y-min', 'err-y-max'].forEach((id) => {
+        const node = document.getElementById(id);
+        if (node) {
+          node.value = '';
+        }
+      });
+      refreshPlots();
+    }
+
     function renderJobs() {
       const list = document.getElementById('job-list');
       list.innerHTML = '';
@@ -4095,6 +4661,35 @@ HTML_PAGE = """<!doctype html>
           body: JSON.stringify(payload),
         });
         await loadState();
+      } catch (error) {
+        alert(error);
+      }
+    }
+
+    async function deleteSelectedExperiment() {
+      const experiment_id = selectedExperimentId();
+      if (!experiment_id) {
+        alert('Najpierw wybierz eksperyment.');
+        return;
+      }
+      const exp = selectedExperiment();
+      const datasetCount = experimentDatasets(exp).length;
+      const confirmation = confirm(
+        `Usunąć eksperyment ${experiment_id}?\\n\\n` +
+        `To skasuje cały katalog z wynikami, datasetami, modelami i wykresami.\\n` +
+        `Liczba wykrytych datasetów: ${datasetCount}.`
+      );
+      if (!confirmation) {
+        return;
+      }
+      try {
+        await fetchJson('/api/experiments/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ experiment_id }),
+        });
+        await loadState();
+        setStateNote(`Usunięto eksperyment ${experiment_id}.`, 'ok');
       } catch (error) {
         alert(error);
       }
@@ -4273,12 +4868,19 @@ HTML_PAGE = """<!doctype html>
       const nameInput = document.getElementById('quick-experiment-name');
       const datasetInput = document.getElementById('quick-dataset-duration');
       const evalInput = document.getElementById('quick-eval-duration');
+      const datasetWorldSelect = document.getElementById('quick-dataset-world');
+      const testWorldSelect = document.getElementById('quick-test-world');
       const configName = selectedConfigName() || state.currentConfigName || 'experiment_config.yaml';
       const experimentId = selectedExperimentId();
       const plan = quickLaunchPlan();
 
       const datasetDuration = numericConfigValue(['timing', 'dataset_duration'], 30.0);
       const evalDuration = numericConfigValue(['timing', 'eval_duration'], 100.0);
+      const datasetWorld = stringConfigValue(['simulation', 'train_world'], 'world_house.sdf');
+      const testWorld = stringConfigValue(['simulation', 'test_world'], 'world_house.sdf');
+
+      ensureSelectOptions(datasetWorldSelect, quickWorldOptions(), datasetWorld);
+      ensureSelectOptions(testWorldSelect, quickWorldOptions(), testWorld);
 
       if (forceDefaults || !datasetInput.value) {
         datasetInput.value = datasetDuration === null ? '' : String(datasetDuration);
@@ -4290,6 +4892,8 @@ HTML_PAGE = """<!doctype html>
       nameInput.disabled = !plan.needsName;
       datasetInput.disabled = !plan.needsDatasetDuration;
       evalInput.disabled = !plan.needsEvalDuration;
+      datasetWorldSelect.disabled = false;
+      testWorldSelect.disabled = false;
 
       nameInput.placeholder = plan.needsName ? 'np. robak_porownanie_01' : 'Niewymagane dla tego planu';
       datasetInput.placeholder = plan.needsDatasetDuration ? 'np. 30.0' : 'Niewymagane dla tego planu';
@@ -4320,7 +4924,7 @@ HTML_PAGE = """<!doctype html>
         : plan.target === 'new'
           ? 'Zaznaczenie datasetu utworzy nowy eksperyment.'
           : 'Bez datasetu panel użyje aktualnie wybranego eksperymentu.';
-      note.textContent = `Bazowy config: ${configName}. ${targetNote} Wybrany eksperyment do treningu i testu: ${experimentId || 'brak'}.`;
+      note.textContent = `Bazowy config: ${configName}. ${targetNote} Świat datasetu: ${datasetWorldSelect.value || 'brak'}. Świat testu: ${testWorldSelect.value || 'brak'}. Wybrany eksperyment do treningu i testu: ${experimentId || 'brak'}.`;
 
       if (blockers.length) {
         phaseNote.textContent = blockers.join(' ');
@@ -4337,6 +4941,8 @@ HTML_PAGE = """<!doctype html>
         if (plan.needsEvalDuration) {
           details.push('Czas testu steruje fazą testu i ewaluacji.');
         }
+        details.push(`Świat datasetu: ${datasetWorldSelect.value || 'brak'}.`);
+        details.push(`Świat testu: ${testWorldSelect.value || 'brak'}.`);
         phaseNote.textContent = details.join(' ');
       }
 
@@ -4351,6 +4957,8 @@ HTML_PAGE = """<!doctype html>
       const runName = valueOf('quick-experiment-name');
       const datasetDuration = valueOf('quick-dataset-duration');
       const evalDuration = valueOf('quick-eval-duration');
+      const datasetWorld = valueOf('quick-dataset-world');
+      const testWorld = valueOf('quick-test-world');
       const experimentId = selectedExperimentId();
 
       if (!config) {
@@ -4390,6 +4998,8 @@ HTML_PAGE = """<!doctype html>
         experiment_id: plan.needsExperiment ? experimentId : '',
         dataset_duration: plan.needsDatasetDuration ? datasetDuration : '',
         eval_duration: plan.needsEvalDuration ? evalDuration : '',
+        dataset_world: datasetWorld,
+        test_world: testWorld,
       });
     }
 
@@ -4789,6 +5399,12 @@ HTML_PAGE = """<!doctype html>
       setImageTarget('error-custom', `/api/plot/error?${query(errParams)}`);
 
       const artifacts = exp.artifacts || {};
+      const mapParams = {
+        experiment_id: exp.id,
+        series: checkedValues('maps-series').join(','),
+        t: Date.now(),
+      };
+      setImageTarget('maps-custom', `/api/plot/maps?${query(mapParams)}`);
       setImageTarget('trajectory-static', artifacts.trajectory_png ? `/api/artifact?path=${encodeURIComponent(artifacts.trajectory_png)}` : '');
       setImageTarget('error-static', artifacts.errors_png ? `/api/artifact?path=${encodeURIComponent(artifacts.errors_png)}` : '');
       setImageTarget('maps-static', artifacts.maps_png ? `/api/artifact?path=${encodeURIComponent(artifacts.maps_png)}` : '');
@@ -4848,6 +5464,13 @@ HTML_PAGE = """<!doctype html>
         scanmatch: ['', '', 'ScanMatcher'],
         bruteforce: ['', '', 'Bruteforce'],
       }, ERR_DEFAULT);
+      renderSeriesCheckboxes('maps-series', {
+        ref: ['', '', 'Mapa referencyjna'],
+        baseline: ['', '', 'Baseline'],
+        ai: ['', '', 'AI'],
+        robak: ['', '', 'Robak'],
+        rywak: ['', '', 'Rywak'],
+      }, ['ref', 'baseline', 'ai', 'robak', 'rywak']);
       await loadState();
       setInterval(loadState, 3000);
     }
@@ -4938,6 +5561,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             self._send_bytes(png, content_type="image/png")
             return
+        if parsed.path == "/api/plot/maps":
+            query = parse_qs(parsed.query)
+            experiment_id = query.get("experiment_id", [""])[0]
+            series_names = [item for item in query.get("series", [""])[0].split(",") if item]
+            png = plot_maps_image(
+                experiment_id=experiment_id,
+                series_names=series_names,
+            )
+            self._send_bytes(png, content_type="image/png")
+            return
         if parsed.path == "/api/plot/comparison":
             query = parse_qs(parsed.query)
             group = query.get("group", ["robak"])[0]
@@ -5002,6 +5635,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             except yaml.YAMLError as exc:
                 self._send_json({"error": f"Błąd YAML: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(result, status=HTTPStatus.OK)
+            return
+        if parsed.path == "/api/experiments/delete":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+                result = delete_experiment_dir(payload.get("experiment_id", ""))
+            except FileNotFoundError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
                 return
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

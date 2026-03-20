@@ -130,6 +130,11 @@ def _sync_dataset_views() -> None:
         "trajectory_data.npz",
         "dataset_inspection_*.png",
         "dataset_inspection_*.json",
+        "dataset_*coverage*.png",
+        "dataset_*coverage*.json",
+        "training_curve_*.png",
+        "training_inspection_summary.json",
+        "experiment_inspection_summary.json",
     )
     for exp_dir in _iter_named_dirs(EXPERIMENTS_DIR, "exp_"):
         dataset_view_dir = DATASETS_DIR / exp_dir.name

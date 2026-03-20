@@ -24,9 +24,9 @@ Model MLP przewiduje `v, ω` z cech: `d_theta1, d_theta2, delta_scan`.
 
 ## Fazy pipeline
 
-1. Zbieranie datasetu (train world)
+1. Zbieranie datasetu na wybranym świecie (`world_house.sdf`, `world_office.sdf`, `world_hospital.sdf`)
 2. Trening modeli
-3. Test i ewaluacja (test world)
+3. Test i ewaluacja na osobno wybranym świecie testowym
 4. Zapis wyników do `out/exp_YYYYMMDD_HHMMSS`
 
 ## One-click uruchomienie
@@ -50,6 +50,7 @@ cd ~/projects/SLAM_AI
 Lokalny dashboard HTTP pozwala:
 - wybierać istniejące eksperymenty i datasety z `out/`
 - odpalać `run_all.sh`, `run_full_cycle.sh`, `run_experiment.sh`
+- w szybkim starcie osobno wybierać świat do datasetu i świat do testu
 - trenować `AI`, `robak`, `rywak` na wybranym eksperymencie
 - generować wykres trajektorii i błędu z własnym zakresem czasu oraz osi
 - przeglądać artefakty i logi zadań
@@ -86,6 +87,9 @@ Po zakończeniu eksperymentu katalog `out/exp_*` zawiera m.in.:
 - `results.json` (RMSE/IoU)
 - `trajectory.png`, `errors.png`, `maps.png`
 - `dataset*.npz`, `model*.pt`, `train_history*.json`
+- `dataset_robak_coverage_*.png`, `dataset_rywak_coverage_*.png`
+- `training_curve_{ai,robak,rywak}.png`
+- `dataset_inspection_summary.json`, `experiment_inspection_summary.json`
 
 ## Przydatne skrypty
 
@@ -108,3 +112,13 @@ python3 scripts/generate_thesis_report.py \
 ```
 
 Wygenerowane pliki: `table_experiments.csv`, `table_method_stats.{csv,md,tex}`, `fig_*.png`.
+
+### Mapy referencyjne
+
+Generator obsługuje teraz wiele map wyjściowych. Przykład:
+
+```bash
+python3 scripts/generate_reference_map.py \
+  --world ai_slam_ws/src/ai_slam_gazebo/worlds/world_office.sdf \
+  --output-stem reference_map_office
+```

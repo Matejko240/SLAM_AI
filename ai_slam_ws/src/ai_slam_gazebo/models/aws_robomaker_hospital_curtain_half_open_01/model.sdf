@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="aws_robomaker_hospital_curtain_half_open_01">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <pose>0 0 1 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.08 3 2.2</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 1 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.08 3 2.2</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.88 0.9 0.92 1</ambient>
+          <diffuse>0.88 0.9 0.92 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

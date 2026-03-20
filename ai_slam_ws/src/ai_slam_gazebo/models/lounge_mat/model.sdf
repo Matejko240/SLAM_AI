@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.6">
+  <model name="lounge_mat">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision_1">
+        <geometry>
+          <box>
+            <size>1.8 2.4 0.02</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="visual_1">
+        <geometry>
+          <box>
+            <size>1.8 2.4 0.02</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.7 0.72 0.74 1</ambient>
+          <diffuse>0.7 0.72 0.74 1</diffuse>
+          <specular>0.08 0.08 0.08 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
