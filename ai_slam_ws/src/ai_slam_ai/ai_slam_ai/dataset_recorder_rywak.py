@@ -97,6 +97,7 @@ class DatasetRecorderRywak(Node):
 
         self.duration_sec = float(self.get_parameter("duration_sec").value)
         self.max_samples = int(self.get_parameter("max_samples").value)
+        self.max_samples_enabled = self.max_samples > 0
 
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.odom_topic = str(self.get_parameter("odom_topic").value)
@@ -157,6 +158,10 @@ class DatasetRecorderRywak(Node):
             f"min_dt={self.min_sample_dt_sec:.3f}, min_scan_rms={self.min_delta_scan_rms}, "
             f"filter_mode={self.sample_filter_mode}"
         )
+        if self.max_samples_enabled:
+            self.get_logger().info(f"[Rywak] stop mode: time or max_samples={self.max_samples}")
+        else:
+            self.get_logger().info("[Rywak] stop mode: time-driven (max_samples disabled)")
 
     def on_odom(self, msg: Odometry):
         self.odom_count += 1
@@ -307,7 +312,7 @@ class DatasetRecorderRywak(Node):
         self.prev_scan_time_sec = t_scan
         self.sample_accept_count += 1
 
-        if len(self.Y) >= self.max_samples:
+        if self.max_samples_enabled and len(self.Y) >= self.max_samples:
             self.save_and_exit()
 
     def check_done(self):

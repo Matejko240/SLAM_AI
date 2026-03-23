@@ -3047,7 +3047,7 @@ HTML_PAGE = """<!doctype html>
       infer_odom_pose_xy_alpha: 'Bazowe kotwiczenie pozycji XY do odometrii',
       infer_odom_pose_xy_gain: 'Dodatkowe kotwiczenie XY przy dryfcie',
       dataset_duration: 'Czas zbierania datasetu',
-      max_samples: 'Maksymalna liczba próbek',
+      max_samples: 'Maksymalna liczba próbek (0 = bez limitu)',
       min_sample_dist: 'Minimalne przesunięcie między próbkami',
       min_sample_dyaw: 'Minimalna rotacja między próbkami',
       min_sample_dt_sec: 'Minimalny odstęp czasu między próbkami',
@@ -4936,7 +4936,7 @@ HTML_PAGE = """<!doctype html>
           details.push(`Użyty będzie wybrany eksperyment: ${experimentId}.`);
         }
         if (plan.needsDatasetDuration) {
-          details.push('Wspólny czas datasetu nadpisze timing.dataset_duration oraz odpowiedniki Robaka i Rywaka.');
+          details.push('Wspólny czas datasetu nadpisze timing.dataset_duration oraz odpowiedniki Robaka i Rywaka, a limit max_samples zostanie wyłączony.');
         }
         if (plan.needsEvalDuration) {
           details.push('Czas testu steruje fazą testu i ewaluacji.');

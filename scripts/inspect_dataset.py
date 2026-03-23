@@ -35,9 +35,11 @@ LEGACY_NAME = "dataset_analysis.png"
 ROBAK_SUMMARY_NAME = "dataset_robak_coverage_summary.json"
 ROBAK_DISTANCE_NAME = "dataset_robak_coverage_distance.png"
 ROBAK_ROTATION_NAME = "dataset_robak_coverage_rotation.png"
+ROBAK_COMPONENTS_NAME = "dataset_robak_target_components.png"
 RYWAK_SUMMARY_NAME = "dataset_rywak_coverage_summary.json"
 RYWAK_LINEAR_NAME = "dataset_rywak_coverage_linear_velocity.png"
 RYWAK_ANGULAR_NAME = "dataset_rywak_coverage_angular_velocity.png"
+RYWAK_SIGNED_NAME = "dataset_rywak_target_signed_velocity.png"
 TRAINING_SUMMARY_NAME = "training_inspection_summary.json"
 EXPERIMENT_SUMMARY_NAME = "experiment_inspection_summary.json"
 
@@ -660,6 +662,78 @@ def render_histogram_coverage(
     return output_path
 
 
+def nice_symmetric_limit(values: np.ndarray, minimum: float, step: float) -> float:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return float(minimum)
+    max_abs = float(np.max(np.abs(arr)))
+    if step <= 0.0:
+        return float(max(minimum, max_abs))
+    return float(max(minimum, np.ceil(max_abs / step) * step))
+
+
+def render_component_histograms(
+    output_path: Path,
+    *,
+    title: str,
+    specs: list[dict[str, Any]],
+    ncols: int,
+) -> Path:
+    n_items = max(1, len(specs))
+    ncols = max(1, min(ncols, n_items))
+    nrows = int(np.ceil(n_items / float(ncols)))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.6 * nrows))
+    configure_figure(fig)
+
+    axes_arr = np.atleast_1d(axes).reshape(nrows, ncols)
+    for ax in axes_arr.flat:
+        configure_axes(ax)
+
+    for ax, spec in zip(axes_arr.flat, specs):
+        values = np.asarray(spec["values"], dtype=np.float32).reshape(-1)
+        bins = np.asarray(spec["bins"], dtype=np.float32)
+        ax.hist(values, bins=bins, color=str(spec["color"]), alpha=0.86, edgecolor="#0f172a")
+
+        xlim = spec.get("xlim")
+        if xlim is not None:
+            ax.set_xlim(*xlim)
+
+        for line_x, label, line_color in spec.get("vertical_lines", []) or []:
+            ax.axvline(line_x, color=line_color, linestyle="--", linewidth=1.4, label=label)
+
+        if spec.get("vertical_lines"):
+            legend = ax.legend(loc="upper right")
+            legend.get_frame().set_facecolor("#111827")
+            legend.get_frame().set_edgecolor("#334155")
+            for text in legend.get_texts():
+                text.set_color("#e5eefc")
+
+        ax.set_title(str(spec["title"]))
+        ax.set_xlabel(str(spec["xlabel"]))
+        ax.set_ylabel("Liczba próbek")
+
+        annotations = [str(item) for item in spec.get("annotations", []) or []]
+        if annotations:
+            ax.text(
+                0.02,
+                0.98,
+                "\n".join(annotations),
+                transform=ax.transAxes,
+                va="top",
+                ha="left",
+                color="#e5eefc",
+                fontsize=8.5,
+                bbox={"facecolor": "#0f172a", "edgecolor": "#334155", "boxstyle": "round,pad=0.35", "alpha": 0.86},
+            )
+
+    for ax in axes_arr.flat[n_items:]:
+        fig.delaxes(ax)
+
+    fig.suptitle(title, color="#f8fafc", fontsize=15)
+    save_figure(fig, output_path)
+    return output_path
+
+
 def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[str, Any]]:
     dataset_path = dataset_dir / "dataset_robak.npz"
     if not dataset_path.exists():
@@ -686,6 +760,12 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     rotation_target_90 = float(np.mean(rotation_abs_deg <= 90.0) * 100.0)
     rotation_target_180 = float(np.mean(rotation_abs_deg <= 180.0) * 100.0)
     overflow_100cm = int(np.sum(translation_cm > 100.0))
+    base_pair_count = int(meta.get("pair_accept_count", labels.shape[0]))
+    augmented_sample_count = int(meta.get("augment_added_samples", 0))
+    dx_cm = labels[:, 0].astype(np.float32) * 100.0
+    dy_cm = labels[:, 1].astype(np.float32) * 100.0
+    dx_summary = stats_1d(dx_cm)
+    dy_summary = stats_1d(dy_cm)
 
     distance_path = render_histogram_coverage(
         dataset_dir / ROBAK_DISTANCE_NAME,
@@ -701,6 +781,7 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         ],
         annotations=[
             f"Próbki: {distance_summary['count']}",
+            f"Pary bazowe / augment: {base_pair_count} / {augmented_sample_count}",
             f"Średnia / mediana: {distance_summary['mean']:.1f} / {distance_summary['median']:.1f} cm",
             f"95 percentyl / max: {distance_summary['p95']:.1f} / {distance_summary['max']:.1f} cm",
             f"Pokrycie 0-50 cm: {distance_target_50:.1f}%",
@@ -722,6 +803,7 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         ],
         annotations=[
             f"Próbki: {rotation_summary['count']}",
+            f"Pary bazowe / augment: {base_pair_count} / {augmented_sample_count}",
             f"Min / max: {rotation_summary['min']:.1f} / {rotation_summary['max']:.1f} deg",
             f"Średnia |rot| / p95 |rot|: {rotation_abs_summary['mean']:.1f} / {rotation_abs_summary['p95']:.1f} deg",
             f"Pokrycie |rot| <= 90 deg: {rotation_target_90:.1f}%",
@@ -729,11 +811,61 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
             f"Offsety: {normalize_json_value(meta.get('offsets', []))}",
         ],
     )
+    components_path = render_component_histograms(
+        dataset_dir / ROBAK_COMPONENTS_NAME,
+        title="Robak: rozkład etykiet modelu",
+        ncols=3,
+        specs=[
+            {
+                "values": dx_cm,
+                "bins": np.linspace(-nice_symmetric_limit(dx_cm, 25.0, 5.0), nice_symmetric_limit(dx_cm, 25.0, 5.0), 41),
+                "title": "dx lokalne",
+                "xlabel": "dx [cm]",
+                "color": "#f97316",
+                "xlim": (-nice_symmetric_limit(dx_cm, 25.0, 5.0), nice_symmetric_limit(dx_cm, 25.0, 5.0)),
+                "vertical_lines": [(0.0, "0 cm", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {dx_summary['mean']:.1f} / {dx_summary['median']:.1f}",
+                    f"Min / max: {dx_summary['min']:.1f} / {dx_summary['max']:.1f}",
+                ],
+            },
+            {
+                "values": dy_cm,
+                "bins": np.linspace(-nice_symmetric_limit(dy_cm, 25.0, 5.0), nice_symmetric_limit(dy_cm, 25.0, 5.0), 41),
+                "title": "dy lokalne",
+                "xlabel": "dy [cm]",
+                "color": "#22c55e",
+                "xlim": (-nice_symmetric_limit(dy_cm, 25.0, 5.0), nice_symmetric_limit(dy_cm, 25.0, 5.0)),
+                "vertical_lines": [(0.0, "0 cm", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {dy_summary['mean']:.1f} / {dy_summary['median']:.1f}",
+                    f"Min / max: {dy_summary['min']:.1f} / {dy_summary['max']:.1f}",
+                ],
+            },
+            {
+                "values": rotation_deg,
+                "bins": np.linspace(-180.0, 180.0, 49),
+                "title": "dtheta",
+                "xlabel": "dtheta [deg]",
+                "color": "#0ea5e9",
+                "xlim": (-180.0, 180.0),
+                "vertical_lines": [(-90.0, "-90 deg", "#a3e635"), (0.0, "0 deg", "#f8fafc"), (90.0, "+90 deg", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {rotation_summary['mean']:.1f} / {rotation_summary['median']:.1f}",
+                    f"Min / max: {rotation_summary['min']:.1f} / {rotation_summary['max']:.1f}",
+                ],
+            },
+        ],
+    )
 
     summary = {
         "dataset_path": str(dataset_path.resolve()),
         "sample_count": int(labels.shape[0]),
+        "base_pair_count": base_pair_count,
+        "augmented_sample_count": augmented_sample_count,
         "translation_cm": distance_summary,
+        "dx_local_cm_signed": dx_summary,
+        "dy_local_cm_signed": dy_summary,
         "rotation_deg_signed": rotation_summary,
         "rotation_deg_abs": rotation_abs_summary,
         "coverage_pct_0_50cm": distance_target_50,
@@ -747,6 +879,7 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         "summary": dataset_dir / ROBAK_SUMMARY_NAME,
         "distance": distance_path,
         "rotation": rotation_path,
+        "components": components_path,
     }, summary
 
 
@@ -778,6 +911,8 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     angular_target_3 = float(np.mean(angular_abs <= 3.0) * 100.0)
     linear_over_2 = int(np.sum(linear_abs > 2.0))
     angular_over_3 = int(np.sum(angular_abs > 3.0))
+    linear_signed_limit = nice_symmetric_limit(linear_velocity, 0.5, 0.1)
+    angular_signed_limit = nice_symmetric_limit(angular_velocity, 1.0, 0.25)
 
     linear_path = render_histogram_coverage(
         dataset_dir / RYWAK_LINEAR_NAME,
@@ -793,6 +928,7 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         ],
         annotations=[
             f"Próbki: {linear_summary['count']}",
+            f"Zapisane / odrzucone: {labels.shape[0]} / {int(meta.get('sample_filter_reject_count', 0))}",
             f"Średnia / mediana: {linear_summary['mean']:.3f} / {linear_summary['median']:.3f} m/s",
             f"95 percentyl / max: {linear_summary['p95']:.3f} / {linear_summary['max']:.3f} m/s",
             f"Pokrycie |v| <= 1 m/s: {linear_target_1:.1f}%",
@@ -811,11 +947,45 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         vertical_lines=[(3.0, "3 rad/s", "#38bdf8")],
         annotations=[
             f"Próbki: {angular_summary['count']}",
+            f"Zapisane / odrzucone: {labels.shape[0]} / {int(meta.get('sample_filter_reject_count', 0))}",
             f"Średnia / mediana: {angular_summary['mean']:.3f} / {angular_summary['median']:.3f} rad/s",
             f"95 percentyl / max: {angular_summary['p95']:.3f} / {angular_summary['max']:.3f} rad/s",
             f"Pokrycie |omega| <= 3 rad/s: {angular_target_3:.1f}%",
             f"> 3 rad/s: {angular_over_3}",
             f"Zakres signed omega: {signed_angular_summary['min']:.3f} .. {signed_angular_summary['max']:.3f}",
+        ],
+    )
+    signed_path = render_component_histograms(
+        dataset_dir / RYWAK_SIGNED_NAME,
+        title="Rywak: rozkład podpisanych etykiet modelu",
+        ncols=2,
+        specs=[
+            {
+                "values": linear_velocity,
+                "bins": np.linspace(-linear_signed_limit, linear_signed_limit, 41),
+                "title": "v podpisane",
+                "xlabel": "v [m/s]",
+                "color": "#22c55e",
+                "xlim": (-linear_signed_limit, linear_signed_limit),
+                "vertical_lines": [(0.0, "0 m/s", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {signed_linear_summary['mean']:.3f} / {signed_linear_summary['median']:.3f}",
+                    f"Min / max: {signed_linear_summary['min']:.3f} / {signed_linear_summary['max']:.3f}",
+                ],
+            },
+            {
+                "values": angular_velocity,
+                "bins": np.linspace(-angular_signed_limit, angular_signed_limit, 49),
+                "title": "omega podpisane",
+                "xlabel": "omega [rad/s]",
+                "color": "#a855f7",
+                "xlim": (-angular_signed_limit, angular_signed_limit),
+                "vertical_lines": [(0.0, "0 rad/s", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {signed_angular_summary['mean']:.3f} / {signed_angular_summary['median']:.3f}",
+                    f"Min / max: {signed_angular_summary['min']:.3f} / {signed_angular_summary['max']:.3f}",
+                ],
+            },
         ],
     )
 
@@ -837,6 +1007,7 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         "summary": dataset_dir / RYWAK_SUMMARY_NAME,
         "linear_velocity": linear_path,
         "angular_velocity": angular_path,
+        "signed_velocity": signed_path,
     }, summary
 
 
@@ -953,6 +1124,7 @@ def generate_report(dataset_dir: Path) -> dict[str, Path]:
                 "dataset_robak_coverage_summary_json": robak_artifacts["summary"],
                 "dataset_robak_coverage_distance_png": robak_artifacts["distance"],
                 "dataset_robak_coverage_rotation_png": robak_artifacts["rotation"],
+                "dataset_robak_target_components_png": robak_artifacts["components"],
             }
         )
         print(f"[ROBAK] Zapisano podsumowanie: {robak_artifacts['summary']}")
@@ -966,6 +1138,7 @@ def generate_report(dataset_dir: Path) -> dict[str, Path]:
                 "dataset_rywak_coverage_summary_json": rywak_artifacts["summary"],
                 "dataset_rywak_coverage_linear_velocity_png": rywak_artifacts["linear_velocity"],
                 "dataset_rywak_coverage_angular_velocity_png": rywak_artifacts["angular_velocity"],
+                "dataset_rywak_target_signed_velocity_png": rywak_artifacts["signed_velocity"],
             }
         )
         print(f"[RYWAK] Zapisano podsumowanie: {rywak_artifacts['summary']}")

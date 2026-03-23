@@ -82,6 +82,7 @@ class DatasetRecorder(Node):
 
         self.duration_sec = float(self.get_parameter("duration_sec").value)
         self.max_samples = int(self.get_parameter("max_samples").value)
+        self.max_samples_enabled = self.max_samples > 0
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.gt_topic = str(self.get_parameter("gt_topic").value)
@@ -137,6 +138,10 @@ class DatasetRecorder(Node):
             f"Sync: tol={self.sync_tolerance_sec:.3f}s, gap={self.sync_pair_gap_sec:.3f}s, "
             f"interp_odom={self.interpolate_odom}, interp_gt={self.interpolate_gt}"
         )
+        if self.max_samples_enabled:
+            self.get_logger().info(f"Dataset stop mode: time or max_samples={self.max_samples}")
+        else:
+            self.get_logger().info("Dataset stop mode: time-driven (max_samples disabled)")
 
         self.timer = self.create_timer(0.5, self.check_done)
         self.wait_timer = self.create_timer(1.0, self.wait_for_topics)
@@ -292,7 +297,7 @@ class DatasetRecorder(Node):
             self.y.append([dx, dy, dth])
             self.scan_count += 1
 
-            if len(self.y) >= self.max_samples and not self.is_finishing:
+            if self.max_samples_enabled and len(self.y) >= self.max_samples and not self.is_finishing:
                 self.save_and_exit()
                 return
 

@@ -166,6 +166,7 @@ class DatasetRecorderRobak(Node):
 
         self.duration_sec = float(self.get_parameter("duration_sec").value)
         self.max_samples = int(self.get_parameter("max_samples").value)
+        self.max_samples_enabled = self.max_samples > 0
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.gt_topic = str(self.get_parameter("gt_topic").value)
         self.dataset_path = os.path.join(self.out_dir, str(self.get_parameter("dataset_name").value))
@@ -236,6 +237,10 @@ class DatasetRecorderRobak(Node):
             f"[Robak] augment: noise_std_scale={self.augment_noise_std_scale}, "
             f"cut_fraction={self.augment_cut_fraction}, cut_max_points={self.augment_cut_max_points}"
         )
+        if self.max_samples_enabled:
+            self.get_logger().info(f"[Robak] stop mode: time or max_samples={self.max_samples}")
+        else:
+            self.get_logger().info("[Robak] stop mode: time-driven (max_samples disabled)")
 
         if self.write_experiment_metadata:
             self.exp_logger.start_dataset_collection(
@@ -369,7 +374,7 @@ class DatasetRecorderRobak(Node):
             self.X_pairs.append(np.stack([scan_prev, scan_curr], axis=0).astype(np.float32))
             self.Y.append(np.asarray([dx, dy, dth], dtype=np.float32))
 
-            if len(self.Y) >= self.max_samples and not self.is_finishing:
+            if self.max_samples_enabled and len(self.Y) >= self.max_samples and not self.is_finishing:
                 self.save_and_exit()
                 return
 
@@ -386,7 +391,7 @@ class DatasetRecorderRobak(Node):
                     self.X_pairs.append(np.stack([aug_prev, aug_curr], axis=0).astype(np.float32))
                     self.Y.append(np.asarray([dx, dy, dth], dtype=np.float32))
                     self.aug_samples_count += 1
-                    if len(self.Y) >= self.max_samples and not self.is_finishing:
+                    if self.max_samples_enabled and len(self.Y) >= self.max_samples and not self.is_finishing:
                         self.save_and_exit()
                         return
 

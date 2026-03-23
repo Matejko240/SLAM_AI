@@ -121,6 +121,9 @@ def create_temp_config(
         set_nested(payload, ["timing", "dataset_duration"], float(dataset_duration))
         set_nested(payload, ["robak", "dataset_duration"], float(dataset_duration))
         set_nested(payload, ["rywak", "dataset_duration"], float(dataset_duration))
+        set_nested(payload, ["dataset", "max_samples"], 0)
+        set_nested(payload, ["robak", "max_samples"], 0)
+        set_nested(payload, ["rywak", "max_samples"], 0)
         current_wait = float(get_cfg_value(payload, "timing", "dataset_wait_timeout", default=120.0))
         set_nested(payload, ["timing", "dataset_wait_timeout"], max(current_wait, float(dataset_duration) + 180.0))
     if eval_duration is not None:
