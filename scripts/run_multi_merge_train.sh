@@ -1147,7 +1147,7 @@ if mode == "rotation":
     robak["pair_filter_mode"] = "any"
     robak["min_pair_dyaw"] = min(0.02, float(robak.get("min_pair_dyaw", 0.05)))
     rywak["min_sample_dist"] = 0.005
-    rywak["min_sample_dyaw"] = 0.01
+    rywak["min_sample_dyaw"] = 0.005
     rywak["min_delta_scan_rms"] = 0.0
     rywak["sample_filter_mode"] = "any"
     # Normalize against the full configured histogram range (not weak-bin edges),
@@ -1266,10 +1266,10 @@ else:
     rywak["trajectory_mode"] = "no_cycle"
     # Mniej odrzuceń "trajectory_repeats" przy no_cycle bez łamania zasady unikalności.
     robak["trajectory_cell_size_m"] = 0.02
-    rywak["trajectory_cell_size_m"] = 0.01
+    rywak["trajectory_cell_size_m"] = 0.005
     if mode == "slalom":
         robak["trajectory_cell_size_m"] = 0.025
-        rywak["trajectory_cell_size_m"] = 0.012
+        rywak["trajectory_cell_size_m"] = 0.008
 
 experiment["adaptive_focus_mode"] = mode
 experiment["adaptive_rywak_weak_linear_bin_index"] = int(weak_lin_idx)

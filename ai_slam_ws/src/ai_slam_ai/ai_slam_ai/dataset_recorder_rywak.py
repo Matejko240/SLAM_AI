@@ -180,7 +180,7 @@ class DatasetRecorderRywak(Node):
             str(self.get_parameter("balanced_angular_dataset_name").value),
         )
         self.trajectory_mode = _normalize_trajectory_mode(str(self.get_parameter("trajectory_mode").value))
-        self.trajectory_cell_size_m = max(0.01, float(self.get_parameter("trajectory_cell_size_m").value))
+        self.trajectory_cell_size_m = max(0.005, float(self.get_parameter("trajectory_cell_size_m").value))
         self.cycle_min_repeat_hits = max(0, int(self.get_parameter("cycle_min_repeat_hits").value))
         self.stop_on_planned_path_done = bool(self.get_parameter("stop_on_planned_path_done").value)
         self.planned_path_done_topic = str(self.get_parameter("planned_path_done_topic").value)
