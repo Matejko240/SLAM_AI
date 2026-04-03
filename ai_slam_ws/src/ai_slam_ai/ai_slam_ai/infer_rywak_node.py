@@ -1,4 +1,5 @@
 import math
+import json
 import os
 import time
 from collections import deque
@@ -16,8 +17,37 @@ from tf2_ros import TransformBroadcaster
 import torch
 import torch.nn as nn
 
-from .common import seed_all, ensure_dir, wrap, quat_from_yaw, xytheta_from_odom
+from .common import (
+    seed_all,
+    ensure_dir,
+    quat_from_yaw,
+    select_torch_device,
+    synchronize_torch_device,
+    wrap,
+    xytheta_from_odom,
+    xytheta_from_pose_stamped,
+)
 from .experiment_logger import ExperimentLogger
+
+DEBUG_LOG_PATH = "/home/matejko/SLAM_AI/.cursor/debug-a69755.log"
+DEBUG_SESSION_ID = "a69755"
+
+
+def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    payload = {
+        "sessionId": DEBUG_SESSION_ID,
+        "runId": str(run_id),
+        "hypothesisId": str(hypothesis_id),
+        "location": str(location),
+        "message": str(message),
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _stamp_to_sec(stamp) -> float:
@@ -90,7 +120,12 @@ class InferRywakNode(Node):
         self.declare_parameter("seed", 123)
         self.declare_parameter("out_dir", "out")
         self.declare_parameter("experiment_id", "")
+        self.declare_parameter(
+            "model_source_experiment_id",
+            "",
+        )  # jeśli niepuste: ładuj model z out/<id>/ zamiast z bieżącego experiment_id
         self.declare_parameter("model_name", "model_rywak.pt")
+        self.declare_parameter("torch_device", "auto")
         self.declare_parameter("write_experiment_metadata", False)
 
         self.declare_parameter("scan_topic", "/scan_slam_rywak")
@@ -129,13 +164,45 @@ class InferRywakNode(Node):
         self.out_dir = self.exp_logger.get_output_dir()
         ensure_dir(self.out_dir)
 
-        self.model_path = os.path.join(self.out_dir, str(self.get_parameter("model_name").value))
+        model_src_id = str(self.get_parameter("model_source_experiment_id").value or "").strip()
+        model_name = str(self.get_parameter("model_name").value)
+        if model_src_id:
+            cand = os.path.abspath(os.path.join(base_out_dir, model_src_id))
+            base_abs = os.path.abspath(base_out_dir)
+            try:
+                if os.path.commonpath([base_abs, cand]) != base_abs:
+                    raise ValueError(f"model_source_experiment_id resolves outside out_dir: {cand}")
+            except ValueError as e:
+                raise ValueError(f"invalid model_source_experiment_id path: {cand}") from e
+            model_dir = cand
+        else:
+            model_dir = self.out_dir
+        self.model_path = os.path.join(model_dir, model_name)
+        self.get_logger().info(
+            f"[Rywak] Model directory: {model_dir} (experiment output: {self.out_dir})"
+        )
+        self.torch_device_request = str(self.get_parameter("torch_device").value)
+        self.torch_device_info = select_torch_device(self.torch_device_request)
+        self.device = torch.device(self.torch_device_info.resolved)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
         self.publish_tf = bool(self.get_parameter("publish_tf").value)
         self.write_experiment_metadata = bool(self.get_parameter("write_experiment_metadata").value)
+        self.get_logger().info(
+            f"[Rywak] Torch device: requested={self.torch_device_info.requested}, "
+            f"using={self.torch_device_info.resolved} ({self.torch_device_info.reason})"
+        )
+        if self.torch_device_info.warning:
+            self.get_logger().warn(self.torch_device_info.warning)
+        self.exp_logger.add_note(
+            f"infer_rywak_node torch device requested={self.torch_device_info.requested}, "
+            f"resolved={self.torch_device_info.resolved}: {self.torch_device_info.reason}"
+        )
+        if self.torch_device_info.warning:
+            self.exp_logger.add_note(self.torch_device_info.warning)
+        self.exp_logger.save()
 
         self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.init_odom_topic = str(self.get_parameter("init_from_odom_topic").value)
@@ -159,10 +226,10 @@ class InferRywakNode(Node):
         self.max_integration_dt = float(self.get_parameter("max_integration_dt").value)
 
         self.model = None
-        self.x_mean = None
-        self.x_std = None
-        self.y_mean = None
-        self.y_std = None
+        self.x_mean_t = None
+        self.x_std_t = None
+        self.y_mean_t = None
+        self.y_std_t = None
         self.in_dim = None
         self._in_dim_warned = False
 
@@ -185,6 +252,7 @@ class InferRywakNode(Node):
         self.infer_start = None
         self.inference_count = 0
         self.inference_times_ms = []
+        self._debug_step = 0
 
         self.pub_pose = self.create_publisher(PoseStamped, self.pose_topic, 10)
         self.tf_br = TransformBroadcaster(self) if self.publish_tf else None
@@ -300,12 +368,13 @@ class InferRywakNode(Node):
         dropout = float(payload.get("dropout", 0.0))
         self.model = MLP2(self.in_dim, 2, hidden_dims=hidden_dims, dropout=dropout)
         self.model.load_state_dict(payload["state_dict"])
+        self.model.to(self.device)
         self.model.eval()
 
-        self.x_mean = payload["x_mean"].cpu().numpy().astype(np.float32)
-        self.x_std = payload["x_std"].cpu().numpy().astype(np.float32)
-        self.y_mean = payload["y_mean"].cpu().numpy().astype(np.float32)
-        self.y_std = payload["y_std"].cpu().numpy().astype(np.float32)
+        self.x_mean_t = payload["x_mean"].to(self.device, dtype=torch.float32).view(1, -1)
+        self.x_std_t = payload["x_std"].to(self.device, dtype=torch.float32).view(1, -1)
+        self.y_mean_t = payload["y_mean"].to(self.device, dtype=torch.float32)
+        self.y_std_t = payload["y_std"].to(self.device, dtype=torch.float32)
 
         self.infer_start = time.time()
 
@@ -318,6 +387,8 @@ class InferRywakNode(Node):
                 tf_parent=self.tf_parent,
                 tf_child=self.tf_child,
                 model_path=self.model_path,
+                torch_device_requested=self.torch_device_info.requested,
+                torch_device_used=self.torch_device_info.resolved,
             )
 
         self.get_logger().info(f"[Rywak] Model loaded: {self.model_path}")
@@ -383,18 +454,20 @@ class InferRywakNode(Node):
                 self._in_dim_warned = True
             return
 
-        xn = (x - self.x_mean) / np.maximum(self.x_std, 1e-6)
-        xt = torch.from_numpy(xn[None, :]).float()
+        xt = torch.from_numpy(x[None, :]).to(self.device, dtype=torch.float32)
 
         t0 = time.perf_counter()
-        with torch.no_grad():
-            yn = self.model(xt).cpu().numpy().reshape(-1).astype(np.float32)
+        synchronize_torch_device(self.device)
+        with torch.inference_mode():
+            xn = (xt - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
+            yn = self.model(xn).reshape(-1)
+            y = (yn * self.y_std_t + self.y_mean_t).detach().cpu().numpy().astype(np.float32)
+        synchronize_torch_device(self.device)
         t1 = time.perf_counter()
 
         self.inference_times_ms.append((t1 - t0) * 1000.0)
         self.inference_count += 1
 
-        y = yn * self.y_std + self.y_mean
         v_pred = float(y[0])
         w_pred = float(y[1])
 
@@ -417,6 +490,37 @@ class InferRywakNode(Node):
             w = float(np.clip(w, -self.w_clip_abs, self.w_clip_abs))
 
         alpha_ema = min(max(self.vel_ema_alpha, 0.0), 0.999)
+        alpha_ema_default = float(alpha_ema)
+        ema_trigger = "none"
+        # Keep EMA adaptive thresholds independent from configured clip range.
+        # Large clip values (e.g. 5 m/s) were masking meaningful sign/delta changes.
+        v_flip_mag_th = 0.08
+        w_flip_mag_th = 0.20
+        v_jump_th = 0.35
+        w_jump_th = 0.75
+        v_filt_prev = float(self.v_filt) if self.v_filt is not None else None
+        w_filt_prev = float(self.w_filt) if self.w_filt is not None else None
+        if self.v_filt is not None:
+            v_sign_flip = (self.v_filt * v < 0.0) and (abs(self.v_filt) > v_flip_mag_th or abs(v) > v_flip_mag_th)
+            v_jump = abs(self.v_filt - v) > v_jump_th
+            v_odom_conflict = (float(v_odom) * v < 0.0) and (abs(float(v_odom)) > v_flip_mag_th) and (abs(v) > 0.04)
+            if v_sign_flip or v_jump or v_odom_conflict:
+                alpha_ema = min(alpha_ema, 0.2)
+                if v_sign_flip:
+                    ema_trigger = "v_sign_flip"
+                elif v_odom_conflict:
+                    ema_trigger = "v_odom_conflict"
+                else:
+                    ema_trigger = "v_jump"
+        if self.w_filt is not None:
+            w_sign_flip = (self.w_filt * w < 0.0) and (abs(self.w_filt) > w_flip_mag_th or abs(w) > w_flip_mag_th)
+            w_jump = abs(self.w_filt - w) > w_jump_th
+            if w_sign_flip or w_jump:
+                alpha_ema = min(alpha_ema, 0.2)
+                if ema_trigger == "none":
+                    ema_trigger = "w_sign_flip" if w_sign_flip else "w_jump"
+        v_before_ema = float(v)
+        w_before_ema = float(w)
         if self.v_filt is None:
             self.v_filt = v
             self.w_filt = w
@@ -479,6 +583,38 @@ class InferRywakNode(Node):
             tfm.transform.rotation.z = qz
             tfm.transform.rotation.w = qw
             self.tf_br.sendTransform(tfm)
+
+        self._debug_step += 1
+        if self._debug_step % 400 == 0:
+            # region agent log
+            _debug_log(
+                run_id="pre-fix",
+                hypothesis_id="H2",
+                location="infer_rywak_node.py:on_scan",
+                message="rywak fusion snapshot",
+                data={
+                    "step": int(self._debug_step),
+                    "v_pred": float(v_pred),
+                    "w_pred": float(w_pred),
+                    "v_odom": float(v_odom),
+                    "w_odom": float(w_odom),
+                    "v_before_ema": float(v_before_ema),
+                    "w_before_ema": float(w_before_ema),
+                    "v_fused": float(v),
+                    "w_fused": float(w),
+                    "alpha_ema_used": float(alpha_ema),
+                    "alpha_ema_default": float(alpha_ema_default),
+                    "ema_trigger": str(ema_trigger),
+                    "v_filt_prev": v_filt_prev,
+                    "w_filt_prev": w_filt_prev,
+                    "fuse_weight_v": float(wv),
+                    "fuse_weight_w": float(ww),
+                    "xy_step_weight": float(step_w),
+                    "anchor_yaw_to_odom": float(self.anchor_yaw_to_odom),
+                    "anchor_xy_to_odom": float(self.anchor_xy_to_odom),
+                },
+            )
+            # endregion
 
         self.prev_scan = scan
         self.prev_stamp_sec = t_cur

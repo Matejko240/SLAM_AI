@@ -15,4 +15,7 @@ build/
 niemoje/
 moje/
 Raporty/
+AGENTS.md
+.cursor
+archive/
 out/

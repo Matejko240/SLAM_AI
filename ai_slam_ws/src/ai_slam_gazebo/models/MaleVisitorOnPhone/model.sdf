@@ -3,25 +3,22 @@
   <model name="MaleVisitorOnPhone">
     <static>true</static>
     <link name="link">
-      <pose>0 0 0.825 0 0 0</pose>
-      <collision name="collision">
+      <collision name="col">
         <geometry>
-          <cylinder>
-            <radius>0.28</radius>
-            <length>1.65</length>
-          </cylinder>
+          <box>
+            <size>0.6 0.5 1.0</size>
+          </box>
         </geometry>
       </collision>
-      <visual name="visual">
+      <visual name="vis">
         <geometry>
-          <cylinder>
-            <radius>0.28</radius>
-            <length>1.65</length>
-          </cylinder>
+          <box>
+            <size>0.6 0.5 1.0</size>
+          </box>
         </geometry>
         <material>
-          <ambient>0.35 0.55 0.75 1</ambient>
-          <diffuse>0.35 0.55 0.75 1</diffuse>
+          <ambient>0.55 0.5 0.65 1</ambient>
+          <diffuse>0.55 0.5 0.65 1</diffuse>
         </material>
       </visual>
     </link>

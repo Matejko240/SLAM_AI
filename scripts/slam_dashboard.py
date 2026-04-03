@@ -9,6 +9,7 @@ import errno
 import html
 import io
 import json
+import math
 import mimetypes
 import os
 import re
@@ -42,7 +43,9 @@ from out_layout import (
     iter_sweep_dirs,
     resolve_experiment_dir,
     resolve_sweep_dir,
+    resolve_venv_site_packages,
 )
+from results_metric_keys import metrics_rmse_theta_odom, metrics_rmse_xy_odom
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,10 +54,10 @@ CONFIG_DIR = REPO_ROOT / "ai_slam_ws" / "src" / "ai_slam_bringup" / "config"
 FUNCTION_INDEX_MD = DOCS_DIR / "function_index.md"
 FUNCTION_INDEX_JSON = DOCS_DIR / "function_index.json"
 JOB_LOG_DIR = DASHBOARD_JOBS_DIR
-VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.12" / "site-packages"
+VENV_SITE = resolve_venv_site_packages(REPO_ROOT)
 POSITION_SERIES = {
     "gt": ("time_s", "gt_xytheta", "GT", "#e2e8f0"),
-    "baseline": ("time_s", "baseline_xytheta", "Baseline", "#c2410c"),
+    "baseline": ("time_s", "baseline_xytheta", "Odom (vs GT)", "#c2410c"),
     "ai": ("ai_time_s", "ai_xytheta", "AI", "#0f766e"),
     "scanmatch": ("scanmatch_time_s", "scanmatch_xytheta", "ScanMatcher", "#2563eb"),
     "bruteforce": ("bruteforce_time_s", "bruteforce_xytheta", "Bruteforce", "#7c3aed"),
@@ -64,7 +67,7 @@ POSITION_SERIES = {
 
 mimetypes.add_type("text/markdown", ".md")
 ERROR_SERIES = {
-    "baseline": ("time_s", "baseline_err_xy", "baseline_err_theta", "Baseline", "#c2410c"),
+    "baseline": ("time_s", "baseline_err_xy", "baseline_err_theta", "Odom (vs GT)", "#c2410c"),
     "ai": ("ai_time_s", "ai_err_xy", "ai_err_theta", "AI", "#0f766e"),
     "scanmatch": ("scanmatch_time_s", "scanmatch_err_xy", "scanmatch_err_theta", "ScanMatcher", "#2563eb"),
     "bruteforce": ("bruteforce_time_s", "bruteforce_err_xy", "bruteforce_err_theta", "Bruteforce", "#7c3aed"),
@@ -129,17 +132,23 @@ COMPARISON_PARAM_SPECS = [
     {"key": "evaluation.points_filter_mode", "label": "Mapa points_filter_mode", "group": "map_filter", "kind": "categorical", "sources": [("config", ("evaluation", "points_filter_mode"))]},
 ]
 COMPARISON_METRIC_SPECS = [
-    {"key": "rmse_xy_robak", "label": "Robak RMSE XY [m]", "group": "robak"},
-    {"key": "rmse_theta_robak", "label": "Robak RMSE theta [rad]", "group": "robak"},
-    {"key": "iou_map_robak", "label": "Robak IoU mapy", "group": "robak"},
-    {"key": "rmse_xy_rywak", "label": "Rywak RMSE XY [m]", "group": "rywak"},
-    {"key": "rmse_theta_rywak", "label": "Rywak RMSE theta [rad]", "group": "rywak"},
-    {"key": "iou_map_rywak", "label": "Rywak IoU mapy", "group": "rywak"},
-    {"key": "iou_map_robak", "label": "IoU mapy Robak", "group": "map_filter"},
-    {"key": "iou_map_rywak", "label": "IoU mapy Rywak", "group": "map_filter"},
+    {"key": "rmse_xy_robak", "label": "Robak RMSE XY [m]", "groups": ["robak"]},
+    {"key": "rmse_theta_robak", "label": "Robak RMSE theta [rad]", "groups": ["robak"]},
+    {"key": "iou_map_robak", "label": "IoU mapy (Robak)", "groups": ["robak", "map_filter"]},
+    {"key": "rmse_xy_rywak", "label": "Rywak RMSE XY [m]", "groups": ["rywak"]},
+    {"key": "rmse_theta_rywak", "label": "Rywak RMSE theta [rad]", "groups": ["rywak"]},
+    {"key": "iou_map_rywak", "label": "IoU mapy (Rywak)", "groups": ["rywak", "map_filter"]},
 ]
 PARAM_SPEC_BY_KEY = {spec["key"]: spec for spec in COMPARISON_PARAM_SPECS}
 METRIC_SPEC_BY_KEY = {spec["key"]: spec for spec in COMPARISON_METRIC_SPECS}
+
+
+def metric_spec_groups(spec: dict[str, Any]) -> list[str]:
+    raw = spec.get("groups")
+    if isinstance(raw, list) and raw:
+        return [str(g) for g in raw]
+    legacy = spec.get("group")
+    return [str(legacy)] if legacy else []
 SHARED_SWEEP_PARAM_LABELS = {
     "shared.lr": "Wspólny learning rate Robaka i Rywaka",
     "shared.max_epochs": "Wspólna liczba epok Robaka i Rywaka",
@@ -151,7 +160,7 @@ SWEEP_PLOT_FAMILIES = {
         "label": "RMSE XY [m]",
         "y_label": "RMSE XY [m]",
         "series": [
-            ("baseline", "rmse_xy_baseline", "Baseline", "#c2410c"),
+            ("baseline", "rmse_xy_odom_topic", "Odom (vs GT)", "#c2410c"),
             ("ai", "rmse_xy_ai", "AI", "#0f766e"),
             ("robak", "rmse_xy_robak", "Robak", "#b91c1c"),
             ("rywak", "rmse_xy_rywak", "Rywak", "#4d7c0f"),
@@ -161,7 +170,7 @@ SWEEP_PLOT_FAMILIES = {
         "label": "RMSE theta [rad]",
         "y_label": "RMSE theta [rad]",
         "series": [
-            ("baseline", "rmse_theta_baseline", "Baseline", "#c2410c"),
+            ("baseline", "rmse_theta_odom_topic", "Odom (vs GT)", "#c2410c"),
             ("ai", "rmse_theta_ai", "AI", "#0f766e"),
             ("robak", "rmse_theta_robak", "Robak", "#b91c1c"),
             ("rywak", "rmse_theta_rywak", "Rywak", "#4d7c0f"),
@@ -171,10 +180,10 @@ SWEEP_PLOT_FAMILIES = {
         "label": "IoU mapy",
         "y_label": "IoU",
         "series": [
-            ("baseline", "iou_map_baseline", "Baseline", "#c2410c"),
-            ("ai", "iou_map_ai", "AI", "#0f766e"),
-            ("robak", "iou_map_robak", "Robak", "#b91c1c"),
-            ("rywak", "iou_map_rywak", "Rywak", "#4d7c0f"),
+            ("baseline", "iou_map_baseline", "SLAM /map", "#c2410c"),
+            ("ai", "iou_map_ai", "AI /map_ai", "#0f766e"),
+            ("robak", "iou_map_robak", "Robak /map_robak", "#b91c1c"),
+            ("rywak", "iou_map_rywak", "Rywak /map_rywak", "#4d7c0f"),
         ],
     },
 }
@@ -404,6 +413,8 @@ def recover_sweep_rows(sweep_dir: Path) -> list[dict[str, Any]]:
 
         results = read_json(exp_dir / "results.json")
         metrics = results.get("metrics", {}) if isinstance(results.get("metrics"), dict) else {}
+        odom_xy = metrics_rmse_xy_odom(metrics)
+        odom_th = metrics_rmse_theta_odom(metrics)
         total_time = metadata.get("total_experiment_time_sec")
         recovered_rows.append(
             {
@@ -424,8 +435,10 @@ def recover_sweep_rows(sweep_dir: Path) -> list[dict[str, Any]]:
                 "rmse_xy_ai": metrics.get("rmse_xy_ai"),
                 "rmse_theta_ai": metrics.get("rmse_theta_ai"),
                 "iou_map_ai": metrics.get("iou_map_ai"),
-                "rmse_xy_baseline": metrics.get("rmse_xy_baseline"),
-                "rmse_theta_baseline": metrics.get("rmse_theta_baseline"),
+                "rmse_xy_odom_topic": odom_xy,
+                "rmse_theta_odom_topic": odom_th,
+                "rmse_xy_baseline": odom_xy,
+                "rmse_theta_baseline": odom_th,
                 "iou_map_baseline": metrics.get("iou_map_baseline"),
             }
         )
@@ -587,9 +600,11 @@ def delete_experiment_dir(experiment_id: str) -> dict[str, Any]:
 
 def load_trajectory_npz(experiment_id: str) -> np.lib.npyio.NpzFile:
     exp_dir = resolve_experiment_dir(experiment_id)
-    traj_path = exp_dir / "trajectory_data.npz"
+    traj_path = exp_dir / "eval_trajectory_data.npz"
     if not traj_path.exists():
-        raise FileNotFoundError(f"Brak pliku trajectory_data.npz dla {experiment_id}")
+        traj_path = exp_dir / "trajectory_data.npz"
+    if not traj_path.exists():
+        raise FileNotFoundError(f"Brak pliku eval_trajectory_data.npz/trajectory_data.npz dla {experiment_id}")
     return np.load(traj_path, allow_pickle=True)
 
 
@@ -597,10 +612,13 @@ def load_map_layers_npz(experiment_id: str) -> np.lib.npyio.NpzFile:
     exp_dir = resolve_experiment_dir(experiment_id)
     results = read_json(exp_dir / "results.json")
     artifacts = results.get("artifacts", {}) if isinstance(results, dict) else {}
-    map_layers_path = Path(str(artifacts.get("map_layers_npz", exp_dir / "map_layers.npz")))
+    map_layers_default = exp_dir / "eval_map_layers.npz"
+    if not map_layers_default.exists():
+        map_layers_default = exp_dir / "map_layers.npz"
+    map_layers_path = Path(str(artifacts.get("map_layers_npz", map_layers_default)))
     if not map_layers_path.exists():
         raise FileNotFoundError(
-            f"Brak pliku map_layers.npz dla {experiment_id}. "
+            f"Brak pliku eval_map_layers.npz/map_layers.npz dla {experiment_id}. "
             "Uruchom nową ewaluację po aktualizacji pipeline, aby zapisać przełączalne warstwy map."
         )
     return np.load(map_layers_path, allow_pickle=True)
@@ -619,6 +637,20 @@ def inverse_pose_transform_xy_scalar(x: float, y: float, tx: float, ty: float, y
         c * dx + s * dy,
         -s * dx + c * dy,
     )
+
+
+DEFAULT_WORLD_SPAWN_POSES = {
+    "world_house.sdf": (5.0, 0.0, 0.0),
+    "world_house": (5.0, 0.0, 0.0),
+    "world_office.sdf": (0.03, 2.27, 0.0),
+    "world_office": (0.03, 2.27, 0.0),
+    "world_hospital.sdf": (0.0, -25.0, 0.0),
+    "world_hospital": (0.0, -25.0, 0.0),
+}
+LEGACY_WORLD_SPAWN_POSES = {
+    "world_hospital.sdf": (0.72, 11.6, 0.0),
+    "world_hospital": (0.72, 11.6, 0.0),
+}
 
 
 def read_pgm_size(path: Path) -> tuple[int, int]:
@@ -663,35 +695,96 @@ def load_reference_overlay(experiment_id: str, max_points: int = 30000) -> dict[
     spawn_x = 0.0
     spawn_y = 0.0
     spawn_yaw = 0.0
+    spawn_found = False
+    world_name = str(results.get("world_name", "")).strip()
+    candidate_world_keys: list[str] = []
     config_snapshot_path = Path(str(artifacts.get("config_snapshot_yaml", exp_dir / "config_snapshot.yaml")))
     if config_snapshot_path.exists():
         try:
             cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
-            spawn_poses = cfg.get("simulation", {}).get("spawn_poses", {}) or {}
-            world_name = str(results.get("world_name", "")).strip()
-            candidate_keys = [world_name, f"{world_name}.sdf"] if world_name else []
-            for key in candidate_keys:
+            simulation = cfg.get("simulation", {}) if isinstance(cfg.get("simulation"), dict) else {}
+            spawn_poses = simulation.get("spawn_poses", {}) or {}
+            for value in [world_name, simulation.get("test_world"), simulation.get("train_world")]:
+                text = str(value or "").strip()
+                if not text:
+                    continue
+                for key in [text, text if text.endswith(".sdf") else f"{text}.sdf"]:
+                    if key not in candidate_world_keys:
+                        candidate_world_keys.append(key)
+            for key in candidate_world_keys:
                 pose = spawn_poses.get(key)
                 if isinstance(pose, dict):
                     spawn_x = float(pose.get("x", 0.0))
                     spawn_y = float(pose.get("y", 0.0))
                     spawn_yaw = float(pose.get("yaw", 0.0))
+                    spawn_found = True
                     break
         except Exception:
             pass
+    if not candidate_world_keys and world_name:
+        candidate_world_keys = [world_name, world_name if world_name.endswith(".sdf") else f"{world_name}.sdf"]
+    if not spawn_found:
+        for key in candidate_world_keys:
+            if key in DEFAULT_WORLD_SPAWN_POSES:
+                spawn_x, spawn_y, spawn_yaw = DEFAULT_WORLD_SPAWN_POSES[key]
+                break
 
     resolution = float(ref_cfg.get("resolution", 0.05))
     origin_vals = ref_cfg.get("origin", [-3.0, -3.0, 0.0]) or [-3.0, -3.0, 0.0]
     while len(origin_vals) < 3:
         origin_vals.append(0.0)
-    ox_local, oy_local = inverse_pose_transform_xy_scalar(
-        float(origin_vals[0]),
-        float(origin_vals[1]),
-        spawn_x,
-        spawn_y,
-        spawn_yaw,
-    )
-    oyaw_local = wrap_angle_scalar(float(origin_vals[2]) - float(spawn_yaw))
+    def _local_origin_for_spawn(spawn_pose: tuple[float, float, float]) -> tuple[float, float, float]:
+        sx, sy, syaw = spawn_pose
+        ox_local, oy_local = inverse_pose_transform_xy_scalar(
+            float(origin_vals[0]),
+            float(origin_vals[1]),
+            float(sx),
+            float(sy),
+            float(syaw),
+        )
+        oyaw_local = wrap_angle_scalar(float(origin_vals[2]) - float(syaw))
+        return ox_local, oy_local, oyaw_local
+
+    chosen_spawn = (float(spawn_x), float(spawn_y), float(spawn_yaw))
+    trajectory_path = exp_dir / "eval_trajectory_data.npz"
+    if not trajectory_path.exists():
+        trajectory_path = exp_dir / "trajectory_data.npz"
+    if trajectory_path.exists():
+        try:
+            candidate_spawns: list[tuple[float, float, float]] = [chosen_spawn]
+            for key in candidate_world_keys:
+                for mapping in (DEFAULT_WORLD_SPAWN_POSES, LEGACY_WORLD_SPAWN_POSES):
+                    pose = mapping.get(key)
+                    if pose is not None and pose not in candidate_spawns:
+                        candidate_spawns.append(pose)
+            if len(candidate_spawns) > 1:
+                with np.load(trajectory_path, allow_pickle=True) as data:
+                    gt = np.asarray(data["gt_xytheta"], dtype=np.float32).reshape((-1, 3)) if "gt_xytheta" in data else np.zeros((0, 3), dtype=np.float32)
+                if gt.shape[0] > 0:
+                    width_eval, height_eval = read_pgm_size(image_path)
+                    best_spawn = chosen_spawn
+                    best_ratio = None
+                    for pose in candidate_spawns:
+                        ox_test, oy_test, _oyaw_test = _local_origin_for_spawn(pose)
+                        x_min = ox_test
+                        y_min = oy_test
+                        x_max = x_min + width_eval * resolution
+                        y_max = y_min + height_eval * resolution
+                        outside = (
+                            (gt[:, 0] < x_min)
+                            | (gt[:, 0] > x_max)
+                            | (gt[:, 1] < y_min)
+                            | (gt[:, 1] > y_max)
+                        )
+                        ratio = float(np.mean(outside.astype(np.float32)))
+                        if best_ratio is None or ratio < best_ratio:
+                            best_ratio = ratio
+                            best_spawn = pose
+                    chosen_spawn = best_spawn
+        except Exception:
+            pass
+
+    ox_local, oy_local, oyaw_local = _local_origin_for_spawn(chosen_spawn)
 
     try:
         width, height = read_pgm_size(image_path)
@@ -837,7 +930,9 @@ def get_error_series(
 
 
 def inspect_trajectory_capabilities(exp_dir: Path) -> dict[str, Any]:
-    traj_path = exp_dir / "trajectory_data.npz"
+    traj_path = exp_dir / "eval_trajectory_data.npz"
+    if not traj_path.exists():
+        traj_path = exp_dir / "trajectory_data.npz"
     if not traj_path.exists():
         return {"has_series": False, "error_mode": "missing"}
     try:
@@ -903,7 +998,7 @@ def build_comparison_catalog(experiments: list[dict[str, Any]]) -> dict[str, Any
 
         metrics: list[dict[str, Any]] = []
         for spec in COMPARISON_METRIC_SPECS:
-            if spec["group"] != group_key:
+            if group_key not in metric_spec_groups(spec):
                 continue
             available_count = sum(1 for exp in experiments if exp.get("metrics", {}).get(spec["key"]) is not None)
             if available_count <= 0:
@@ -940,6 +1035,15 @@ def metric_float(value: Any) -> float | None:
         return None
 
 
+def metric_float_from_sweep_row(row: dict[str, Any], metric_key: str) -> float | None:
+    """Odczyt metryki ze wiersza sweepa; RMSE odom uwzględnia alias legace w kolumnach CSV."""
+    if metric_key == "rmse_xy_odom_topic":
+        return metric_float(metrics_rmse_xy_odom(row))
+    if metric_key == "rmse_theta_odom_topic":
+        return metric_float(metrics_rmse_theta_odom(row))
+    return metric_float(row.get(metric_key))
+
+
 def discover_sweeps() -> list[dict[str, Any]]:
     sweeps: list[dict[str, Any]] = []
     ensure_grouped_out_layout()
@@ -965,7 +1069,8 @@ def discover_sweeps() -> list[dict[str, Any]]:
                 count = sum(
                     1
                     for row in rows
-                    if str(row.get("status", "")).strip() == "done" and metric_float(row.get(metric_key)) is not None
+                    if str(row.get("status", "")).strip() == "done"
+                    and metric_float_from_sweep_row(row, metric_key) is not None
                 )
                 if count > 0:
                     available_series.append({"key": series_key, "label": label, "count": count})
@@ -1020,7 +1125,7 @@ def discover_experiments() -> list[dict[str, Any]]:
 
         datasets: list[dict[str, Any]] = []
         for dataset_path in sorted(exp_dir.glob("dataset*.npz")):
-            if dataset_path.name == "trajectory_data.npz":
+            if dataset_path.name in {"trajectory_data.npz", "eval_trajectory_data.npz"}:
                 continue
             if not dataset_path.exists():
                 continue
@@ -1040,22 +1145,61 @@ def discover_experiments() -> list[dict[str, Any]]:
             )
 
         artifacts = results.get("artifacts", {})
+        train_summary_path = exp_dir / "train_inspection_summary.json"
+        if not train_summary_path.exists():
+            train_summary_path = exp_dir / "training_inspection_summary.json"
+        train_curve_ai_path = exp_dir / "train_curve_ai.png"
+        if not train_curve_ai_path.exists():
+            train_curve_ai_path = exp_dir / "training_curve_ai.png"
+        train_curve_robak_path = exp_dir / "train_curve_robak.png"
+        if not train_curve_robak_path.exists():
+            train_curve_robak_path = exp_dir / "training_curve_robak.png"
+        train_curve_rywak_path = exp_dir / "train_curve_rywak.png"
+        if not train_curve_rywak_path.exists():
+            train_curve_rywak_path = exp_dir / "training_curve_rywak.png"
+        trajectory_speed_path = exp_dir / "eval_trajectory_speed.png"
+        if not trajectory_speed_path.exists():
+            trajectory_speed_path = exp_dir / "trajectory_speed.png"
+        eval_traj_path = exp_dir / "eval_trajectory.png"
+        if not eval_traj_path.exists():
+            eval_traj_path = exp_dir / "trajectory.png"
+        eval_err_path = exp_dir / "eval_errors.png"
+        if not eval_err_path.exists():
+            eval_err_path = exp_dir / "errors.png"
+        eval_maps_path = exp_dir / "eval_maps.png"
+        if not eval_maps_path.exists():
+            eval_maps_path = exp_dir / "maps.png"
+        eval_layers_path = exp_dir / "eval_map_layers.npz"
+        if not eval_layers_path.exists():
+            eval_layers_path = exp_dir / "map_layers.npz"
+        eval_traj_data_path = exp_dir / "eval_trajectory_data.npz"
+        if not eval_traj_data_path.exists():
+            eval_traj_data_path = exp_dir / "trajectory_data.npz"
         extra_artifacts = {
             "dataset_inspection_overview_png": exp_dir / "dataset_inspection_overview.png",
             "dataset_inspection_scans_png": exp_dir / "dataset_inspection_scans.png",
             "dataset_inspection_summary_json": exp_dir / "dataset_inspection_summary.json",
+            "dataset_target_components_png": exp_dir / "dataset_target_components.png",
             "dataset_analysis_png": exp_dir / "dataset_analysis.png",
             "experiment_inspection_summary_json": exp_dir / "experiment_inspection_summary.json",
             "dataset_robak_coverage_summary_json": exp_dir / "dataset_robak_coverage_summary.json",
             "dataset_robak_coverage_distance_png": exp_dir / "dataset_robak_coverage_distance.png",
             "dataset_robak_coverage_rotation_png": exp_dir / "dataset_robak_coverage_rotation.png",
+            "dataset_robak_target_components_png": exp_dir / "dataset_robak_target_components.png",
             "dataset_rywak_coverage_summary_json": exp_dir / "dataset_rywak_coverage_summary.json",
             "dataset_rywak_coverage_linear_velocity_png": exp_dir / "dataset_rywak_coverage_linear_velocity.png",
             "dataset_rywak_coverage_angular_velocity_png": exp_dir / "dataset_rywak_coverage_angular_velocity.png",
-            "training_inspection_summary_json": exp_dir / "training_inspection_summary.json",
-            "training_curve_ai_png": exp_dir / "training_curve_ai.png",
-            "training_curve_robak_png": exp_dir / "training_curve_robak.png",
-            "training_curve_rywak_png": exp_dir / "training_curve_rywak.png",
+            "dataset_rywak_target_signed_velocity_png": exp_dir / "dataset_rywak_target_signed_velocity.png",
+            "training_inspection_summary_json": train_summary_path,
+            "training_curve_ai_png": train_curve_ai_path,
+            "training_curve_robak_png": train_curve_robak_path,
+            "training_curve_rywak_png": train_curve_rywak_path,
+            "trajectory_speed_png": trajectory_speed_path,
+            "trajectory_png": eval_traj_path,
+            "errors_png": eval_err_path,
+            "maps_png": eval_maps_path,
+            "map_layers_npz": eval_layers_path,
+            "trajectory_data_npz": eval_traj_data_path,
         }
         metrics = results.get("metrics", {})
         eval_samples = None
@@ -1087,6 +1231,9 @@ def discover_experiments() -> list[dict[str, Any]]:
                 "error_series_mode": series_info["error_mode"],
                 "dataset_inspection": dataset_inspection_summary if dataset_inspection_summary else None,
                 "artifacts": artifact_map,
+                "metrics_legend": results.get("metrics_legend")
+                if isinstance(results.get("metrics_legend"), dict)
+                else {},
             }
         )
     return experiments
@@ -1193,7 +1340,7 @@ def command_for_training(model_type: str, experiment_id: str) -> tuple[str, str]
         "source /opt/ros/jazzy/setup.bash",
         "if [ -f ai_slam_ws/install/setup.bash ]; then source ai_slam_ws/install/setup.bash; fi",
     ]
-    if VENV_SITE.is_dir():
+    if VENV_SITE is not None and VENV_SITE.is_dir():
         preamble_parts.append(f"export PYTHONPATH=\"${{PYTHONPATH:+$PYTHONPATH:}}{VENV_SITE}\"")
     preamble = " && ".join(preamble_parts)
 
@@ -1509,7 +1656,7 @@ def plot_error_image(
     except Exception as exc:
         return make_placeholder_figure(
             "Błędy",
-            f"{exc}\nNiestandardowy wykres błędu wymaga pliku trajectory_data.npz z ewaluacji.",
+            f"{exc}\nNiestandardowy wykres błędu wymaga pliku eval_trajectory_data.npz (fallback: trajectory_data.npz) z ewaluacji.",
         )
 
     is_orientation = metric.startswith("orientation")
@@ -1567,7 +1714,7 @@ def plot_error_image(
             "Błędy",
             (
                 f"Brak danych błędów dla {experiment_id}.\n"
-                "Dla starszych eksperymentów wykres działa tylko jeśli istnieje trajectory_data.npz."
+                "Dla starszych eksperymentów wykres działa tylko jeśli istnieje eval_trajectory_data.npz lub trajectory_data.npz."
             ),
         )
 
@@ -1599,10 +1746,10 @@ def plot_error_image(
 
 MAP_LAYER_LABELS = {
     "ref": "Mapa referencyjna",
-    "baseline": "Baseline",
-    "ai": "AI",
-    "robak": "Robak",
-    "rywak": "Rywak",
+    "baseline": "SLAM /map",
+    "ai": "SLAM /map_ai",
+    "robak": "SLAM /map_robak",
+    "rywak": "SLAM /map_rywak",
 }
 
 
@@ -1674,7 +1821,7 @@ def plot_comparison_image(group: str, param_key: str, metric_key: str) -> bytes:
     metric_spec = METRIC_SPEC_BY_KEY.get(metric_key)
     if param_spec is None or metric_spec is None:
         return make_placeholder_figure("Porównanie", "Nieznany parametr lub metryka.")
-    if param_spec["group"] != group or metric_spec["group"] != group:
+    if param_spec["group"] != group or group not in metric_spec_groups(metric_spec):
         return make_placeholder_figure("Porównanie", "Parametr i metryka nie należą do tej samej rodziny.")
 
     experiments = discover_experiments()
@@ -1829,7 +1976,7 @@ def plot_sweep_image(sweep_id: str, family_key: str, selected_series: list[str] 
             x_vals: list[float] = []
             y_vals: list[float] = []
             for x_value, row in numeric_points:
-                metric_value = metric_float(row.get(metric_key))
+                metric_value = metric_float_from_sweep_row(row, metric_key)
                 if metric_value is None:
                     continue
                 x_vals.append(float(x_value))
@@ -1854,7 +2001,7 @@ def plot_sweep_image(sweep_id: str, family_key: str, selected_series: list[str] 
             x_vals: list[float] = []
             y_vals: list[float] = []
             for row in done_rows:
-                metric_value = metric_float(row.get(metric_key))
+                metric_value = metric_float_from_sweep_row(row, metric_key)
                 if metric_value is None:
                     continue
                 x_vals.append(float(positions[format_param_value(row.get("param_value"))]))
@@ -2306,6 +2453,162 @@ HTML_PAGE = """<!doctype html>
       display: grid;
       gap: 8px;
     }
+    .artifact-gallery-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .artifact-toolbar {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .artifact-section {
+      display: grid;
+      gap: 10px;
+    }
+    .artifact-section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .artifact-section-head h3 {
+      margin: 0;
+      font-size: 1rem;
+    }
+    .artifact-section-head small {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .artifact-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.88);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      font-size: 0.82rem;
+      color: var(--ink);
+    }
+    .artifact-chip strong {
+      font-size: 0.88rem;
+    }
+    .artifact-image-grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .artifact-image-card {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+    }
+    .artifact-image-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .artifact-image-title {
+      display: block;
+      font-size: 0.9rem;
+      line-height: 1.25;
+      margin-bottom: 2px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .artifact-image-meta {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .artifact-tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: rgba(30, 41, 59, 0.86);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      color: var(--accent-dark);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+    .artifact-image-card img {
+      width: 100%;
+      height: 220px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #0b1120;
+      object-fit: contain;
+      cursor: zoom-in;
+    }
+    .artifact-file-groups {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+    .artifact-file-group {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+    }
+    .artifact-file-group h3 {
+      margin: 0;
+      font-size: 0.96rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .artifact-file-group h3 small {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.8rem;
+    }
+    .artifact-file-list {
+      display: grid;
+      gap: 8px;
+    }
+    .artifact-file-link {
+      display: grid;
+      gap: 2px;
+      padding: 10px;
+      border-radius: 12px;
+      background: rgba(11, 17, 32, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      text-decoration: none;
+      color: var(--ink);
+    }
+    .artifact-file-link:hover {
+      border-color: rgba(163, 230, 53, 0.45);
+      background: rgba(15, 23, 42, 0.95);
+    }
+    .artifact-file-key {
+      font-size: 0.82rem;
+      color: var(--accent-dark);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .artifact-file-name {
+      font-size: 0.78rem;
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     .inspection-summary {
       display: grid;
       gap: 14px;
@@ -2584,7 +2887,7 @@ HTML_PAGE = """<!doctype html>
             <button class="secondary" onclick="loadState()">Odśwież listę</button>
             <button id="delete-experiment-button" class="ghost" onclick="deleteSelectedExperiment()">Usuń wybrany</button>
           </div>
-          <p class="section-note" id="delete-experiment-note">Usuwanie czyści katalog eksperymentu z <code>out/experiments</code> oraz alias w <code>out/</code>.</p>
+          <p class="section-note" id="delete-experiment-note">Usuwanie czyści katalog eksperymentu bezpośrednio z <code>out/exp_*</code>.</p>
           <div class="dataset-list" id="dataset-list"></div>
         </section>
 
@@ -2674,7 +2977,13 @@ HTML_PAGE = """<!doctype html>
         <section class="panel stack" data-workspaces="analysis" data-analysis-sections="experiment">
           <div>
             <h2>Metryki</h2>
-            <p class="section-note">Błędy RMSE są po lewej, IoU map po prawej.</p>
+            <p class="section-note">
+              <strong>RMSE (lewa kolumna):</strong> błąd trajektorii względem GT.
+              Karta <em>Odom (vs GT)</em> używa pozycji z topicu odometrycznego ewaluacji (np. <code>/odom</code>), nie estymacji pozycji z klasycznego SLAM.
+              Pozostałe karty to trajektorie z torów AI / Robak / Rywak / itd.
+              <strong>IoU (prawa kolumna):</strong> zgodność map occupancy z referencją dla odpowiednich torów SLAM (<code>/map</code>, <code>/map_ai</code>, …).
+            </p>
+            <p class="section-note muted" id="metrics-legend-extras"></p>
           </div>
           <div class="metric-columns">
             <div class="stack">
@@ -2794,7 +3103,7 @@ HTML_PAGE = """<!doctype html>
             <div class="info-box">
               <strong>Jak działa ten czas</strong>
               <div class="info-list">
-                <div>Każda iteracja sweepa nadpisze <code>timing.eval_duration</code> tą wartością.</div>
+                <div>Każda iteracja sweepa nadpisze <code>pipeline.evaluation_sec</code> (oraz <code>timing.eval_duration</code>) tą wartością.</div>
                 <div>To jest łączny czas fazy test + ewaluacja dla jednego przebiegu.</div>
               </div>
             </div>
@@ -2888,10 +3197,10 @@ HTML_PAGE = """<!doctype html>
             </div>
             <div class="plot-card">
               <div class="plot-actions">
-                <h3>`trajectory.png`</h3>
-                <button class="ghost" onclick="openImageModalById('trajectory-static', 'trajectory.png')">Powiększ</button>
+                <h3>`eval_trajectory.png`</h3>
+                <button class="ghost" onclick="openImageModalById('trajectory-static', 'eval_trajectory.png')">Powiększ</button>
               </div>
-              <img id="trajectory-static" alt="trajectory.png" onclick="openImageModalById('trajectory-static', 'trajectory.png')">
+              <img id="trajectory-static" alt="eval_trajectory.png" onclick="openImageModalById('trajectory-static', 'eval_trajectory.png')">
             </div>
           </div>
         </section>
@@ -2932,10 +3241,10 @@ HTML_PAGE = """<!doctype html>
             </div>
             <div class="plot-card">
               <div class="plot-actions">
-                <h3>`errors.png`</h3>
-                <button class="ghost" onclick="openImageModalById('error-static', 'errors.png')">Powiększ</button>
+                <h3>`eval_errors.png`</h3>
+                <button class="ghost" onclick="openImageModalById('error-static', 'eval_errors.png')">Powiększ</button>
               </div>
-              <img id="error-static" alt="errors.png" onclick="openImageModalById('error-static', 'errors.png')">
+              <img id="error-static" alt="eval_errors.png" onclick="openImageModalById('error-static', 'eval_errors.png')">
             </div>
           </div>
         </section>
@@ -2947,7 +3256,7 @@ HTML_PAGE = """<!doctype html>
           </div>
           <div id="map-diagnostics" class="muted"></div>
           <div class="checkboxes" id="maps-series"></div>
-          <p class="section-note">Widok niestandardowy działa dla eksperymentów, które mają zapisane warstwy w <code>map_layers.npz</code>.</p>
+          <p class="section-note">Widok niestandardowy działa dla eksperymentów, które mają zapisane warstwy w <code>eval_map_layers.npz</code> (fallback: <code>map_layers.npz</code>).</p>
           <div class="button-row">
             <button class="secondary" onclick="refreshPlots()">Odśwież mapy</button>
           </div>
@@ -2961,17 +3270,55 @@ HTML_PAGE = """<!doctype html>
             </div>
             <div class="plot-card">
               <div class="plot-actions">
-                <h3>`maps.png`</h3>
-                <button class="ghost" onclick="openImageModalById('maps-static', 'maps.png')">Powiększ</button>
+                <h3>`eval_maps.png`</h3>
+                <button class="ghost" onclick="openImageModalById('maps-static', 'eval_maps.png')">Powiększ</button>
               </div>
-              <img id="maps-static" alt="maps.png" onclick="openImageModalById('maps-static', 'maps.png')">
+              <img id="maps-static" alt="eval_maps.png" onclick="openImageModalById('maps-static', 'eval_maps.png')">
             </div>
           </div>
         </section>
 
-        <section class="panel" data-workspaces="analysis" data-analysis-sections="experiment">
-          <h2>Artefakty</h2>
-          <div id="artifact-list" class="artifact-list"></div>
+        <section class="panel stack" data-workspaces="analysis" data-analysis-sections="experiment">
+          <div>
+            <h2>Artefakty</h2>
+            <p class="section-note" id="artifact-gallery-note">Podgląd i grupowanie artefaktów dla wybranego eksperymentu.</p>
+          </div>
+          <div class="artifact-toolbar">
+            <label>Szukaj artefaktu
+              <input id="artifact-search" placeholder="np. coverage, trajectory, json, model" oninput="renderArtifactGallery(selectedExperiment())">
+            </label>
+            <label>Widok analizy
+              <select id="artifact-view-mode" onchange="renderArtifactGallery(selectedExperiment())">
+                <option value="all">Wszystko</option>
+                <option value="histograms">Histogramy</option>
+                <option value="plots">Wykresy</option>
+                <option value="images">Wszystkie obrazy</option>
+                <option value="files">Tylko pliki</option>
+              </select>
+            </label>
+          </div>
+          <div id="artifact-gallery-summary" class="artifact-gallery-summary"></div>
+          <section id="artifact-histograms-section" class="artifact-section">
+            <div class="artifact-section-head">
+              <h3>Histogramy</h3>
+              <small id="artifact-histograms-count">0</small>
+            </div>
+            <div id="artifact-gallery-histograms" class="artifact-image-grid"></div>
+          </section>
+          <section id="artifact-plots-section" class="artifact-section">
+            <div class="artifact-section-head">
+              <h3>Wykresy</h3>
+              <small id="artifact-plots-count">0</small>
+            </div>
+            <div id="artifact-gallery-plots" class="artifact-image-grid"></div>
+          </section>
+          <section id="artifact-files-section" class="artifact-section">
+            <div class="artifact-section-head">
+              <h3>Pozostałe pliki</h3>
+              <small id="artifact-files-count">0</small>
+            </div>
+            <div id="artifact-gallery-files" class="artifact-file-groups"></div>
+          </section>
         </section>
       </main>
     </div>
@@ -3004,8 +3351,31 @@ HTML_PAGE = """<!doctype html>
       configRenderTimer: null,
     };
     const OPTION_LABEL_MAX = 54;
-    const TRAJ_DEFAULT = ["gt", "baseline", "ai", "robak", "rywak"];
-    const ERR_DEFAULT = ["baseline", "ai", "robak", "rywak"];
+    const TRAJ_DEFAULT = ["gt", "baseline", "robak", "rywak"];
+    const ERR_DEFAULT = ["baseline", "robak", "rywak"];
+    const ARTIFACT_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.svg']);
+    const ARTIFACT_CATEGORY_LABELS = {
+      metrics: 'Metryki',
+      trajectory: 'Trajektoria i błędy',
+      maps: 'Mapy',
+      dataset: 'Dataset i coverage',
+      training: 'Trening',
+      models: 'Modele',
+      config: 'Konfiguracja',
+      metadata: 'Metadane',
+      other: 'Pozostałe',
+    };
+    const ARTIFACT_CATEGORY_ORDER = [
+      'metrics',
+      'trajectory',
+      'maps',
+      'dataset',
+      'training',
+      'models',
+      'config',
+      'metadata',
+      'other',
+    ];
     const CONFIG_GROUP_LABELS = {
       experiment: 'Eksperyment',
       simulation: 'Symulacja i świat',
@@ -3441,6 +3811,298 @@ HTML_PAGE = """<!doctype html>
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
     }
+    function artifactExtension(path) {
+      const fileName = pathTail(path, '').toLowerCase();
+      const dotIndex = fileName.lastIndexOf('.');
+      return dotIndex >= 0 ? fileName.slice(dotIndex) : '';
+    }
+    function isImageArtifactPath(path) {
+      return ARTIFACT_IMAGE_EXTENSIONS.has(artifactExtension(path));
+    }
+    function describeArtifactKey(key, fileName = '') {
+      const normalized = String(key || '').trim().toLowerCase();
+      if (!normalized) {
+        return fileName || 'Artefakt';
+      }
+      const cleaned = normalized
+        .replace(/_(png|json|npz|pt|yaml|yml)$/g, '')
+        .replaceAll('.', '_');
+      return humanizeToken(cleaned);
+    }
+    function classifyArtifactCategory(key, path) {
+      const normalized = String(key || '').toLowerCase();
+      const ext = artifactExtension(path);
+      if (normalized.includes('result') || normalized.includes('metrics')) {
+        return 'metrics';
+      }
+      if (normalized.includes('trajectory') || normalized.includes('error')) {
+        return 'trajectory';
+      }
+      if (normalized.includes('map')) {
+        return 'maps';
+      }
+      if (normalized.includes('dataset') || normalized.includes('coverage')) {
+        return 'dataset';
+      }
+      if (normalized.includes('training') || normalized.includes('train_history') || normalized.includes('history')) {
+        return 'training';
+      }
+      if (normalized.includes('model') || ext === '.pt') {
+        return 'models';
+      }
+      if (normalized.includes('config') || ext === '.yaml' || ext === '.yml') {
+        return 'config';
+      }
+      if (normalized.includes('metadata') || normalized.includes('summary')) {
+        return 'metadata';
+      }
+      return 'other';
+    }
+    function buildArtifactEntries(exp) {
+      const entries = [];
+      const seenPaths = new Set();
+      Object.entries(experimentArtifacts(exp)).forEach(([key, path]) => {
+        if (!path) {
+          return;
+        }
+        const normalizedPath = String(path);
+        if (seenPaths.has(normalizedPath)) {
+          return;
+        }
+        seenPaths.add(normalizedPath);
+        const fileName = pathTail(normalizedPath, normalizedPath);
+        const category = classifyArtifactCategory(key, normalizedPath);
+        entries.push({
+          key: String(key),
+          path: normalizedPath,
+          fileName,
+          ext: artifactExtension(normalizedPath),
+          category,
+          categoryLabel: ARTIFACT_CATEGORY_LABELS[category] || ARTIFACT_CATEGORY_LABELS.other,
+          isImage: isImageArtifactPath(normalizedPath),
+          label: describeArtifactKey(key, fileName),
+        });
+      });
+      entries.sort((left, right) => {
+        const leftRank = ARTIFACT_CATEGORY_ORDER.indexOf(left.category);
+        const rightRank = ARTIFACT_CATEGORY_ORDER.indexOf(right.category);
+        if (leftRank !== rightRank) {
+          return (leftRank < 0 ? 999 : leftRank) - (rightRank < 0 ? 999 : rightRank);
+        }
+        const labelCmp = left.label.localeCompare(right.label, 'pl', { sensitivity: 'base' });
+        if (labelCmp !== 0) {
+          return labelCmp;
+        }
+        return left.fileName.localeCompare(right.fileName, 'pl', { sensitivity: 'base' });
+      });
+      return entries;
+    }
+    function artifactSearchQuery() {
+      const node = document.getElementById('artifact-search');
+      return node && typeof node.value === 'string' ? node.value.trim().toLowerCase() : '';
+    }
+    function selectedArtifactViewMode() {
+      const node = document.getElementById('artifact-view-mode');
+      return node && node.value ? node.value : 'all';
+    }
+    function isHistogramArtifactEntry(entry) {
+      const token = `${entry.key} ${entry.fileName}`.toLowerCase();
+      return (
+        token.includes('hist') ||
+        token.includes('coverage') ||
+        token.includes('distribution') ||
+        token.includes('target_components') ||
+        token.includes('components')
+      );
+    }
+    function artifactMatchesQuery(entry, queryText) {
+      if (!queryText) {
+        return true;
+      }
+      const haystack = [
+        entry.key,
+        entry.label,
+        entry.fileName,
+        entry.category,
+        entry.categoryLabel,
+      ].join(' ').toLowerCase();
+      return haystack.includes(queryText);
+    }
+    function renderArtifactImageCards(entries, emptyMessage) {
+      if (!entries || entries.length <= 0) {
+        return `<div class="info-box">${escapeHtml(emptyMessage)}</div>`;
+      }
+      return entries.map((entry) => {
+        const src = `/api/artifact?path=${encodeURIComponent(entry.path)}`;
+        const title = `${entry.label} (${entry.fileName})`;
+        return `
+          <article class="artifact-image-card">
+            <div class="artifact-image-head">
+              <div>
+                <span class="artifact-image-title" title="${escapeHtml(entry.key)}">${escapeHtml(entry.label)}</span>
+                <div class="artifact-image-meta" title="${escapeHtml(entry.path)}">${escapeHtml(entry.fileName)}</div>
+              </div>
+              <span class="artifact-tag">${escapeHtml(entry.categoryLabel)}</span>
+            </div>
+            <img
+              src="${escapeHtml(src)}"
+              alt="${escapeHtml(title)}"
+              data-modal-src="${escapeHtml(src)}"
+              data-modal-title="${escapeHtml(title)}"
+              onclick="openImageModal(this.dataset.modalSrc, this.dataset.modalTitle)"
+            >
+            <div class="button-row">
+              <a class="link" target="_blank" href="${escapeHtml(src)}">Otwórz plik</a>
+              <button
+                class="ghost"
+                type="button"
+                data-modal-src="${escapeHtml(src)}"
+                data-modal-title="${escapeHtml(title)}"
+                onclick="openImageModal(this.dataset.modalSrc, this.dataset.modalTitle)"
+              >Powiększ</button>
+            </div>
+          </article>
+        `;
+      }).join('');
+    }
+    function setArtifactCount(nodeId, count) {
+      const node = document.getElementById(nodeId);
+      if (!node) {
+        return;
+      }
+      node.textContent = `${count} dopasowań`;
+    }
+    function renderArtifactGallery(exp) {
+      const note = document.getElementById('artifact-gallery-note');
+      const summaryNode = document.getElementById('artifact-gallery-summary');
+      const histSection = document.getElementById('artifact-histograms-section');
+      const histNode = document.getElementById('artifact-gallery-histograms');
+      const plotSection = document.getElementById('artifact-plots-section');
+      const plotNode = document.getElementById('artifact-gallery-plots');
+      const filesSection = document.getElementById('artifact-files-section');
+      const filesNode = document.getElementById('artifact-gallery-files');
+
+      if (!note || !summaryNode || !histSection || !histNode || !plotSection || !plotNode || !filesSection || !filesNode) {
+        return;
+      }
+
+      if (!exp) {
+        note.textContent = 'Brak wybranego eksperymentu.';
+        summaryNode.innerHTML = '';
+        histNode.innerHTML = '';
+        plotNode.innerHTML = '';
+        filesNode.innerHTML = '';
+        setArtifactCount('artifact-histograms-count', 0);
+        setArtifactCount('artifact-plots-count', 0);
+        setArtifactCount('artifact-files-count', 0);
+        return;
+      }
+
+      const searchQuery = artifactSearchQuery();
+      const viewMode = selectedArtifactViewMode();
+      const allEntries = buildArtifactEntries(exp);
+      const entries = allEntries.filter((entry) => artifactMatchesQuery(entry, searchQuery));
+      const imageEntries = entries.filter((entry) => entry.isImage);
+      const fileEntries = entries.filter((entry) => !entry.isImage);
+      const histogramEntries = imageEntries.filter((entry) => isHistogramArtifactEntry(entry));
+      const plotEntries = imageEntries.filter((entry) => !isHistogramArtifactEntry(entry));
+      const categoryCounts = entries.reduce((acc, entry) => {
+        acc[entry.category] = (acc[entry.category] || 0) + 1;
+        return acc;
+      }, {});
+      const modeLabel = {
+        all: 'wszystko',
+        histograms: 'histogramy',
+        plots: 'wykresy',
+        images: 'wszystkie obrazy',
+        files: 'tylko pliki',
+      }[viewMode] || 'wszystko';
+      const infoParts = [];
+      if (searchQuery) {
+        infoParts.push(`filtr: "${searchQuery}"`);
+      }
+      infoParts.push(`widok: ${modeLabel}`);
+      note.textContent = `Dopasowano ${entries.length} z ${allEntries.length} artefaktów (${histogramEntries.length} histogramów, ${plotEntries.length} wykresów, ${fileEntries.length} plików). ${infoParts.join(' | ')}`;
+
+      const showHistograms = ['all', 'images', 'histograms'].includes(viewMode);
+      const showPlots = ['all', 'images', 'plots'].includes(viewMode);
+      const showFiles = ['all', 'files'].includes(viewMode);
+      histSection.hidden = !showHistograms;
+      plotSection.hidden = !showPlots;
+      filesSection.hidden = !showFiles;
+      setArtifactCount('artifact-histograms-count', histogramEntries.length);
+      setArtifactCount('artifact-plots-count', plotEntries.length);
+      setArtifactCount('artifact-files-count', fileEntries.length);
+
+      const summaryBits = [
+        `<span class="artifact-chip"><strong>${entries.length}</strong> wszystkie</span>`,
+        `<span class="artifact-chip"><strong>${histogramEntries.length}</strong> histogramy</span>`,
+        `<span class="artifact-chip"><strong>${plotEntries.length}</strong> wykresy</span>`,
+        `<span class="artifact-chip"><strong>${fileEntries.length}</strong> pliki</span>`,
+      ];
+      ARTIFACT_CATEGORY_ORDER.forEach((category) => {
+        const count = Number(categoryCounts[category] || 0);
+        if (count <= 0) {
+          return;
+        }
+        const label = ARTIFACT_CATEGORY_LABELS[category] || ARTIFACT_CATEGORY_LABELS.other;
+        summaryBits.push(`<span class="artifact-chip">${escapeHtml(label)}: <strong>${count}</strong></span>`);
+      });
+      summaryNode.innerHTML = summaryBits.join('');
+
+      histNode.innerHTML = renderArtifactImageCards(
+        histogramEntries,
+        searchQuery
+          ? 'Brak histogramów pasujących do filtra.'
+          : 'Brak histogramów w tym eksperymencie.'
+      );
+      plotNode.innerHTML = renderArtifactImageCards(
+        plotEntries,
+        searchQuery
+          ? 'Brak wykresów pasujących do filtra.'
+          : 'Brak wykresów w tym eksperymencie.'
+      );
+
+      if (fileEntries.length > 0) {
+        const grouped = new Map();
+        fileEntries.forEach((entry) => {
+          if (!grouped.has(entry.category)) {
+            grouped.set(entry.category, []);
+          }
+          grouped.get(entry.category).push(entry);
+        });
+        const orderedCategories = [...grouped.keys()].sort((left, right) => {
+          const leftRank = ARTIFACT_CATEGORY_ORDER.indexOf(left);
+          const rightRank = ARTIFACT_CATEGORY_ORDER.indexOf(right);
+          return (leftRank < 0 ? 999 : leftRank) - (rightRank < 0 ? 999 : rightRank);
+        });
+        filesNode.innerHTML = orderedCategories.map((category) => {
+          const items = grouped.get(category) || [];
+          const label = ARTIFACT_CATEGORY_LABELS[category] || ARTIFACT_CATEGORY_LABELS.other;
+          const rows = items.map((entry) => {
+            const src = `/api/artifact?path=${encodeURIComponent(entry.path)}`;
+            return `
+              <a class="artifact-file-link" target="_blank" href="${escapeHtml(src)}" title="${escapeHtml(entry.path)}">
+                <span class="artifact-file-key">${escapeHtml(entry.label)}</span>
+                <span class="artifact-file-name">${escapeHtml(entry.fileName)}</span>
+              </a>
+            `;
+          }).join('');
+          return `
+            <section class="artifact-file-group">
+              <h3>${escapeHtml(label)} <small>${items.length} plików</small></h3>
+              <div class="artifact-file-list">${rows}</div>
+            </section>
+          `;
+        }).join('');
+      } else {
+        filesNode.innerHTML = `<div class="info-box">${
+          searchQuery
+            ? 'Brak plików pasujących do filtra.'
+            : 'Brak nieobrazkowych artefaktów w tym eksperymencie.'
+        }</div>`;
+      }
+    }
     function setOptionLabel(option, label, maxLen = OPTION_LABEL_MAX) {
       const fullLabel = String(coalesce(label, ''));
       option.dataset.fullLabel = fullLabel;
@@ -3554,6 +4216,20 @@ HTML_PAGE = """<!doctype html>
       const numeric = Number(value);
       return Number.isFinite(numeric) ? numeric : fallback;
     }
+    function pipelineDatasetDurationFallback() {
+      const pipe = numericConfigValue(['pipeline', 'dataset_collection_sec'], null);
+      if (pipe !== null) {
+        return pipe;
+      }
+      return numericConfigValue(['timing', 'dataset_duration'], 30.0);
+    }
+    function pipelineEvalDurationFallback() {
+      const pipe = numericConfigValue(['pipeline', 'evaluation_sec'], null);
+      if (pipe !== null) {
+        return pipe;
+      }
+      return numericConfigValue(['timing', 'eval_duration'], 100.0);
+    }
     function boolConfigValue(path, fallback = false) {
       const value = getPathValue(state.currentConfigParsed, path);
       if (typeof value === 'boolean') {
@@ -3642,6 +4318,13 @@ HTML_PAGE = """<!doctype html>
     }
     function hasMetricValue(value) {
       return !(value === null || value === undefined || value === '' || value === 'brak');
+    }
+
+    function coalesceMetric(primary, fallback) {
+      if (hasMetricValue(primary)) {
+        return primary;
+      }
+      return hasMetricValue(fallback) ? fallback : primary;
     }
 
     function renderSeriesCheckboxes(containerId, series, defaults) {
@@ -3928,7 +4611,7 @@ HTML_PAGE = """<!doctype html>
       if (current) {
         return current;
       }
-      const fromConfig = numericConfigValue(['timing', 'eval_duration'], 100.0);
+      const fromConfig = pipelineEvalDurationFallback();
       return fromConfig === null ? '100.0' : String(fromConfig);
     }
 
@@ -4310,29 +4993,46 @@ HTML_PAGE = """<!doctype html>
             ),
           ], quality.map),
         ];
+        if (summary.correction_dx_mm_signed || summary.correction_dy_mm_signed || summary.correction_dtheta_deg_signed) {
+          const dx = summary.correction_dx_mm_signed || {};
+          const dy = summary.correction_dy_mm_signed || {};
+          const dtheta = summary.correction_dtheta_deg_signed || {};
+          groups.push(
+            inspectionGroupCard('Etykiety AI', 'To są podpisane zmienne estymowane przez główną sieć: dx, dy, dtheta.', [
+              metricCard('dx min/max', `${formatInspectionNumber(dx.min, 1)} / ${formatInspectionNumber(dx.max, 1)} mm`),
+              metricCard('dy min/max', `${formatInspectionNumber(dy.min, 1)} / ${formatInspectionNumber(dy.max, 1)} mm`),
+              metricCard('dtheta min/max', `${formatInspectionNumber(dtheta.min, 1)} / ${formatInspectionNumber(dtheta.max, 1)} deg`),
+              metricCard('dx + / -', `${formatInspectionNumber(dx.positive_ratio_pct, 1)} % / ${formatInspectionNumber(dx.negative_ratio_pct, 1)} %`),
+              metricCard('dy + / -', `${formatInspectionNumber(dy.positive_ratio_pct, 1)} % / ${formatInspectionNumber(dy.negative_ratio_pct, 1)} %`),
+              metricCard('dtheta + / -', `${formatInspectionNumber(dtheta.positive_ratio_pct, 1)} % / ${formatInspectionNumber(dtheta.negative_ratio_pct, 1)} %`),
+            ])
+          );
+        }
         if (summary.robak_coverage) {
           const robak = summary.robak_coverage;
           groups.push(
-            inspectionGroupCard('Pokrycie Robak', 'Histogramy dla dopasowania skanów zapisano jako osobne artefakty PNG.', [
+            inspectionGroupCard('Etykiety Robak', 'Model Robak estymuje lokalne dx, dy, dtheta pomiędzy parą skanów.', [
               metricCard('Próbki', formatInspectionNumber(robak.sample_count, 0)),
-              metricCard('0-50 cm', `${formatInspectionNumber(robak.coverage_pct_0_50cm, 1)} %`),
-              metricCard('0-100 cm', `${formatInspectionNumber(robak.coverage_pct_0_100cm, 1)} %`),
-              metricCard('|rot| <= 90 deg', `${formatInspectionNumber(robak.coverage_pct_abs_rotation_0_90deg, 1)} %`),
-              metricCard('|rot| <= 180 deg', `${formatInspectionNumber(robak.coverage_pct_abs_rotation_0_180deg, 1)} %`),
-              metricCard('Max przesunięcie', `${formatInspectionNumber(robak.translation_cm && robak.translation_cm.max, 1)} cm`),
+              metricCard('dx min/max', `${formatInspectionNumber(robak.dx_local_cm_signed && robak.dx_local_cm_signed.min, 1)} / ${formatInspectionNumber(robak.dx_local_cm_signed && robak.dx_local_cm_signed.max, 1)} cm`),
+              metricCard('dy min/max', `${formatInspectionNumber(robak.dy_local_cm_signed && robak.dy_local_cm_signed.min, 1)} / ${formatInspectionNumber(robak.dy_local_cm_signed && robak.dy_local_cm_signed.max, 1)} cm`),
+              metricCard('dtheta min/max', `${formatInspectionNumber(robak.rotation_deg_signed && robak.rotation_deg_signed.min, 2)} / ${formatInspectionNumber(robak.rotation_deg_signed && robak.rotation_deg_signed.max, 2)} deg`),
+              metricCard('dx + / -', `${formatInspectionNumber(robak.dx_local_cm_signed && robak.dx_local_cm_signed.positive_ratio_pct, 1)} % / ${formatInspectionNumber(robak.dx_local_cm_signed && robak.dx_local_cm_signed.negative_ratio_pct, 1)} %`),
+              metricCard('dy + / -', `${formatInspectionNumber(robak.dy_local_cm_signed && robak.dy_local_cm_signed.positive_ratio_pct, 1)} % / ${formatInspectionNumber(robak.dy_local_cm_signed && robak.dy_local_cm_signed.negative_ratio_pct, 1)} %`),
+              metricCard('|trans| p95', `${formatInspectionNumber(robak.translation_cm && robak.translation_cm.p95, 2)} cm`),
             ])
           );
         }
         if (summary.rywak_coverage) {
           const rywak = summary.rywak_coverage;
           groups.push(
-            inspectionGroupCard('Pokrycie Rywak', 'Osobne histogramy prędkości liniowej i kątowej zapisano w katalogu eksperymentu.', [
+            inspectionGroupCard('Etykiety Rywak', 'Model Rywak estymuje podpisane v i omega, więc znak ma znaczenie.', [
               metricCard('Próbki', formatInspectionNumber(rywak.sample_count, 0)),
-              metricCard('|v| <= 1 m/s', `${formatInspectionNumber(rywak.coverage_pct_abs_linear_0_1mps, 1)} %`),
-              metricCard('|v| <= 2 m/s', `${formatInspectionNumber(rywak.coverage_pct_abs_linear_0_2mps, 1)} %`),
-              metricCard('|omega| <= 3 rad/s', `${formatInspectionNumber(rywak.coverage_pct_abs_angular_0_3radps, 1)} %`),
-              metricCard('Max |v|', `${formatInspectionNumber(rywak.linear_velocity_abs_mps && rywak.linear_velocity_abs_mps.max, 3)} m/s`),
-              metricCard('Max |omega|', `${formatInspectionNumber(rywak.angular_velocity_abs_radps && rywak.angular_velocity_abs_radps.max, 3)} rad/s`),
+              metricCard('v min/max', `${formatInspectionNumber(rywak.linear_velocity_signed_mps && rywak.linear_velocity_signed_mps.min, 3)} / ${formatInspectionNumber(rywak.linear_velocity_signed_mps && rywak.linear_velocity_signed_mps.max, 3)} m/s`),
+              metricCard('omega min/max', `${formatInspectionNumber(rywak.angular_velocity_signed_radps && rywak.angular_velocity_signed_radps.min, 3)} / ${formatInspectionNumber(rywak.angular_velocity_signed_radps && rywak.angular_velocity_signed_radps.max, 3)} rad/s`),
+              metricCard('v + / -', `${formatInspectionNumber(rywak.linear_velocity_signed_mps && rywak.linear_velocity_signed_mps.positive_ratio_pct, 1)} % / ${formatInspectionNumber(rywak.linear_velocity_signed_mps && rywak.linear_velocity_signed_mps.negative_ratio_pct, 1)} %`),
+              metricCard('omega + / -', `${formatInspectionNumber(rywak.angular_velocity_signed_radps && rywak.angular_velocity_signed_radps.positive_ratio_pct, 1)} % / ${formatInspectionNumber(rywak.angular_velocity_signed_radps && rywak.angular_velocity_signed_radps.negative_ratio_pct, 1)} %`),
+              metricCard('|v| p95', `${formatInspectionNumber(rywak.linear_velocity_abs_mps && rywak.linear_velocity_abs_mps.p95, 3)} m/s`),
+              metricCard('|omega| p95', `${formatInspectionNumber(rywak.angular_velocity_abs_radps && rywak.angular_velocity_abs_radps.p95, 3)} rad/s`),
             ])
           );
         }
@@ -4499,7 +5199,10 @@ HTML_PAGE = """<!doctype html>
       const exp = selectedExperiment();
       const meta = document.getElementById('experiment-meta');
       const datasets = document.getElementById('dataset-list');
-      const artifacts = document.getElementById('artifact-list');
+      const artifactSummary = document.getElementById('artifact-gallery-summary');
+      const artifactHistograms = document.getElementById('artifact-gallery-histograms');
+      const artifactPlots = document.getElementById('artifact-gallery-plots');
+      const artifactFiles = document.getElementById('artifact-gallery-files');
       const diagnostics = document.getElementById('map-diagnostics');
       const rmseGrid = document.getElementById('rmse-grid');
       const iouGrid = document.getElementById('iou-grid');
@@ -4509,10 +5212,32 @@ HTML_PAGE = """<!doctype html>
       if (!exp) {
         meta.textContent = 'Brak eksperymentów w katalogu out/.';
         datasets.innerHTML = '';
-        artifacts.innerHTML = '';
+        if (artifactSummary) {
+          artifactSummary.innerHTML = '';
+        }
+        if (artifactHistograms) {
+          artifactHistograms.innerHTML = '';
+        }
+        if (artifactPlots) {
+          artifactPlots.innerHTML = '';
+        }
+        if (artifactFiles) {
+          artifactFiles.innerHTML = '';
+        }
+        const artifactNote = document.getElementById('artifact-gallery-note');
+        if (artifactNote) {
+          artifactNote.textContent = 'Brak eksperymentów w katalogu out/.';
+        }
+        setArtifactCount('artifact-histograms-count', 0);
+        setArtifactCount('artifact-plots-count', 0);
+        setArtifactCount('artifact-files-count', 0);
         diagnostics.textContent = '';
         rmseGrid.innerHTML = '';
         iouGrid.innerHTML = '';
+        const legendExtras = document.getElementById('metrics-legend-extras');
+        if (legendExtras) {
+          legendExtras.textContent = '';
+        }
         errorAvailability.textContent = '';
         if (deleteButton) {
           deleteButton.disabled = true;
@@ -4535,8 +5260,22 @@ HTML_PAGE = """<!doctype html>
       `;
 
       const m = exp.metrics || {};
+      const legend = exp.metrics_legend || {};
+      const extras = document.getElementById('metrics-legend-extras');
+      if (extras) {
+        const hint =
+          legend.note_trajectory_alignment ||
+          legend.rmse_xy_odom_topic ||
+          legend.rmse_xy_baseline ||
+          '';
+        extras.textContent = typeof hint === 'string' && hint.trim() ? hint.trim() : '';
+      }
       const rmseCards = [
-        buildRmseCard('Baseline', m.rmse_xy_baseline, m.rmse_theta_baseline),
+        buildRmseCard(
+          'Odom (vs GT)',
+          coalesceMetric(m.rmse_xy_odom_topic, m.rmse_xy_baseline),
+          coalesceMetric(m.rmse_theta_odom_topic, m.rmse_theta_baseline),
+        ),
         buildRmseCard('AI', m.rmse_xy_ai, m.rmse_theta_ai),
         buildRmseCard('Robak', m.rmse_xy_robak, m.rmse_theta_robak),
         buildRmseCard('Rywak', m.rmse_xy_rywak, m.rmse_theta_rywak),
@@ -4546,10 +5285,10 @@ HTML_PAGE = """<!doctype html>
       rmseGrid.innerHTML = rmseCards.length ? rmseCards.join('') : '<div class="info-box">Brak dostępnych metryk RMSE dla tego eksperymentu.</div>';
 
       const iouCards = [
-        buildIouCard('Baseline', m.iou_map_baseline),
-        buildIouCard('AI', m.iou_map_ai),
-        buildIouCard('Robak', m.iou_map_robak),
-        buildIouCard('Rywak', m.iou_map_rywak),
+        buildIouCard('SLAM /map', m.iou_map_baseline),
+        buildIouCard('SLAM /map_ai', m.iou_map_ai),
+        buildIouCard('SLAM /map_robak', m.iou_map_robak),
+        buildIouCard('SLAM /map_rywak', m.iou_map_rywak),
       ].filter(Boolean);
       iouGrid.innerHTML = iouCards.length ? iouCards.join('') : '<div class="info-box">Brak dostępnych metryk IoU dla tego eksperymentu.</div>';
 
@@ -4560,15 +5299,7 @@ HTML_PAGE = """<!doctype html>
         node.innerHTML = `<span class="muted">${dataset.kind}</span><strong>${dataset.name}</strong><small>${dataset.size_mb} MB</small>`;
         datasets.appendChild(node);
       });
-
-      artifacts.innerHTML = '';
-      Object.entries(exp.artifacts || {}).forEach(([key, path]) => {
-        const a = document.createElement('a');
-        a.target = '_blank';
-        a.href = `/api/artifact?path=${encodeURIComponent(path)}`;
-        a.textContent = `${key}: ${path.split('/').pop()}`;
-        artifacts.appendChild(a);
-      });
+      renderArtifactGallery(exp);
 
       const pointDiag = exp.diagnostics && exp.diagnostics.point_map_filter ? exp.diagnostics.point_map_filter : {};
       diagnostics.innerHTML = Object.entries(pointDiag).map(([name, stat]) =>
@@ -4585,7 +5316,7 @@ HTML_PAGE = """<!doctype html>
         errorAvailability.textContent = 'Niestandardowy wykres błędu jest odtwarzany z trajektorii, bo eksperyment nie miał jeszcze zapisanych surowych błędów.';
       } else if (exp.error_series_mode === 'missing') {
         errorAvailability.className = 'flash error';
-        errorAvailability.textContent = 'Brak trajectory_data.npz. Dla pełnego wykresu niestandardowego trzeba uruchomić nową ewaluację.';
+        errorAvailability.textContent = 'Brak eval_trajectory_data.npz/trajectory_data.npz. Dla pełnego wykresu niestandardowego trzeba uruchomić nową ewaluację.';
       } else {
         errorAvailability.className = 'flash error';
         errorAvailability.textContent = 'Nie udało się odczytać danych do niestandardowego wykresu błędu.';
@@ -4830,7 +5561,7 @@ HTML_PAGE = """<!doctype html>
       const evalOnly = [];
 
       if (boolConfigValue(['tracks', 'tor1_baseline'], true)) {
-        active.push('Baseline: tor referencyjny, bez treningu');
+        active.push('Tor 1: slam_toolbox baseline (/scan_slam) + ewaluacja odom vs GT');
       }
       if (mode === 'ai' && boolConfigValue(['tracks', 'tor2_ai_slam'], true)) {
         active.push('AI SLAM: dataset + trening + test');
@@ -4874,8 +5605,8 @@ HTML_PAGE = """<!doctype html>
       const experimentId = selectedExperimentId();
       const plan = quickLaunchPlan();
 
-      const datasetDuration = numericConfigValue(['timing', 'dataset_duration'], 30.0);
-      const evalDuration = numericConfigValue(['timing', 'eval_duration'], 100.0);
+      const datasetDuration = pipelineDatasetDurationFallback();
+      const evalDuration = pipelineEvalDurationFallback();
       const datasetWorld = stringConfigValue(['simulation', 'train_world'], 'world_house.sdf');
       const testWorld = stringConfigValue(['simulation', 'test_world'], 'world_house.sdf');
 
@@ -4936,7 +5667,7 @@ HTML_PAGE = """<!doctype html>
           details.push(`Użyty będzie wybrany eksperyment: ${experimentId}.`);
         }
         if (plan.needsDatasetDuration) {
-          details.push('Wspólny czas datasetu nadpisze timing.dataset_duration oraz odpowiedniki Robaka i Rywaka, a limit max_samples zostanie wyłączony.');
+          details.push('Wspólny czas datasetu nadpisze pipeline.dataset_collection_sec (oraz timing.dataset_duration), max_samples=0, a dataset_wait_timeout zostanie ustawiony na 2× ten czas.');
         }
         if (plan.needsEvalDuration) {
           details.push('Czas testu steruje fazą testu i ewaluacji.');
@@ -5405,7 +6136,8 @@ HTML_PAGE = """<!doctype html>
         t: Date.now(),
       };
       setImageTarget('maps-custom', `/api/plot/maps?${query(mapParams)}`);
-      setImageTarget('trajectory-static', artifacts.trajectory_png ? `/api/artifact?path=${encodeURIComponent(artifacts.trajectory_png)}` : '');
+      const staticTrajectoryPath = artifacts.trajectory_png || artifacts.trajectory_speed_png || '';
+      setImageTarget('trajectory-static', staticTrajectoryPath ? `/api/artifact?path=${encodeURIComponent(staticTrajectoryPath)}` : '');
       setImageTarget('error-static', artifacts.errors_png ? `/api/artifact?path=${encodeURIComponent(artifacts.errors_png)}` : '');
       setImageTarget('maps-static', artifacts.maps_png ? `/api/artifact?path=${encodeURIComponent(artifacts.maps_png)}` : '');
     }
@@ -5425,15 +6157,21 @@ HTML_PAGE = """<!doctype html>
       jsonLink.textContent = 'Otwórz function_index.json';
     }
 
+    function openImageModal(src, title = 'Podgląd') {
+      if (!src) {
+        return;
+      }
+      const modal = document.getElementById('image-modal');
+      document.getElementById('image-modal-title').textContent = title || 'Podgląd';
+      document.getElementById('image-modal-img').src = src;
+      modal.classList.add('open');
+    }
     function openImageModalById(id, title) {
       const img = document.getElementById(id);
       if (!img || !img.src) {
         return;
       }
-      const modal = document.getElementById('image-modal');
-      document.getElementById('image-modal-title').textContent = title;
-      document.getElementById('image-modal-img').src = img.src;
-      modal.classList.add('open');
+      openImageModal(img.src, title);
     }
 
     function closeImageModal(event) {
@@ -5449,7 +6187,7 @@ HTML_PAGE = """<!doctype html>
       });
       renderSeriesCheckboxes('trajectory-series', {
         gt: ['time_s', 'gt_xytheta', 'GT'],
-        baseline: ['time_s', 'baseline_xytheta', 'Baseline'],
+        baseline: ['time_s', 'baseline_xytheta', 'Odom (vs GT)'],
         ai: ['ai_time_s', 'ai_xytheta', 'AI'],
         robak: ['robak_time_s', 'robak_xytheta', 'Robak'],
         rywak: ['rywak_time_s', 'rywak_xytheta', 'Rywak'],
@@ -5457,7 +6195,7 @@ HTML_PAGE = """<!doctype html>
         bruteforce: ['bruteforce_time_s', 'bruteforce_xytheta', 'Bruteforce'],
       }, TRAJ_DEFAULT);
       renderSeriesCheckboxes('error-series', {
-        baseline: ['', '', 'Baseline'],
+        baseline: ['', '', 'Odom (vs GT)'],
         ai: ['', '', 'AI'],
         robak: ['', '', 'Robak'],
         rywak: ['', '', 'Rywak'],
@@ -5466,11 +6204,11 @@ HTML_PAGE = """<!doctype html>
       }, ERR_DEFAULT);
       renderSeriesCheckboxes('maps-series', {
         ref: ['', '', 'Mapa referencyjna'],
-        baseline: ['', '', 'Baseline'],
-        ai: ['', '', 'AI'],
-        robak: ['', '', 'Robak'],
-        rywak: ['', '', 'Rywak'],
-      }, ['ref', 'baseline', 'ai', 'robak', 'rywak']);
+        baseline: ['', '', 'SLAM /map'],
+        ai: ['', '', 'SLAM /map_ai'],
+        robak: ['', '', 'SLAM /map_robak'],
+        rywak: ['', '', 'SLAM /map_rywak'],
+      }, ['ref', 'baseline', 'robak', 'rywak']);
       await loadState();
       setInterval(loadState, 3000);
     }

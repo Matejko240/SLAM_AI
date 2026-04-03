@@ -85,11 +85,11 @@ Jeśli dashboard działa na innym porcie, podaj go jako argument, np. `bash ./sc
 
 Po zakończeniu eksperymentu katalog `out/exp_*` zawiera m.in.:
 - `results.json` (RMSE/IoU)
-- `trajectory.png`, `errors.png`, `maps.png`
+- `eval_trajectory.png`, `eval_errors.png`, `eval_maps.png`
 - `dataset*.npz`, `model*.pt`, `train_history*.json`
 - `dataset_robak_coverage_*.png`, `dataset_rywak_coverage_*.png`
-- `training_curve_{ai,robak,rywak}.png`
-- `dataset_inspection_summary.json`, `experiment_inspection_summary.json`
+- `train_curve_{ai,robak,rywak}.png`
+- `dataset_inspection_summary.json`, `train_inspection_summary.json`, `experiment_inspection_summary.json`
 
 ## Przydatne skrypty
 

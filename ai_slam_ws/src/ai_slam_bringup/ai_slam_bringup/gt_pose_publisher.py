@@ -49,10 +49,12 @@ class GTPosePublisher(Node):
         self.declare_parameter("heuristic_max_score", 9.0)
         self.declare_parameter("heuristic_bootstrap_max_score", 64.0)
         self.declare_parameter("heuristic_max_step_m", 0.8)
+        self.declare_parameter("ignore_tf_world_after_gz_pose", True)
         self.declare_parameter("publish_odom_fallback", False)
         self.declare_parameter("restamp_output_to_now", True)
         self.declare_parameter("propagate_tf_world_with_odom", True)
         self.declare_parameter("debug_every_n", 500)
+        self.declare_parameter("gz_pose_reader_shutdown_timeout_sec", 2.0)
 
         self.in_topic = str(self.get_parameter("in_topic").value)
         self.tf_world_topic = str(self.get_parameter("tf_world_topic").value)
@@ -69,10 +71,14 @@ class GTPosePublisher(Node):
         self.heuristic_max_score = float(self.get_parameter("heuristic_max_score").value)
         self.heuristic_bootstrap_max_score = float(self.get_parameter("heuristic_bootstrap_max_score").value)
         self.heuristic_max_step_m = float(self.get_parameter("heuristic_max_step_m").value)
+        self.ignore_tf_world_after_gz_pose = bool(self.get_parameter("ignore_tf_world_after_gz_pose").value)
         self.publish_odom_fallback = bool(self.get_parameter("publish_odom_fallback").value)
         self.restamp_output_to_now = bool(self.get_parameter("restamp_output_to_now").value)
         self.propagate_tf_world_with_odom = bool(self.get_parameter("propagate_tf_world_with_odom").value)
         self.debug_every_n = int(self.get_parameter("debug_every_n").value)
+        self.gz_pose_reader_shutdown_timeout_sec = float(
+            self.get_parameter("gz_pose_reader_shutdown_timeout_sec").value
+        )
 
         self.pub = self.create_publisher(PoseStamped, self.out_topic, 10)
         self.sub = self.create_subscription(Odometry, self.in_topic, self.on_odom, 50)
@@ -103,7 +109,8 @@ class GTPosePublisher(Node):
             f"fallback odom={self.in_topic}, out={self.out_topic}, "
             f"publish_odom_fallback={self.publish_odom_fallback}, "
             f"restamp_output_to_now={self.restamp_output_to_now}, "
-            f"propagate_tf_world_with_odom={self.propagate_tf_world_with_odom}"
+            f"propagate_tf_world_with_odom={self.propagate_tf_world_with_odom}, "
+            f"ignore_tf_world_after_gz_pose={self.ignore_tf_world_after_gz_pose}"
         )
         if self.use_tf_world and self.use_gz_pose_info and self.gz_pose_info_topic:
             self._start_gz_pose_reader()
@@ -380,7 +387,7 @@ class GTPosePublisher(Node):
         try:
             if proc.poll() is None:
                 proc.terminate()
-                proc.wait(timeout=2.0)
+                proc.wait(timeout=max(0.1, self.gz_pose_reader_shutdown_timeout_sec))
         except Exception:
             try:
                 proc.kill()
@@ -518,6 +525,15 @@ class GTPosePublisher(Node):
                 self.get_logger().warn(f"[GT] Gazebo pose reader stopped: {exc}")
 
     def on_tf_world(self, msg: TFMessage):
+        # Jeśli działa stabilne źródło z Gazebo pose/info, to po pierwszym poprawnym
+        # odczycie ignorujemy tf_world, aby nie mieszać ramek/encji z heurystyką.
+        if (
+            self.use_gz_pose_info
+            and self.ignore_tf_world_after_gz_pose
+            and self.n_gz_pose_info > 0
+        ):
+            return
+
         best = None
         best_score = -1
 

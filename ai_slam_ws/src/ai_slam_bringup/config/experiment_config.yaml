@@ -2,7 +2,14 @@ experiment:
   mode: ai
   phase: full
   seed: 123
-  gui: false
+  gui: true
+
+# Wspólny czas zbierania datasetu (AI SLAM + Robak + Rywak) oraz wspólna faza testu/ewaluacji.
+# Launch: brak pipeline → używane są timing.dataset_duration / timing.eval_duration (np. fast_test.yaml).
+pipeline:
+  dataset_collection_sec: 120
+  evaluation_sec: 120
+
 simulation:
   train_world: world_office.sdf
   test_world: world_hospital.sdf
@@ -18,17 +25,19 @@ simulation:
       z: 0.1
       yaw: 0
     world_hospital.sdf:
-      x: 0.72
-      y: 11.6
+      x: 0.0
+      y: -25.0
       z: 0.1
       yaw: 0
 tracks:
   tor1_baseline: true
-  tor2_ai_slam: true
+  tor2_ai_slam: false
   tor3_local: false
   tor4_bruteforce: false
   tor5_robak: true
   tor6_rywak: true
+  tor7_robak_no_slam: true
+  tor8_rywak_no_slam: true
 scan_matcher:
   tor3:
     method: localmap
@@ -56,14 +65,33 @@ robak:
   - 8
   - 10
   - 12
-  dataset_duration: 60
-  max_samples: 40000
   min_pair_dist: 0
-  min_pair_dyaw: 0
+  # Promotor: sensowna min. zmiana kąta między skanami ~0.05 rad (Robak).
+  min_pair_dyaw: 0.05
   min_pair_dt_sec: 0
   pair_filter_mode: any
   max_pair_dist: 1
   max_pair_dyaw: 3.141592653589793
+  trajectory_mode: any
+  trajectory_cell_size_m: 0.2
+  cycle_min_repeat_hits: 1
+  balance_histograms: true
+  balance_bins: 24
+  balance_translation_use_abs: false
+  balance_rotation_use_abs: true
+  # Promotor: translacja skan-skan 0..50 cm (docelowo nawet 100 cm).
+  balance_translation_hist_min_m: 0.0
+  balance_translation_hist_max_m: 1.0
+  # Promotor: rotacja skan-skan do 180 stopni (tu jako |dtheta|, bo use_abs=true).
+  balance_rotation_hist_min_deg: 0.0
+  balance_rotation_hist_max_deg: 180.0
+  # Stabilniejszy balans: cel na podstawie kwantyla liczności zamiast minimum z ogona.
+  balance_target_quantile: 0.35
+  balance_target_min_per_bin: 8
+  balance_upsample_sparse_bins: true
+  save_balanced_component_datasets: true
+  balanced_translation_dataset_name: dataset_robak_translation_balanced.npz
+  balanced_rotation_dataset_name: dataset_robak_rotation_balanced.npz
   sync_tolerance_sec: 0.08
   sync_pair_gap_sec: 0.2
   interpolate_gt: true
@@ -80,19 +108,40 @@ robak:
   infer_odom_delta_yaw_alpha: 0.6
   infer_odom_pose_xy_alpha: 0.08
   infer_odom_pose_xy_gain: 0.16
+  split_strategy: tail_holdout_no_shuffle
+  pose_topic_no_slam: /pose_robak_no_slam
+  tf_parent_no_slam: odom_robak_no_slam
+  tf_child_no_slam: base_link_robak_no_slam
 rywak:
-  dataset_duration: 60
-  max_samples: 30000
   odom_label_topic: /odom_raw
   sync_tolerance_sec: 0.08
   interpolate_odom: false
   sync_pair_gap_sec: 0.2
   delta_scan_clip: 2
-  min_sample_dist: 0
-  min_sample_dyaw: 0
+  min_sample_dist: 0.03
+  min_sample_dyaw: 0.04
   min_sample_dt_sec: 0
   min_delta_scan_rms: 0.02
   sample_filter_mode: any
+  balance_histograms: true
+  balance_bins: 24
+  balance_linear_use_abs: true
+  balance_angular_use_abs: true
+  # Promotor: |v| do 1 m/s (preferowane), rozszerzenie do 2 m/s.
+  balance_linear_hist_min_mps: 0.0
+  balance_linear_hist_max_mps: 2.0
+  # Promotor: |omega| do ok. 3 rad/s.
+  balance_angular_hist_min_radps: 0.0
+  balance_angular_hist_max_radps: 3.0
+  balance_target_quantile: 0.35
+  balance_target_min_per_bin: 8
+  balance_upsample_sparse_bins: true
+  save_balanced_component_datasets: true
+  balanced_linear_dataset_name: dataset_rywak_linear_balanced.npz
+  balanced_angular_dataset_name: dataset_rywak_angular_balanced.npz
+  trajectory_mode: any
+  trajectory_cell_size_m: 0.2
+  cycle_min_repeat_hits: 1
   hidden_dims:
   - 192
   - 96
@@ -104,7 +153,8 @@ rywak:
   clip_grad_norm: 1
   loss_v_weight: 1
   loss_w_weight: 1.5
-  v_clip_abs: 1.2
+  # Promotor: v do ~2 m/s, ω do ~3 rad/s — clip treningu zgodny z górną obwiednią.
+  v_clip_abs: 2.0
   w_clip_abs: 3
   fuse_odom_v_weight: 0.45
   fuse_odom_w_weight: 0.75
@@ -118,16 +168,24 @@ rywak:
   xy_step_odom_weight: 0.5
   xy_step_odom_gain: 0.3
   max_integration_dt: 0.2
+  split_strategy: tail_holdout_no_shuffle
+  pose_topic_no_slam: /pose_rywak_no_slam
+  tf_parent_no_slam: odom_rywak_no_slam
+  tf_child_no_slam: base_link_rywak_no_slam
+# Opóźnienia startu; timeouty oczekiwania na dataset/model są liczone dynamicznie w lifecycle
+# (funkcja max(czas_z_yaml, szacunek_z_fazy)) — wpis 0 lub brak klucza = tylko szacunek.
 timing:
-  dataset_duration: 60
   dataset_start_delay: 5
-  dataset_wait_timeout: 1000
-  eval_duration: 30
   bridge_delay: 3
   spawn_delay: 5
   slam_configure_delay: 2
 dataset:
-  max_samples: 20000
+  # Równe histogramy (v, ω, translacja/rotacja skanów): sama geometria ścieżki NIE gwarantuje równomiernego
+  # rozkładu — zależy od sterowania, czasu, pętli. Praktyka: (1) auto_driver z szerokim profilem lub kilka
+  # tras + merge .npz, (2) balance_histograms przy zapisie (Robak/Rywak) — wyrównuje w obrębie zebranego
+  # zbioru, (3) świadome segmenty (np. odcinki proste vs ostre zakręty, postój/obroty) albo dłuższy czas.
+  # 0 = bez limitu próbek, koniec po duration_sec (wspólny: pipeline.dataset_collection_sec)
+  max_samples: 0
   sample_rate: 10
   scan_topic: /scan_slam
   odom_topic: /odom
@@ -151,7 +209,8 @@ ground_truth:
   heuristic_max_score: 15
   heuristic_bootstrap_max_score: 64
   heuristic_max_step_m: 0.8
-  debug_every_n: 5000
+  ignore_tf_world_after_gz_pose: true
+  debug_every_n: 0
 training:
   architecture: mlp
   hidden_layers:
@@ -164,6 +223,7 @@ training:
   learning_rate: 0.001
   batch_size: 128
   validation_ratio: 0.2
+  split_strategy: tail_holdout_no_shuffle
   skip_if_model_exists: true
 inference:
   scan_topic: /scan_slam_ai
@@ -172,7 +232,6 @@ inference:
   output_odom_topic: /odom_ai
   tf_parent_frame: odom_ai
   tf_child_frame: base_link_ai
-  model_wait_timeout: 300
 slam:
   common:
     mode: mapping
@@ -212,6 +271,7 @@ evaluation:
   reference_map_yaml: reference_map.yaml
   map_topic_baseline: /map
   map_topic_ai: /map_ai
+  include_ai_in_artifacts: false
   maps_rotate_180: true
   maps_max_cols: 3
   points_min_translation: 0.05
@@ -223,6 +283,8 @@ evaluation:
   points_free_logodds_miss: 0.4
   points_logodds_min: -4
   points_logodds_max: 4
+  gt_jump_filter_enabled: true
+  gt_jump_filter_max_step_m: 2.0
   compute_rmse: true
   compute_iou: true
   save_trajectory_plot: true
@@ -236,27 +298,99 @@ odometry:
   frame_id: odom
   child_frame_id: base_link
 driver:
-  linear_velocity: 0.45
-  angular_velocity: 1.2
+  # false = auto_driver | true = planned_path_driver — tylko jeden z nich jest uruchamiany w launch.
+  use_planned_path: false
+  planned_path:
+    spec_yaml: planned_paths/office_example.yaml
+    pose_topic: /ground_truth_pose
+    cmd_topic: /cmd_vel
+    # Puste = ta sama mapa co evaluation.reference_map_yaml (dla A* musi pasować do świata datasetu)
+    reference_map_yaml: reference_map_office.yaml
+    use_astar: true
+    # Mniejszy lookahead ogranicza „ścianowe cięcie zakrętów” na ciasnych korytarzach.
+    lookahead_m: 0.35
+    # Promotor: v ~0–2 m/s, ω ~0–3 rad/s (górne granice sterownika).
+    linear_vel_max: 2.0
+    angular_vel_max: 3.0
+    goal_tolerance_m: 0.22
+    # Jeśli błąd kierunku jest duży, najpierw obrót w miejscu (bez jazdy do przodu).
+    heading_stop_deg: 55.0
+    # Histereza wyjścia z obrotu (musi być < heading_stop_deg).
+    heading_resume_deg: 35.0
+    # Stabilizacja znaku obrotu przy błędzie bliskim +/-pi.
+    turn_direction_guard_deg: 18.0
+    # 1 = preferuj CCW, -1 = preferuj CW przy pierwszym niejednoznacznym ticku.
+    turn_direction_preference: 1.0
+    # Silniejsze wygaszanie prędkości liniowej przy skrętach (v ~ cos(err)^p).
+    alignment_cos_power: 2.0
+    # Lokalny nearest-search po trasie (bez skoków indeksu na odległe samozbliżenia trasy).
+    nearest_backtrack_points: 8
+    nearest_horizon_m: 6.0
+    # Opcjonalna modulacja prędkości i bias nagłówka pod lepsze pokrycie histogramów datasetu.
+    dataset_excitation_enabled: false
+    excitation_period_sec: 12.0
+    excitation_v_min_scale: 0.25
+    excitation_v_max_scale: 1.0
+    excitation_heading_bias_deg: 12.0
+    # false = trasa acykliczna (office_example: koniec ≠ start); true = zapętlenie po dojechaniu do ostatniej kotwicy.
+    loop_path: false
+    rate_hz: 20.0
+    heading_gain: 2.2
+    dense_step_m: 0.22
+    map_flip_y: true
+    inflate_robot_m: 0.35
+    # RViz: Marker LINE_STRIP (mapa + ślad) — ten sam układ co pose_topic; przy „map”/TF dopasuj frame.
+    publish_reference_path_marker: true
+    reference_path_marker_topic: /planned_path_reference
+    publish_dense_path_marker: true
+    reference_path_dense_marker_topic: /planned_path_dense
+    reference_path_marker_frame: world
+    # Długie trasy (dataset / ewaluacja): wygeneruj scripts/generate_long_trajectories.py
+    #   office_trajectory_acyclic.yaml   (~210 m A*, loop_path false)
+    #   office_trajectory_cyclic_2lap.yaml (ta sama trasa co acyclic; loop_path: true = kolejne pełne przejazdy)
+    #   hospital_trajectory_acyclic.yaml (~250 m) / hospital_trajectory_cyclic_2lap.yaml (ta sama geometria + loop_path)
+    # Krótsze / legacy: office_example.yaml, hospital_example.yaml
+    # Nadpisania wg nazwy świata Gazebo (basename, np. world_hospital.sdf) — spójność mapy A* z faktycznym światem.
+    world_overrides:
+      world_office.sdf:
+        spec_yaml: planned_paths/office_example.yaml
+        reference_map_yaml: reference_map_office.yaml
+      world_hospital.sdf:
+        spec_yaml: planned_paths/hospital_example.yaml
+        reference_map_yaml: reference_map_hospital.yaml
+
+  # --- Tylko auto_driver (gdy use_planned_path: false). Przy planned path cały blok poniżej jest ignorowany. ---
+  trajectory_mode: auto
+  # Skrypt no_cycle / cycle (długości odcinków); aliasy fixed_* w YAML nadal działają przez launch.
+  no_cycle_straight_base_sec: 1.2
+  no_cycle_straight_step_sec: 0.55
+  no_cycle_levels: 14
+  cycle_straight_sec: 3.0
+  # Środek profilu blisko typowego ruchu; min/max w obwiedni promotora (v≤2 m/s, |ω|≤3 rad/s).
+  linear_velocity: 1.0
+  angular_velocity: 1.5
   motion_profile_enabled: true
-  linear_velocity_min: 0.15
-  linear_velocity_max: 1
-  angular_velocity_min: 0.4
-  angular_velocity_max: 3
-  profile_change_interval_sec: 2
-  profile_arc_probability: 0.4
-  profile_arc_fraction_min: 0.1
-  profile_arc_fraction_max: 0.35
-  explore_spin_probability: 0.25
-  explore_spin_min_sec: 1
-  explore_spin_max_sec: 2.2
+  linear_velocity_min: 0.05
+  linear_velocity_max: 2.0
+  angular_velocity_min: 0.2
+  angular_velocity_max: 3.0
+  profile_change_interval_sec: 0.45
+  profile_arc_probability: 0.72
+  profile_arc_fraction_min: 0.2
+  profile_arc_fraction_max: 0.9
+  reverse_probability: 0.4
+  reverse_speed_min: 0.2
+  reverse_speed_max: 1.2
+  explore_spin_probability: 0.55
+  explore_spin_min_sec: 0.6
+  explore_spin_max_sec: 3.2
   forward_slowdown_min_factor: 0.35
-  turn_probability: 0.005
+  turn_probability: 0.04
   obstacle_threshold: 0.5
   side_threshold: 0.35
   emergency_threshold: 0.25
-  explore_interval_ticks: 20
-  explore_turn_probability: 0.08
+  explore_interval_ticks: 10
+  explore_turn_probability: 0.26
   doorway_turn_probability: 0.25
   doorway_opening_threshold: 2
   doorway_wall_threshold: 0.9
@@ -265,27 +399,27 @@ driver:
   nav_sector_deg: 110
   nav_gap_half_window_deg: 16
   nav_safe_clearance: 0.52
-  nav_lookahead_cap: 4
+  nav_lookahead_cap: 6
   nav_heading_gain: 1.8
   nav_avoid_gain: 0.9
   nav_min_linear_speed: 0.05
-  nav_heading_bias_max_deg: 55
-  nav_heading_bias_hold_sec: 4
+  nav_heading_bias_max_deg: 85
+  nav_heading_bias_hold_sec: 2.2
   nav_heading_smooth_alpha: 0.35
-  nav_novelty_lookahead_m: 1.5
-  nav_novelty_bonus: 0.95
-  nav_recent_cell_penalty: 1.25
+  nav_novelty_lookahead_m: 2.5
+  nav_novelty_bonus: 1.6
+  nav_recent_cell_penalty: 1.75
   robot_front_extent: 0.15
   robot_rear_extent: 0.15
   robot_half_width: 0.1
   robot_safety_margin: 0.06
-  repeat_cell_size_m: 0.75
-  repeat_window_size: 36
-  repeat_unique_ratio_threshold: 0.62
-  repeat_escape_trigger: 4
-  repeat_escape_turn_sec: 3.2
-  repeat_escape_heading_deg: 105
+  repeat_cell_size_m: 0.55
+  repeat_window_size: 24
+  repeat_unique_ratio_threshold: 0.78
+  repeat_escape_trigger: 3
+  repeat_escape_turn_sec: 3.8
+  repeat_escape_heading_deg: 125
   debug: false
   debug_every_n: 5
 output:
-  base_dir: out
+  base_dir: /home/matejko/SLAM_AI/out

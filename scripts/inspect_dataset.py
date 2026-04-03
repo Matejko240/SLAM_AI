@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,9 @@ import yaml
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.patches import Rectangle
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -27,11 +29,24 @@ WORLD_REFERENCE_MAPS = {
     "world_office.sdf": "reference_map_office.yaml",
     "world_hospital.sdf": "reference_map_hospital.yaml",
 }
+DEFAULT_WORLD_SPAWN_POSES = {
+    "world_house.sdf": (5.0, 0.0, 0.0),
+    "world_house": (5.0, 0.0, 0.0),
+    "world_office.sdf": (0.03, 2.27, 0.0),
+    "world_office": (0.03, 2.27, 0.0),
+    "world_hospital.sdf": (0.0, -25.0, 0.0),
+    "world_hospital": (0.0, -25.0, 0.0),
+}
+LEGACY_WORLD_SPAWN_POSES = {
+    "world_hospital.sdf": (0.72, 11.6, 0.0),
+    "world_hospital": (0.72, 11.6, 0.0),
+}
 
 SUMMARY_NAME = "dataset_inspection_summary.json"
 OVERVIEW_NAME = "dataset_inspection_overview.png"
 SCANS_NAME = "dataset_inspection_scans.png"
 LEGACY_NAME = "dataset_analysis.png"
+TARGET_COMPONENTS_NAME = "dataset_target_components.png"
 ROBAK_SUMMARY_NAME = "dataset_robak_coverage_summary.json"
 ROBAK_DISTANCE_NAME = "dataset_robak_coverage_distance.png"
 ROBAK_ROTATION_NAME = "dataset_robak_coverage_rotation.png"
@@ -40,8 +55,86 @@ RYWAK_SUMMARY_NAME = "dataset_rywak_coverage_summary.json"
 RYWAK_LINEAR_NAME = "dataset_rywak_coverage_linear_velocity.png"
 RYWAK_ANGULAR_NAME = "dataset_rywak_coverage_angular_velocity.png"
 RYWAK_SIGNED_NAME = "dataset_rywak_target_signed_velocity.png"
-TRAINING_SUMMARY_NAME = "training_inspection_summary.json"
+TRAJECTORY_SPEED_NAME = "eval_trajectory_speed.png"
+TRAINING_SUMMARY_NAME = "train_inspection_summary.json"
 EXPERIMENT_SUMMARY_NAME = "experiment_inspection_summary.json"
+
+
+def resolve_existing_path(dataset_dir: Path, candidates: list[str]) -> Path:
+    for name in candidates:
+        path = dataset_dir / name
+        if path.exists():
+            return path
+    return dataset_dir / candidates[0]
+
+
+def resolve_eval_trajectory_data_path(dataset_dir: Path) -> Path:
+    return resolve_existing_path(dataset_dir, ["eval_trajectory_data.npz", "trajectory_data.npz"])
+
+
+def resolve_eval_map_layers_path(dataset_dir: Path) -> Path:
+    return resolve_existing_path(dataset_dir, ["eval_map_layers.npz", "map_layers.npz"])
+
+
+def _trajectory_alignment_metrics(
+    poses_xy: np.ndarray,
+    ref_grid: np.ndarray,
+    ref_resolution: float,
+    ref_origin: list[float],
+) -> tuple[float, float]:
+    xy = np.asarray(poses_xy, dtype=np.float32)
+    if xy.size == 0:
+        return 1.0, 1.0
+    if xy.ndim == 2 and xy.shape[1] >= 2:
+        x = xy[:, 0]
+        y = xy[:, 1]
+    else:
+        flat = xy.reshape((-1,))
+        if flat.size < 2:
+            return 1.0, 1.0
+        x = flat[0::2]
+        y = flat[1::2]
+    h, w = ref_grid.shape
+    x_min = float(ref_origin[0])
+    y_min = float(ref_origin[1])
+    jj = np.floor((x - x_min) / float(ref_resolution)).astype(np.int32)
+    ii = np.floor((y - y_min) / float(ref_resolution)).astype(np.int32)
+    inside = (ii >= 0) & (ii < h) & (jj >= 0) & (jj < w)
+    outside_ratio = float(1.0 - np.mean(inside.astype(np.float32)))
+    if not np.any(inside):
+        return outside_ratio, 1.0
+    occ = np.zeros_like(inside, dtype=np.bool_)
+    occ_inside = np.asarray(ref_grid[ii[inside], jj[inside]], dtype=np.uint8) == 0
+    occ[inside] = occ_inside
+    occupied_hit_ratio = float(np.mean(occ_inside.astype(np.float32)))
+    return outside_ratio, occupied_hit_ratio
+
+
+def choose_reference_display_alignment(
+    dataset_dir: Path,
+    world_name: str | None,
+    gt_xy: np.ndarray,
+) -> tuple[np.ndarray, float, list[float]]:
+    best_score: float | None = None
+    best: tuple[np.ndarray, float, list[float]] | None = None
+    for keep_world_origin in (True, False):
+        _yaml, grid_base, resolution, origin = load_reference_map_local(
+            dataset_dir,
+            world_name=world_name,
+            keep_world_origin=keep_world_origin,
+        )
+        for rotate_180 in (False, True):
+            grid = np.rot90(grid_base, 2) if rotate_180 else grid_base
+            outside_ratio, occ_hit_ratio = _trajectory_alignment_metrics(gt_xy, grid, resolution, origin)
+            # Prioritize staying in-map, then minimize path through occupied cells.
+            score = outside_ratio * 5.0 + occ_hit_ratio
+            if best_score is None or score < best_score:
+                best_score = score
+                best = (grid.copy(), float(resolution), [float(origin[0]), float(origin[1]), float(origin[2])])
+    if best is not None:
+        return best
+    _yaml, grid, resolution, origin = load_reference_map_local(dataset_dir, world_name=world_name, keep_world_origin=True)
+    return grid, float(resolution), [float(origin[0]), float(origin[1]), float(origin[2])]
 
 
 def load_reference_map(yaml_path: Path) -> tuple[np.ndarray, float, list[float]]:
@@ -79,6 +172,94 @@ def load_reference_map(yaml_path: Path) -> tuple[np.ndarray, float, list[float]]
 
     grid = np.asarray(pixels, dtype=np.uint8).reshape((height, width))
     return grid, resolution, origin
+
+
+def make_reference_display_grid(ref_grid: np.ndarray) -> np.ndarray:
+    """Render reference map as free=bright, occupied=dark."""
+    return np.where(ref_grid == 254, 1.0, np.where(ref_grid == 0, 0.08, 0.32))
+
+
+def make_probabilistic_map_readable(
+    prob_map: np.ndarray,
+    neutral_band: float = 0.06,
+    occupied_only: bool = True,
+) -> np.ndarray:
+    """Reduce noisy map rays; optionally show only confident occupied structure."""
+    prob = np.asarray(prob_map, dtype=np.float32)
+    show = np.full(prob.shape, np.nan, dtype=np.float32)
+    finite = np.isfinite(prob)
+    if not np.any(finite):
+        return show
+    eps = float(max(1e-6, neutral_band))
+    occ = finite & (prob >= (0.5 + eps))
+    free = finite & (prob <= (0.5 - eps))
+    if occupied_only:
+        show[occ] = 1.0
+    else:
+        show[occ] = 0.08
+        show[free] = 0.90
+    return show
+
+
+def render_map_match_overlay(reference_occ: np.ndarray, candidate_map: np.ndarray) -> np.ndarray:
+    """Render occupancy agreement map (TP/FP/FN) for better readability."""
+    ref_occ = np.asarray(reference_occ, dtype=np.float32) > 0.5
+    cand_occ = np.asarray(candidate_map, dtype=np.float32) > 0.5
+    if ref_occ.shape != cand_occ.shape or ref_occ.size == 0:
+        return np.zeros((0, 0, 3), dtype=np.float32)
+
+    h, w = ref_occ.shape
+    rgb = np.zeros((h, w, 3), dtype=np.float32)
+    # Dark neutral background
+    rgb[:, :, :] = np.asarray([0.02, 0.03, 0.06], dtype=np.float32)
+    # True negatives: faint reference-free area
+    tn = ~ref_occ & ~cand_occ
+    rgb[tn] = np.asarray([0.06, 0.08, 0.12], dtype=np.float32)
+    # False negatives: reference occupied but missing in candidate (blue)
+    fn = ref_occ & ~cand_occ
+    rgb[fn] = np.asarray([0.23, 0.57, 0.97], dtype=np.float32)
+    # False positives: candidate occupied but absent in reference (red)
+    fp = ~ref_occ & cand_occ
+    rgb[fp] = np.asarray([0.97, 0.32, 0.26], dtype=np.float32)
+    # True positives: overlap with reference (green)
+    tp = ref_occ & cand_occ
+    rgb[tp] = np.asarray([0.40, 0.95, 0.47], dtype=np.float32)
+    return rgb
+
+
+def orient_map_layer_to_reference(layer: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Pick orientation (0 or 180 deg) that best overlaps reference occupied cells."""
+    src = np.asarray(layer, dtype=np.float32)
+    ref = np.asarray(reference, dtype=np.float32)
+    if src.shape != ref.shape or src.size == 0:
+        return src
+    ref_occ = ref < 0.25
+    candidates = [src, np.rot90(src, 2)]
+    best = src
+    best_score = -1.0
+    for cand in candidates:
+        cand_occ = cand > 0.55
+        union = float(np.sum(ref_occ | cand_occ))
+        if union <= 0.0:
+            score = 0.0
+        else:
+            score = float(np.sum(ref_occ & cand_occ)) / union
+        if score > best_score:
+            best_score = score
+            best = cand
+    return best
+
+
+def outside_ratio_xy(poses_xy: np.ndarray, x_min: float, x_max: float, y_min: float, y_max: float) -> float:
+    if poses_xy.size == 0:
+        return 0.0
+    inside = (
+        (poses_xy[:, 0] >= float(x_min))
+        & (poses_xy[:, 0] <= float(x_max))
+        & (poses_xy[:, 1] >= float(y_min))
+        & (poses_xy[:, 1] <= float(y_max))
+    )
+    return float(100.0 * (1.0 - np.mean(inside.astype(np.float32))))
 
 
 def configure_axes(ax) -> None:
@@ -139,6 +320,9 @@ def stats_1d(values: np.ndarray) -> dict[str, float]:
             "mean": 0.0,
             "median": 0.0,
             "p95": 0.0,
+            "positive_ratio_pct": 0.0,
+            "negative_ratio_pct": 0.0,
+            "zero_ratio_pct": 0.0,
         }
     return {
         "count": int(arr.size),
@@ -147,6 +331,9 @@ def stats_1d(values: np.ndarray) -> dict[str, float]:
         "mean": float(np.mean(arr)),
         "median": float(np.median(arr)),
         "p95": percentile_or_zero(arr, 95.0),
+        "positive_ratio_pct": float(np.mean(arr > 0.0) * 100.0),
+        "negative_ratio_pct": float(np.mean(arr < 0.0) * 100.0),
+        "zero_ratio_pct": float(np.mean(arr == 0.0) * 100.0),
     }
 
 
@@ -188,33 +375,66 @@ def update_results_artifacts(dataset_dir: Path, artifact_updates: dict[str, Path
     tmp_path.replace(results_path)
 
 
-def resolve_reference_map_yaml(dataset_dir: Path) -> Path:
+def resolve_reference_map_yaml(
+    dataset_dir: Path,
+    world_name: str | None = None,
+    *,
+    prefer_world_mapping: bool = False,
+) -> Path:
     config_snapshot_path = dataset_dir / "config_snapshot.yaml"
     if config_snapshot_path.exists():
         try:
             cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
             sim_cfg = cfg.get("simulation", {}) if isinstance(cfg.get("simulation"), dict) else {}
-            train_world = str(sim_cfg.get("train_world", "")).strip()
-            mapped_ref_name = WORLD_REFERENCE_MAPS.get(train_world)
-            if mapped_ref_name:
-                mapped_ref_path = (WORKSPACE_DIR / "src" / "ai_slam_eval" / "maps" / mapped_ref_name).resolve()
-                if mapped_ref_path.exists():
-                    return mapped_ref_path
+            world_candidates: list[str] = []
+            for candidate_world in [world_name, sim_cfg.get("test_world"), sim_cfg.get("train_world")]:
+                text = str(candidate_world or "").strip()
+                if not text:
+                    continue
+                if text not in world_candidates:
+                    world_candidates.append(text)
             candidate = (
                 cfg.get("evaluation", {}).get("reference_map_yaml")
                 if isinstance(cfg.get("evaluation"), dict)
                 else None
             )
-            if isinstance(candidate, str) and candidate.strip():
-                candidate_path = Path(candidate.strip())
-                if candidate_path.is_absolute() and candidate_path.exists():
-                    return candidate_path.resolve()
-                eval_maps_path = (WORKSPACE_DIR / "src" / "ai_slam_eval" / "maps" / candidate_path.name).resolve()
-                if eval_maps_path.exists():
-                    return eval_maps_path
-                cfg_relative = (config_snapshot_path.parent / candidate_path).resolve()
-                if cfg_relative.exists():
-                    return cfg_relative
+
+            def _resolve_from_worlds() -> Path | None:
+                for world in world_candidates:
+                    mapped_ref_name = WORLD_REFERENCE_MAPS.get(world)
+                    if mapped_ref_name:
+                        mapped_ref_path = (WORKSPACE_DIR / "src" / "ai_slam_eval" / "maps" / mapped_ref_name).resolve()
+                        if mapped_ref_path.exists():
+                            return mapped_ref_path
+                return None
+
+            def _resolve_from_eval_candidate() -> Path | None:
+                if isinstance(candidate, str) and candidate.strip():
+                    candidate_path = Path(candidate.strip())
+                    if candidate_path.is_absolute() and candidate_path.exists():
+                        return candidate_path.resolve()
+                    eval_maps_path = (WORKSPACE_DIR / "src" / "ai_slam_eval" / "maps" / candidate_path.name).resolve()
+                    if eval_maps_path.exists():
+                        return eval_maps_path
+                    cfg_relative = (config_snapshot_path.parent / candidate_path).resolve()
+                    if cfg_relative.exists():
+                        return cfg_relative
+                return None
+
+            if prefer_world_mapping:
+                mapped = _resolve_from_worlds()
+                if mapped is not None:
+                    return mapped
+                eval_mapped = _resolve_from_eval_candidate()
+                if eval_mapped is not None:
+                    return eval_mapped
+            else:
+                eval_mapped = _resolve_from_eval_candidate()
+                if eval_mapped is not None:
+                    return eval_mapped
+                mapped = _resolve_from_worlds()
+                if mapped is not None:
+                    return mapped
         except Exception:
             pass
 
@@ -232,6 +452,182 @@ def resolve_reference_map_yaml(dataset_dir: Path) -> Path:
             pass
 
     return REF_MAP_YAML
+
+
+def resolve_include_ai_in_artifacts(dataset_dir: Path) -> bool:
+    config_snapshot_path = dataset_dir / "config_snapshot.yaml"
+    if config_snapshot_path.exists():
+        try:
+            cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
+            evaluation = cfg.get("evaluation", {}) if isinstance(cfg.get("evaluation"), dict) else {}
+            value = evaluation.get("include_ai_in_artifacts")
+            if isinstance(value, bool):
+                return value
+        except Exception:
+            pass
+    return False
+
+
+def resolve_maps_rotate_180(dataset_dir: Path, results: dict[str, Any] | None = None) -> bool:
+    map_layers_npz = resolve_eval_map_layers_path(dataset_dir)
+    if map_layers_npz.exists():
+        try:
+            with np.load(map_layers_npz, allow_pickle=True) as data:
+                if "rotate_180" in data:
+                    return bool(int(np.asarray(data["rotate_180"]).reshape(-1)[0]))
+        except Exception:
+            pass
+    if isinstance(results, dict):
+        try:
+            cfg = results.get("config_snapshot", {})
+            evaluation = cfg.get("evaluation", {}) if isinstance(cfg, dict) else {}
+            if isinstance(evaluation, dict):
+                value = evaluation.get("maps_rotate_180")
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return bool(int(value))
+                if isinstance(value, str):
+                    return value.strip().lower() in {"1", "true", "yes", "on"}
+        except Exception:
+            pass
+    return False
+
+
+def inverse_pose_transform_xy_scalar(x: float, y: float, tx: float, ty: float, yaw: float) -> tuple[float, float]:
+    dx = float(x) - float(tx)
+    dy = float(y) - float(ty)
+    c = float(np.cos(float(yaw)))
+    s = float(np.sin(float(yaw)))
+    return (
+        c * dx + s * dy,
+        -s * dx + c * dy,
+    )
+
+
+def resolve_spawn_pose(dataset_dir: Path, world_name: str | None = None) -> tuple[float, float, float]:
+    config_snapshot_path = dataset_dir / "config_snapshot.yaml"
+    if not config_snapshot_path.exists():
+        return 0.0, 0.0, 0.0
+
+    try:
+        cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+    simulation = cfg.get("simulation", {}) if isinstance(cfg.get("simulation"), dict) else {}
+    spawn_poses = simulation.get("spawn_poses", {}) if isinstance(simulation.get("spawn_poses"), dict) else {}
+
+    candidates: list[str] = []
+    for candidate in [world_name, simulation.get("train_world"), simulation.get("test_world")]:
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        for key in [text, text if text.endswith(".sdf") else f"{text}.sdf"]:
+            if key not in candidates:
+                candidates.append(key)
+
+    for key in candidates:
+        pose = spawn_poses.get(key)
+        if isinstance(pose, dict):
+            return (
+                float(pose.get("x", 0.0)),
+                float(pose.get("y", 0.0)),
+                float(pose.get("yaw", 0.0)),
+            )
+    for key in candidates:
+        if key in DEFAULT_WORLD_SPAWN_POSES:
+            return DEFAULT_WORLD_SPAWN_POSES[key]
+    return 0.0, 0.0, 0.0
+
+
+def load_reference_map_local(
+    dataset_dir: Path,
+    *,
+    world_name: str | None = None,
+    prefer_world_mapping: bool = False,
+    keep_world_origin: bool = False,
+) -> tuple[Path, np.ndarray, float, list[float]]:
+    ref_map_yaml = resolve_reference_map_yaml(
+        dataset_dir,
+        world_name=world_name,
+        prefer_world_mapping=prefer_world_mapping,
+    )
+    ref_grid, ref_resolution, ref_origin_world = load_reference_map(ref_map_yaml)
+    spawn_x, spawn_y, spawn_yaw = resolve_spawn_pose(dataset_dir, world_name=world_name)
+    if keep_world_origin:
+        return ref_map_yaml, ref_grid, ref_resolution, [float(ref_origin_world[0]), float(ref_origin_world[1]), float(ref_origin_world[2])]
+
+    def _local_origin_for_spawn(spawn_pose: tuple[float, float, float]) -> list[float]:
+        sx, sy, syaw = spawn_pose
+        ox_local, oy_local = inverse_pose_transform_xy_scalar(
+            float(ref_origin_world[0]),
+            float(ref_origin_world[1]),
+            float(sx),
+            float(sy),
+            float(syaw),
+        )
+        return [
+            ox_local,
+            oy_local,
+            float(wrap_angle(np.asarray([float(ref_origin_world[2]) - float(syaw)], dtype=np.float32))[0]),
+        ]
+
+    chosen_spawn = (float(spawn_x), float(spawn_y), float(spawn_yaw))
+    trajectory_path = resolve_eval_trajectory_data_path(dataset_dir)
+    if trajectory_path.exists():
+        try:
+            world_candidates: list[str] = []
+            config_snapshot_path = dataset_dir / "config_snapshot.yaml"
+            if config_snapshot_path.exists():
+                cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
+                simulation = cfg.get("simulation", {}) if isinstance(cfg.get("simulation"), dict) else {}
+                for value in [world_name, simulation.get("test_world"), simulation.get("train_world")]:
+                    text = str(value or "").strip()
+                    if not text:
+                        continue
+                    for key in [text, text if text.endswith(".sdf") else f"{text}.sdf"]:
+                        if key not in world_candidates:
+                            world_candidates.append(key)
+            elif world_name:
+                world_candidates = [world_name, world_name if world_name.endswith(".sdf") else f"{world_name}.sdf"]
+
+            candidate_spawns: list[tuple[float, float, float]] = [chosen_spawn]
+            for key in world_candidates:
+                for mapping in (DEFAULT_WORLD_SPAWN_POSES, LEGACY_WORLD_SPAWN_POSES):
+                    pose = mapping.get(key)
+                    if pose is not None and pose not in candidate_spawns:
+                        candidate_spawns.append(pose)
+
+            with np.load(trajectory_path, allow_pickle=True) as data:
+                gt = np.asarray(data["gt_xytheta"], dtype=np.float32).reshape((-1, 3)) if "gt_xytheta" in data else np.zeros((0, 3), dtype=np.float32)
+
+            if gt.shape[0] > 0 and len(candidate_spawns) > 1:
+                h, w = ref_grid.shape
+                best_spawn = chosen_spawn
+                best_ratio = None
+                for pose in candidate_spawns:
+                    origin_local = _local_origin_for_spawn(pose)
+                    x_min = origin_local[0]
+                    y_min = origin_local[1]
+                    x_max = x_min + w * ref_resolution
+                    y_max = y_min + h * ref_resolution
+                    outside = (
+                        (gt[:, 0] < x_min)
+                        | (gt[:, 0] > x_max)
+                        | (gt[:, 1] < y_min)
+                        | (gt[:, 1] > y_max)
+                    )
+                    ratio = float(np.mean(outside.astype(np.float32)))
+                    if best_ratio is None or ratio < best_ratio:
+                        best_ratio = ratio
+                        best_spawn = pose
+                chosen_spawn = best_spawn
+        except Exception:
+            pass
+
+    local_origin = _local_origin_for_spawn(chosen_spawn)
+    return ref_map_yaml, ref_grid, ref_resolution, local_origin
 
 
 def reconstruct_gt_poses(odom: np.ndarray, corrections: np.ndarray) -> np.ndarray:
@@ -414,7 +810,7 @@ def render_overview(
     ref_y_min = ref_origin[1]
     ref_x_max = ref_x_min + ref_grid.shape[1] * ref_resolution
     ref_y_max = ref_y_min + ref_grid.shape[0] * ref_resolution
-    ref_display = np.where(ref_grid == 0, 1.0, np.where(ref_grid == 254, 0.08, 0.32))
+    ref_display = make_reference_display_grid(ref_grid)
 
     ax = axes[0, 0]
     ax.imshow(
@@ -453,6 +849,24 @@ def render_overview(
     ax.set_title("Trajektorie GT i odometrii + mapa punktowa")
     ax.set_xlabel("X [m]")
     ax.set_ylabel("Y [m]")
+    in_bounds = (
+        (odom[:, 0] >= ref_x_min)
+        & (odom[:, 0] <= ref_x_max)
+        & (odom[:, 1] >= ref_y_min)
+        & (odom[:, 1] <= ref_y_max)
+    )
+    outside_pct = float(100.0 * (1.0 - np.mean(in_bounds.astype(np.float32)))) if odom.shape[0] else 0.0
+    ax.text(
+        0.02,
+        0.02,
+        f"Poza granicą mapy (odom): {outside_pct:.1f}%",
+        transform=ax.transAxes,
+        va="bottom",
+        ha="left",
+        color="#dbe7ff",
+        fontsize=8.5,
+        bbox={"facecolor": "#0f172a", "edgecolor": "#334155", "boxstyle": "round,pad=0.3", "alpha": 0.8},
+    )
 
     ax = axes[0, 1]
     if points_x.size:
@@ -539,7 +953,6 @@ def render_overview(
 
     output_path = dataset_dir / OVERVIEW_NAME
     save_figure(fig, output_path)
-    shutil.copy2(output_path, dataset_dir / LEGACY_NAME)
     return output_path
 
 
@@ -571,6 +984,75 @@ def render_scan_gallery(dataset_dir: Path, scans: np.ndarray) -> Path:
     return output_path
 
 
+def render_baseline_target_components(dataset_dir: Path, corrections: np.ndarray) -> tuple[Path, dict[str, Any]]:
+    dx_mm = corrections[:, 0].astype(np.float32) * 1000.0
+    dy_mm = corrections[:, 1].astype(np.float32) * 1000.0
+    dtheta_deg = np.rad2deg(wrap_angle(corrections[:, 2])).astype(np.float32)
+
+    dx_summary = stats_1d(dx_mm)
+    dy_summary = stats_1d(dy_mm)
+    dtheta_summary = stats_1d(dtheta_deg)
+
+    dx_limit = nice_symmetric_limit(dx_mm, 500.0, 100.0)
+    dy_limit = nice_symmetric_limit(dy_mm, 250.0, 50.0)
+    dtheta_limit = nice_symmetric_limit(dtheta_deg, 45.0, 15.0)
+
+    output_path = render_component_histograms(
+        dataset_dir / TARGET_COMPONENTS_NAME,
+        title="AI: rozkład podpisanych etykiet modelu",
+        ncols=3,
+        specs=[
+            {
+                "values": dx_mm,
+                "bins": np.linspace(-dx_limit, dx_limit, 41),
+                "title": "dx korekty",
+                "xlabel": "dx [mm]",
+                "color": "#38bdf8",
+                "xlim": (-dx_limit, dx_limit),
+                "vertical_lines": [(0.0, "0 mm", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {dx_summary['mean']:.1f} / {dx_summary['median']:.1f}",
+                    f"Min / max: {dx_summary['min']:.1f} / {dx_summary['max']:.1f}",
+                    f"+ / -: {dx_summary['positive_ratio_pct']:.1f}% / {dx_summary['negative_ratio_pct']:.1f}%",
+                ],
+            },
+            {
+                "values": dy_mm,
+                "bins": np.linspace(-dy_limit, dy_limit, 41),
+                "title": "dy korekty",
+                "xlabel": "dy [mm]",
+                "color": "#22c55e",
+                "xlim": (-dy_limit, dy_limit),
+                "vertical_lines": [(0.0, "0 mm", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {dy_summary['mean']:.1f} / {dy_summary['median']:.1f}",
+                    f"Min / max: {dy_summary['min']:.1f} / {dy_summary['max']:.1f}",
+                    f"+ / -: {dy_summary['positive_ratio_pct']:.1f}% / {dy_summary['negative_ratio_pct']:.1f}%",
+                ],
+            },
+            {
+                "values": dtheta_deg,
+                "bins": np.linspace(-dtheta_limit, dtheta_limit, 49),
+                "title": "dtheta korekty",
+                "xlabel": "dtheta [deg]",
+                "color": "#f97316",
+                "xlim": (-dtheta_limit, dtheta_limit),
+                "vertical_lines": [(0.0, "0 deg", "#a3e635")],
+                "annotations": [
+                    f"Średnia / mediana: {dtheta_summary['mean']:.1f} / {dtheta_summary['median']:.1f}",
+                    f"Min / max: {dtheta_summary['min']:.1f} / {dtheta_summary['max']:.1f}",
+                    f"+ / -: {dtheta_summary['positive_ratio_pct']:.1f}% / {dtheta_summary['negative_ratio_pct']:.1f}%",
+                ],
+            },
+        ],
+    )
+    return output_path, {
+        "correction_dx_mm_signed": dx_summary,
+        "correction_dy_mm_signed": dy_summary,
+        "correction_dtheta_deg_signed": dtheta_summary,
+    }
+
+
 def generate_baseline_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[str, Any]]:
     dataset_path = dataset_dir / "dataset.npz"
     if not dataset_path.exists():
@@ -585,8 +1067,21 @@ def generate_baseline_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[s
     meta = data["meta"].item() if "meta" in data else {}
     meta = meta if isinstance(meta, dict) else {}
 
-    ref_map_yaml = resolve_reference_map_yaml(dataset_dir)
-    ref_grid, ref_resolution, ref_origin = load_reference_map(ref_map_yaml)
+    dataset_world_name = ""
+    config_snapshot_path = dataset_dir / "config_snapshot.yaml"
+    if config_snapshot_path.exists():
+        try:
+            cfg = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8")) or {}
+            simulation = cfg.get("simulation", {}) if isinstance(cfg.get("simulation"), dict) else {}
+            dataset_world_name = str(simulation.get("train_world", "")).strip()
+        except Exception:
+            dataset_world_name = ""
+    ref_map_yaml, ref_grid, ref_resolution, ref_origin = load_reference_map_local(
+        dataset_dir,
+        world_name=dataset_world_name or None,
+        prefer_world_mapping=True,
+        keep_world_origin=True,
+    )
     summary = compute_summary(scans, odom, gt, corrections, meta)
     summary.update(
         {
@@ -598,8 +1093,11 @@ def generate_baseline_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[s
 
     overview_path = render_overview(dataset_dir, scans, odom, gt, corrections, summary, ref_grid, ref_resolution, ref_origin)
     scans_path = render_scan_gallery(dataset_dir, scans)
+    target_components_path, target_summary = render_baseline_target_components(dataset_dir, corrections)
+    summary.update(target_summary)
     print(f"[DATASET] Zapisano widok ogólny: {overview_path}")
     print(f"[DATASET] Zapisano galerię skanów: {scans_path}")
+    print(f"[DATASET] Zapisano etykiety modelu: {target_components_path}")
     print(
         "[DATASET] Najważniejsze: "
         f"próbki={summary['sample_count']}, "
@@ -610,7 +1108,8 @@ def generate_baseline_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[s
     return {
         "overview": overview_path,
         "scans": scans_path,
-        "legacy": dataset_dir / LEGACY_NAME,
+        "target_components": target_components_path,
+        "legacy": overview_path,
     }, normalize_json_value(summary)
 
 
@@ -625,6 +1124,7 @@ def render_histogram_coverage(
     annotations: list[str],
     xlim: tuple[float, float] | None = None,
     vertical_lines: list[tuple[float, str, str]] | None = None,
+    y_log: bool = False,
 ) -> Path:
     fig, ax = plt.subplots(figsize=(11.0, 5.6))
     configure_figure(fig)
@@ -643,6 +1143,8 @@ def render_histogram_coverage(
         legend.get_frame().set_edgecolor("#334155")
         for text in legend.get_texts():
             text.set_color("#e5eefc")
+    if y_log:
+        ax.set_yscale("log")
 
     ax.set_title(title)
     ax.set_xlabel(xlabel)
@@ -670,6 +1172,16 @@ def nice_symmetric_limit(values: np.ndarray, minimum: float, step: float) -> flo
     if step <= 0.0:
         return float(max(minimum, max_abs))
     return float(max(minimum, np.ceil(max_abs / step) * step))
+
+
+def nice_positive_limit(values: np.ndarray, minimum: float, step: float) -> float:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return float(minimum)
+    max_val = float(np.max(arr))
+    if step <= 0.0:
+        return float(max(minimum, max_val))
+    return float(max(minimum, np.ceil(max_val / step) * step))
 
 
 def render_component_histograms(
@@ -750,7 +1262,7 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     translation_cm = np.linalg.norm(labels[:, :2], axis=1).astype(np.float32) * 100.0
     rotation_deg = np.rad2deg(wrap_angle(labels[:, 2])).astype(np.float32)
 
-    distance_summary = stats_1d(translation_cm)
+    translation_abs_summary = stats_1d(translation_cm)
     rotation_abs_deg = np.abs(rotation_deg).astype(np.float32)
     rotation_summary = stats_1d(rotation_deg)
     rotation_abs_summary = stats_1d(rotation_abs_deg)
@@ -766,93 +1278,94 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     dy_cm = labels[:, 1].astype(np.float32) * 100.0
     dx_summary = stats_1d(dx_cm)
     dy_summary = stats_1d(dy_cm)
+    dx_limit_cm = nice_symmetric_limit(dx_cm, 25.0, 5.0)
+    dy_limit_cm = nice_symmetric_limit(dy_cm, 25.0, 5.0)
+    rotation_limit_deg = nice_symmetric_limit(rotation_deg, 5.0, 5.0)
 
-    distance_path = render_histogram_coverage(
+    translation_path = render_histogram_coverage(
         dataset_dir / ROBAK_DISTANCE_NAME,
-        np.clip(translation_cm, 0.0, 100.0),
-        bins=np.linspace(0.0, 100.0, 41),
-        title="Robak: pokrycie przesunięć między skanami",
-        xlabel="Przesunięcie [cm]",
+        dx_cm,
+        bins=np.linspace(-dx_limit_cm, dx_limit_cm, 41),
+        title="Robak: podpisane dx lokalne",
+        xlabel="dx [cm]",
         color="#f97316",
-        xlim=(0.0, 100.0),
+        xlim=(-dx_limit_cm, dx_limit_cm),
         vertical_lines=[
-            (50.0, "50 cm", "#a3e635"),
-            (100.0, "100 cm", "#38bdf8"),
+            (0.0, "0", "#a3e635"),
         ],
         annotations=[
-            f"Próbki: {distance_summary['count']}",
+            f"Probki: {dx_summary['count']}",
             f"Pary bazowe / augment: {base_pair_count} / {augmented_sample_count}",
-            f"Średnia / mediana: {distance_summary['mean']:.1f} / {distance_summary['median']:.1f} cm",
-            f"95 percentyl / max: {distance_summary['p95']:.1f} / {distance_summary['max']:.1f} cm",
-            f"Pokrycie 0-50 cm: {distance_target_50:.1f}%",
-            f"Pokrycie 0-100 cm: {distance_target_100:.1f}%",
-            f"> 100 cm: {overflow_100cm}",
+            f"Srednia / mediana: {dx_summary['mean']:.2f} / {dx_summary['median']:.2f} cm",
+            f"P95 / max: {dx_summary['p95']:.2f} / {dx_summary['max']:.1f} cm",
+            f"+ / - / 0: {dx_summary['positive_ratio_pct']:.1f}% / {dx_summary['negative_ratio_pct']:.1f}% / {dx_summary['zero_ratio_pct']:.1f}%",
+            f"Offsety: {normalize_json_value(meta.get('offsets', []))}",
         ],
+        y_log=True,
     )
     rotation_path = render_histogram_coverage(
         dataset_dir / ROBAK_ROTATION_NAME,
         rotation_deg,
-        bins=np.linspace(-180.0, 180.0, 49),
-        title="Robak: pokrycie rotacji między skanami",
-        xlabel="Rotacja [deg]",
-        color="#0ea5e9",
-        xlim=(-180.0, 180.0),
+        bins=np.linspace(-rotation_limit_deg, rotation_limit_deg, 49),
+        title="Robak: podpisane dtheta miedzy skanami",
+        xlabel="dtheta [deg]",
+        color="#22c55e",
+        xlim=(-rotation_limit_deg, rotation_limit_deg),
         vertical_lines=[
-            (-90.0, "-90 deg", "#a3e635"),
-            (90.0, "+90 deg", "#a3e635"),
+            (0.0, "0", "#a3e635"),
         ],
         annotations=[
-            f"Próbki: {rotation_summary['count']}",
+            f"Probki: {rotation_summary['count']}",
             f"Pary bazowe / augment: {base_pair_count} / {augmented_sample_count}",
-            f"Min / max: {rotation_summary['min']:.1f} / {rotation_summary['max']:.1f} deg",
-            f"Średnia |rot| / p95 |rot|: {rotation_abs_summary['mean']:.1f} / {rotation_abs_summary['p95']:.1f} deg",
-            f"Pokrycie |rot| <= 90 deg: {rotation_target_90:.1f}%",
-            f"Pokrycie |rot| <= 180 deg: {rotation_target_180:.1f}%",
+            f"Srednia / mediana: {rotation_summary['mean']:.2f} / {rotation_summary['median']:.2f} deg",
+            f"P95 / max: {rotation_summary['p95']:.2f} / {rotation_summary['max']:.1f} deg",
+            f"+ / - / 0: {rotation_summary['positive_ratio_pct']:.1f}% / {rotation_summary['negative_ratio_pct']:.1f}% / {rotation_summary['zero_ratio_pct']:.1f}%",
             f"Offsety: {normalize_json_value(meta.get('offsets', []))}",
         ],
+        y_log=True,
     )
     components_path = render_component_histograms(
         dataset_dir / ROBAK_COMPONENTS_NAME,
-        title="Robak: rozkład etykiet modelu",
+        title="Robak: podpisane skladowe etykiet",
         ncols=3,
         specs=[
             {
                 "values": dx_cm,
-                "bins": np.linspace(-nice_symmetric_limit(dx_cm, 25.0, 5.0), nice_symmetric_limit(dx_cm, 25.0, 5.0), 41),
+                "bins": np.linspace(-dx_limit_cm, dx_limit_cm, 41),
                 "title": "dx lokalne",
                 "xlabel": "dx [cm]",
                 "color": "#f97316",
-                "xlim": (-nice_symmetric_limit(dx_cm, 25.0, 5.0), nice_symmetric_limit(dx_cm, 25.0, 5.0)),
-                "vertical_lines": [(0.0, "0 cm", "#a3e635")],
+                "xlim": (-dx_limit_cm, dx_limit_cm),
+                "vertical_lines": [(0.0, "0", "#a3e635")],
                 "annotations": [
-                    f"Średnia / mediana: {dx_summary['mean']:.1f} / {dx_summary['median']:.1f}",
-                    f"Min / max: {dx_summary['min']:.1f} / {dx_summary['max']:.1f}",
+                    f"Srednia / mediana: {dx_summary['mean']:.2f} / {dx_summary['median']:.2f}",
+                    f"P95: {dx_summary['p95']:.2f}, min/max: {dx_summary['min']:.1f}/{dx_summary['max']:.1f}",
                 ],
             },
             {
                 "values": dy_cm,
-                "bins": np.linspace(-nice_symmetric_limit(dy_cm, 25.0, 5.0), nice_symmetric_limit(dy_cm, 25.0, 5.0), 41),
+                "bins": np.linspace(-dy_limit_cm, dy_limit_cm, 41),
                 "title": "dy lokalne",
                 "xlabel": "dy [cm]",
                 "color": "#22c55e",
-                "xlim": (-nice_symmetric_limit(dy_cm, 25.0, 5.0), nice_symmetric_limit(dy_cm, 25.0, 5.0)),
-                "vertical_lines": [(0.0, "0 cm", "#a3e635")],
+                "xlim": (-dy_limit_cm, dy_limit_cm),
+                "vertical_lines": [(0.0, "0", "#a3e635")],
                 "annotations": [
-                    f"Średnia / mediana: {dy_summary['mean']:.1f} / {dy_summary['median']:.1f}",
-                    f"Min / max: {dy_summary['min']:.1f} / {dy_summary['max']:.1f}",
+                    f"Srednia / mediana: {dy_summary['mean']:.2f} / {dy_summary['median']:.2f}",
+                    f"P95: {dy_summary['p95']:.2f}, min/max: {dy_summary['min']:.1f}/{dy_summary['max']:.1f}",
                 ],
             },
             {
                 "values": rotation_deg,
-                "bins": np.linspace(-180.0, 180.0, 49),
+                "bins": np.linspace(-rotation_limit_deg, rotation_limit_deg, 49),
                 "title": "dtheta",
                 "xlabel": "dtheta [deg]",
                 "color": "#0ea5e9",
-                "xlim": (-180.0, 180.0),
-                "vertical_lines": [(-90.0, "-90 deg", "#a3e635"), (0.0, "0 deg", "#f8fafc"), (90.0, "+90 deg", "#a3e635")],
+                "xlim": (-rotation_limit_deg, rotation_limit_deg),
+                "vertical_lines": [(0.0, "0", "#a3e635")],
                 "annotations": [
-                    f"Średnia / mediana: {rotation_summary['mean']:.1f} / {rotation_summary['median']:.1f}",
-                    f"Min / max: {rotation_summary['min']:.1f} / {rotation_summary['max']:.1f}",
+                    f"Srednia / mediana: {rotation_summary['mean']:.2f} / {rotation_summary['median']:.2f}",
+                    f"P95: {rotation_summary['p95']:.2f}, min/max: {rotation_summary['min']:.1f}/{rotation_summary['max']:.1f}",
                 ],
             },
         ],
@@ -863,7 +1376,7 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         "sample_count": int(labels.shape[0]),
         "base_pair_count": base_pair_count,
         "augmented_sample_count": augmented_sample_count,
-        "translation_cm": distance_summary,
+        "translation_cm": translation_abs_summary,
         "dx_local_cm_signed": dx_summary,
         "dy_local_cm_signed": dy_summary,
         "rotation_deg_signed": rotation_summary,
@@ -877,7 +1390,7 @@ def generate_robak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     }
     return {
         "summary": dataset_dir / ROBAK_SUMMARY_NAME,
-        "distance": distance_path,
+        "distance": translation_path,
         "rotation": rotation_path,
         "components": components_path,
     }, summary
@@ -901,8 +1414,8 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     linear_abs = np.abs(linear_velocity).astype(np.float32)
     angular_abs = np.abs(angular_velocity).astype(np.float32)
 
-    linear_summary = stats_1d(linear_abs)
-    angular_summary = stats_1d(angular_abs)
+    linear_abs_summary = stats_1d(linear_abs)
+    angular_abs_summary = stats_1d(angular_abs)
     signed_linear_summary = stats_1d(linear_velocity)
     signed_angular_summary = stats_1d(angular_velocity)
 
@@ -911,48 +1424,63 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     angular_target_3 = float(np.mean(angular_abs <= 3.0) * 100.0)
     linear_over_2 = int(np.sum(linear_abs > 2.0))
     angular_over_3 = int(np.sum(angular_abs > 3.0))
-    linear_signed_limit = nice_symmetric_limit(linear_velocity, 0.5, 0.1)
-    angular_signed_limit = nice_symmetric_limit(angular_velocity, 1.0, 0.25)
+    v_clip_abs = float(meta.get("v_clip_abs", 0.0)) if isinstance(meta, dict) else 0.0
+    w_clip_abs = float(meta.get("w_clip_abs", 0.0)) if isinstance(meta, dict) else 0.0
+    linear_signed_limit = max(nice_symmetric_limit(linear_velocity, 0.5, 0.1), v_clip_abs if v_clip_abs > 0.0 else 0.0)
+    angular_signed_limit = max(nice_symmetric_limit(angular_velocity, 1.0, 0.25), w_clip_abs if w_clip_abs > 0.0 else 0.0)
 
     linear_path = render_histogram_coverage(
         dataset_dir / RYWAK_LINEAR_NAME,
-        np.clip(linear_abs, 0.0, 2.0),
-        bins=np.linspace(0.0, 2.0, 41),
-        title="Rywak: pokrycie prędkości liniowej",
-        xlabel="|v| [m/s]",
+        linear_velocity,
+        bins=np.linspace(-linear_signed_limit, linear_signed_limit, 41),
+        title="Rywak: podpisana prędkość liniowa",
+        xlabel="v [m/s]",
         color="#22c55e",
-        xlim=(0.0, 2.0),
+        xlim=(-linear_signed_limit, linear_signed_limit),
         vertical_lines=[
-            (1.0, "1 m/s", "#f97316"),
-            (2.0, "2 m/s", "#38bdf8"),
+            item
+            for item in [
+                (0.0, "0 m/s", "#a3e635"),
+                (-v_clip_abs, "-clip", "#38bdf8") if v_clip_abs > 0.0 else None,
+                (v_clip_abs, "+clip", "#38bdf8") if v_clip_abs > 0.0 else None,
+            ]
+            if item is not None
         ],
         annotations=[
-            f"Próbki: {linear_summary['count']}",
+            f"Próbki: {signed_linear_summary['count']}",
             f"Zapisane / odrzucone: {labels.shape[0]} / {int(meta.get('sample_filter_reject_count', 0))}",
-            f"Średnia / mediana: {linear_summary['mean']:.3f} / {linear_summary['median']:.3f} m/s",
-            f"95 percentyl / max: {linear_summary['p95']:.3f} / {linear_summary['max']:.3f} m/s",
-            f"Pokrycie |v| <= 1 m/s: {linear_target_1:.1f}%",
-            f"Pokrycie |v| <= 2 m/s: {linear_target_2:.1f}%",
-            f"> 2 m/s: {linear_over_2}",
+            f"Średnia / mediana: {signed_linear_summary['mean']:.3f} / {signed_linear_summary['median']:.3f} m/s",
+            f"Min / max: {signed_linear_summary['min']:.3f} / {signed_linear_summary['max']:.3f} m/s",
+            f"+ / - / 0: {signed_linear_summary['positive_ratio_pct']:.1f}% / {signed_linear_summary['negative_ratio_pct']:.1f}% / {signed_linear_summary['zero_ratio_pct']:.1f}%",
+            f"Clip v: +/-{v_clip_abs:.3f} m/s" if v_clip_abs > 0.0 else "Clip v: brak",
+            "Histogram pokazuje podpisane v, bez przechodzenia do modułu.",
         ],
     )
     angular_path = render_histogram_coverage(
         dataset_dir / RYWAK_ANGULAR_NAME,
-        np.clip(angular_abs, 0.0, 3.0),
-        bins=np.linspace(0.0, 3.0, 37),
-        title="Rywak: pokrycie prędkości kątowej",
-        xlabel="|omega| [rad/s]",
+        angular_velocity,
+        bins=np.linspace(-angular_signed_limit, angular_signed_limit, 49),
+        title="Rywak: podpisana prędkość kątowa",
+        xlabel="omega [rad/s]",
         color="#a855f7",
-        xlim=(0.0, 3.0),
-        vertical_lines=[(3.0, "3 rad/s", "#38bdf8")],
+        xlim=(-angular_signed_limit, angular_signed_limit),
+        vertical_lines=[
+            item
+            for item in [
+                (0.0, "0 rad/s", "#a3e635"),
+                (-w_clip_abs, "-clip", "#38bdf8") if w_clip_abs > 0.0 else None,
+                (w_clip_abs, "+clip", "#38bdf8") if w_clip_abs > 0.0 else None,
+            ]
+            if item is not None
+        ],
         annotations=[
-            f"Próbki: {angular_summary['count']}",
+            f"Próbki: {signed_angular_summary['count']}",
             f"Zapisane / odrzucone: {labels.shape[0]} / {int(meta.get('sample_filter_reject_count', 0))}",
-            f"Średnia / mediana: {angular_summary['mean']:.3f} / {angular_summary['median']:.3f} rad/s",
-            f"95 percentyl / max: {angular_summary['p95']:.3f} / {angular_summary['max']:.3f} rad/s",
-            f"Pokrycie |omega| <= 3 rad/s: {angular_target_3:.1f}%",
-            f"> 3 rad/s: {angular_over_3}",
-            f"Zakres signed omega: {signed_angular_summary['min']:.3f} .. {signed_angular_summary['max']:.3f}",
+            f"Średnia / mediana: {signed_angular_summary['mean']:.3f} / {signed_angular_summary['median']:.3f} rad/s",
+            f"Min / max: {signed_angular_summary['min']:.3f} / {signed_angular_summary['max']:.3f} rad/s",
+            f"+ / - / 0: {signed_angular_summary['positive_ratio_pct']:.1f}% / {signed_angular_summary['negative_ratio_pct']:.1f}% / {signed_angular_summary['zero_ratio_pct']:.1f}%",
+            f"Clip omega: +/-{w_clip_abs:.3f} rad/s" if w_clip_abs > 0.0 else "Clip omega: brak",
+            "Znak omega rozróżnia kierunek skrętu i jest istotny.",
         ],
     )
     signed_path = render_component_histograms(
@@ -992,9 +1520,9 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
     summary = {
         "dataset_path": str(dataset_path.resolve()),
         "sample_count": int(labels.shape[0]),
-        "linear_velocity_abs_mps": linear_summary,
+        "linear_velocity_abs_mps": linear_abs_summary,
         "linear_velocity_signed_mps": signed_linear_summary,
-        "angular_velocity_abs_radps": angular_summary,
+        "angular_velocity_abs_radps": angular_abs_summary,
         "angular_velocity_signed_radps": signed_angular_summary,
         "coverage_pct_abs_linear_0_1mps": linear_target_1,
         "coverage_pct_abs_linear_0_2mps": linear_target_2,
@@ -1009,6 +1537,520 @@ def generate_rywak_coverage_report(dataset_dir: Path) -> tuple[dict[str, Path], 
         "angular_velocity": angular_path,
         "signed_velocity": signed_path,
     }, summary
+
+
+def load_trajectory_series(path: Path, time_key: str, pose_key: str) -> tuple[np.ndarray, np.ndarray]:
+    with np.load(path, allow_pickle=True) as data:
+        if time_key not in data or pose_key not in data:
+            return np.zeros((0,), dtype=np.float32), np.zeros((0, 3), dtype=np.float32)
+        times = np.asarray(data[time_key], dtype=np.float32).reshape(-1)
+        poses = np.asarray(data[pose_key], dtype=np.float32)
+    if poses.size == 0:
+        return times[:0], np.zeros((0, 3), dtype=np.float32)
+    poses = poses.reshape((-1, 3))
+    n = min(times.shape[0], poses.shape[0])
+    if n <= 0:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0, 3), dtype=np.float32)
+    return times[:n].astype(np.float32), poses[:n].astype(np.float32)
+
+
+def compute_segment_speeds(times: np.ndarray, poses: np.ndarray) -> np.ndarray:
+    tt = np.asarray(times, dtype=np.float32).reshape(-1)
+    pp = np.asarray(poses, dtype=np.float32).reshape((-1, 3))
+    n = min(tt.shape[0], pp.shape[0])
+    if n <= 1:
+        return np.zeros((0,), dtype=np.float32)
+    dt = np.diff(tt[:n])
+    step = np.linalg.norm(np.diff(pp[:n, :2], axis=0), axis=1).astype(np.float32)
+    out = np.zeros_like(step, dtype=np.float32)
+    valid = np.isfinite(dt) & (dt > 1e-6)
+    out[valid] = step[valid] / dt[valid]
+    return out.astype(np.float32)
+
+
+def render_speed_trajectory_report(
+    dataset_dir: Path,
+    trajectory_path: Path,
+    ref_grid: np.ndarray,
+    ref_resolution: float,
+    ref_origin: list[float],
+    include_ai: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    series_specs = [
+        ("time_s", "baseline_xytheta", "SLAM ROS", "#c2410c"),
+        ("robak_time_s", "robak_xytheta", "Robak", "#dc2626"),
+        ("rywak_time_s", "rywak_xytheta", "Rywak", "#4d7c0f"),
+    ]
+    if include_ai:
+        series_specs.append(("ai_time_s", "ai_xytheta", "AI", "#16a34a"))
+
+    loaded: list[dict[str, Any]] = []
+    for time_key, pose_key, label, color in series_specs:
+        times, poses = load_trajectory_series(trajectory_path, time_key, pose_key)
+        if times.size == 0 or poses.size == 0 or poses.shape[0] < 2:
+            continue
+        segment_speeds = compute_segment_speeds(times, poses)
+        if segment_speeds.size == 0:
+            continue
+        loaded.append(
+            {
+                "label": label,
+                "color": color,
+                "times": times,
+                "poses": poses,
+                "segment_speeds": segment_speeds,
+                "speed_summary": stats_1d(segment_speeds),
+            }
+        )
+
+    if not loaded:
+        return dataset_dir / TRAJECTORY_SPEED_NAME, {}
+
+    global_speed_limit = max(
+        0.1,
+        float(
+            np.max(
+                [
+                    max(
+                        item["speed_summary"]["p95"],
+                        item["speed_summary"]["max"],
+                    )
+                    for item in loaded
+                ]
+            )
+        ),
+    )
+    speed_norm = Normalize(vmin=0.0, vmax=global_speed_limit)
+    speed_cmap = LinearSegmentedColormap.from_list(
+        "speed_heatmap",
+        ["#1d4ed8", "#38bdf8", "#facc15", "#dc2626"],
+    )
+
+    ref_x_min = ref_origin[0]
+    ref_y_min = ref_origin[1]
+    ref_x_max = ref_x_min + ref_grid.shape[1] * ref_resolution
+    ref_y_max = ref_y_min + ref_grid.shape[0] * ref_resolution
+    ref_display = make_reference_display_grid(ref_grid)
+
+    n = len(loaded)
+    ncols = min(2, n)
+    nrows = int(np.ceil(n / max(1, ncols)))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.8 * ncols, 5.5 * nrows), squeeze=False)
+    configure_figure(fig)
+    axes_flat = axes.ravel()
+
+    for ax, item in zip(axes_flat, loaded):
+        configure_axes(ax)
+        poses = np.asarray(item["poses"], dtype=np.float32)
+        segment_speeds = np.asarray(item["segment_speeds"], dtype=np.float32)
+        ax.imshow(
+            ref_display,
+            extent=[ref_x_min, ref_x_max, ref_y_min, ref_y_max],
+            origin="lower",
+            cmap="gray",
+            vmin=0,
+            vmax=1,
+            alpha=0.58,
+            aspect="equal",
+            zorder=0,
+        )
+        map_rect = Rectangle(
+            (ref_x_min, ref_y_min),
+            ref_x_max - ref_x_min,
+            ref_y_max - ref_y_min,
+            fill=False,
+            edgecolor="#e2e8f0",
+            linewidth=1.2,
+            linestyle="--",
+            zorder=2,
+            alpha=0.9,
+        )
+        ax.add_patch(map_rect)
+
+        points = poses[:, :2].reshape((-1, 1, 2))
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        lc = LineCollection(
+            segments,
+            cmap=speed_cmap,
+            norm=speed_norm,
+            linewidths=2.8,
+            alpha=0.97,
+            zorder=3,
+        )
+        lc.set_array(segment_speeds)
+        ax.add_collection(lc)
+        ax.scatter(poses[0, 0], poses[0, 1], s=52, c="#22c55e", zorder=4, label="Start")
+        ax.scatter(poses[-1, 0], poses[-1, 1], s=58, c="#f97316", marker="X", zorder=4, label="Koniec")
+
+        summary = item["speed_summary"]
+        ax.set_title(str(item["label"]))
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
+        ax.set_aspect("equal", adjustable="box")
+        x_vals = poses[:, 0]
+        y_vals = poses[:, 1]
+        x_min_data = float(np.min(x_vals))
+        x_max_data = float(np.max(x_vals))
+        y_min_data = float(np.min(y_vals))
+        y_max_data = float(np.max(y_vals))
+        x_min = min(ref_x_min, x_min_data)
+        x_max = max(ref_x_max, x_max_data)
+        y_min = min(ref_y_min, y_min_data)
+        y_max = max(ref_y_max, y_max_data)
+        x_pad = max(1.0, 0.05 * max(x_max - x_min, 1.0))
+        y_pad = max(1.0, 0.05 * max(y_max - y_min, 1.0))
+        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        ax.text(
+            0.02,
+            0.98,
+            "\n".join(
+                [
+                    f"Średnia: {summary['mean']:.3f} m/s",
+                    f"Mediana: {summary['median']:.3f} m/s",
+                    f"P95 / max: {summary['p95']:.3f} / {summary['max']:.3f} m/s",
+                ]
+            ),
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            color="#e5eefc",
+            fontsize=8.5,
+            bbox={"facecolor": "#0f172a", "edgecolor": "#334155", "boxstyle": "round,pad=0.35", "alpha": 0.86},
+        )
+
+    for ax in axes_flat[len(loaded):]:
+        fig.delaxes(ax)
+
+    sm = plt.cm.ScalarMappable(norm=speed_norm, cmap=speed_cmap)
+    sm.set_array(np.asarray([0.0, global_speed_limit], dtype=np.float32))
+    # Keep colorbar fully outside subplot grid to avoid overlap with the last panel.
+    cbar_ax = fig.add_axes([0.905, 0.14, 0.014, 0.72])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label("Prędkość translacyjna [m/s]", color="#dbe7ff")
+    cbar.ax.yaxis.set_tick_params(color="#dbe7ff")
+    plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#dbe7ff")
+
+    fig.suptitle("Trajektorie kolorowane prędkością", color="#f8fafc", fontsize=15, y=0.99)
+    output_path = dataset_dir / TRAJECTORY_SPEED_NAME
+    fig.subplots_adjust(left=0.04, right=0.885, top=0.90, bottom=0.08, wspace=0.16, hspace=0.24)
+    fig.savefig(output_path, dpi=160, facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+    return output_path, {
+        item["label"].lower().replace(" ", "_"): normalize_json_value(item["speed_summary"])
+        for item in loaded
+    }
+
+
+def generate_trajectory_speed_report(
+    dataset_dir: Path,
+    include_ai: bool = False,
+) -> tuple[dict[str, Path], dict[str, Any]]:
+    trajectory_path = resolve_eval_trajectory_data_path(dataset_dir)
+    if not trajectory_path.exists():
+        return {}, {}
+
+    results = load_history(dataset_dir / "results.json")
+    world_name = str(results.get("world_name", "")).strip() if isinstance(results, dict) else ""
+    _gt_t, gt_pose = load_trajectory_series(trajectory_path, "time_s", "gt_xytheta")
+    gt_xy = gt_pose[:, :2] if gt_pose.shape[0] > 0 else np.zeros((0, 2), dtype=np.float32)
+    ref_grid, ref_resolution, ref_origin = choose_reference_display_alignment(
+        dataset_dir,
+        world_name,
+        gt_xy,
+    )
+    trajectory_speed_path, speed_summary = render_speed_trajectory_report(
+        dataset_dir,
+        trajectory_path,
+        ref_grid,
+        ref_resolution,
+        ref_origin,
+        include_ai=include_ai,
+    )
+    if not trajectory_speed_path.exists():
+        return {}, {}
+    return {"trajectory_speed": trajectory_speed_path}, {"trajectory_speed_profiles": speed_summary}
+
+
+def _traj_series_xy(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray:
+    if key not in data:
+        return np.zeros((0, 2), dtype=np.float32)
+    arr = np.asarray(data[key], dtype=np.float32)
+    if arr.size == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    arr = arr.reshape((-1, 3))
+    return arr[:, :2]
+
+
+def _traj_err_mag(data: np.lib.npyio.NpzFile, err_xy_key: str) -> np.ndarray:
+    if err_xy_key not in data:
+        return np.zeros((0,), dtype=np.float32)
+    arr = np.asarray(data[err_xy_key], dtype=np.float32)
+    if arr.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    arr = arr.reshape((-1, 2))
+    return np.sqrt(arr[:, 0] ** 2 + arr[:, 1] ** 2).astype(np.float32)
+
+
+def _traj_abs_theta(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray:
+    if key not in data:
+        return np.zeros((0,), dtype=np.float32)
+    arr = np.asarray(data[key], dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    return np.abs(arr).astype(np.float32)
+
+
+def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> dict[str, Path]:
+    trajectory_npz = resolve_eval_trajectory_data_path(dataset_dir)
+    results_path = dataset_dir / "results.json"
+    map_layers_npz = resolve_eval_map_layers_path(dataset_dir)
+    if not trajectory_npz.exists():
+        return {}
+
+    artifacts: dict[str, Path] = {}
+    results = load_history(results_path)
+    world_name = str(results.get("world_name", "")).strip() if isinstance(results, dict) else ""
+    with np.load(trajectory_npz, allow_pickle=True) as data:
+        gt_xy = _traj_series_xy(data, "gt_xytheta")
+        baseline_xy = _traj_series_xy(data, "baseline_xytheta")
+        ai_xy = _traj_series_xy(data, "ai_xytheta")
+        robak_xy = _traj_series_xy(data, "robak_xytheta")
+        rywak_xy = _traj_series_xy(data, "rywak_xytheta")
+        t = np.asarray(data["time_s"], dtype=np.float32).reshape(-1) if "time_s" in data else np.zeros((0,), dtype=np.float32)
+        e_baseline = _traj_err_mag(data, "baseline_err_xy")
+        eth_baseline = _traj_abs_theta(data, "baseline_err_theta")
+        t_robak = np.asarray(data["robak_time_s"], dtype=np.float32).reshape(-1) if "robak_time_s" in data else np.zeros((0,), dtype=np.float32)
+        e_robak = _traj_err_mag(data, "robak_err_xy")
+        eth_robak = _traj_abs_theta(data, "robak_err_theta")
+        t_rywak = np.asarray(data["rywak_time_s"], dtype=np.float32).reshape(-1) if "rywak_time_s" in data else np.zeros((0,), dtype=np.float32)
+        e_rywak = _traj_err_mag(data, "rywak_err_xy")
+        eth_rywak = _traj_abs_theta(data, "rywak_err_theta")
+        t_ai = np.asarray(data["ai_time_s"], dtype=np.float32).reshape(-1) if "ai_time_s" in data else np.zeros((0,), dtype=np.float32)
+        e_ai = _traj_err_mag(data, "ai_err_xy")
+        eth_ai = _traj_abs_theta(data, "ai_err_theta")
+
+    ref_grid, ref_resolution, ref_origin = choose_reference_display_alignment(
+        dataset_dir,
+        world_name,
+        gt_xy,
+    )
+    ref_x_min = ref_origin[0]
+    ref_y_min = ref_origin[1]
+    ref_x_max = ref_x_min + ref_grid.shape[1] * ref_resolution
+    ref_y_max = ref_y_min + ref_grid.shape[0] * ref_resolution
+    ref_display = make_reference_display_grid(ref_grid)
+
+    # Trajectory plot without AI (for readability)
+    traj_path = dataset_dir / "eval_trajectory.png"
+    if gt_xy.shape[0] > 0 and baseline_xy.shape[0] > 0:
+        fig, ax_full = plt.subplots(1, 1, figsize=(9.0, 7.2))
+        ax_full.imshow(
+            ref_display,
+            extent=[ref_x_min, ref_x_max, ref_y_min, ref_y_max],
+            origin="lower",
+            cmap="gray",
+            vmin=0,
+            vmax=1,
+            alpha=0.6,
+            zorder=0,
+        )
+        ax_full.set_aspect("equal")
+        ax_full.set_xlabel("x [m]")
+        ax_full.set_ylabel("y [m]")
+        ax_full.grid(True, alpha=0.25)
+        map_rect = Rectangle(
+            (ref_x_min, ref_y_min),
+            ref_x_max - ref_x_min,
+            ref_y_max - ref_y_min,
+            fill=False,
+            edgecolor="#f8fafc",
+            linewidth=1.25,
+            linestyle="--",
+            zorder=2,
+            alpha=0.95,
+        )
+        ax_full.add_patch(map_rect)
+
+        series = [
+            (gt_xy, "tab:blue", "GT"),
+            (baseline_xy, "tab:orange", "baseline"),
+            (robak_xy, "tab:red", "robak"),
+            (rywak_xy, "tab:purple", "rywak"),
+        ]
+        if include_ai:
+            series.append((ai_xy, "tab:green", "ai"))
+        for arr, color, label in series:
+            if arr.shape[0] > 0:
+                ax_full.plot(arr[:, 0], arr[:, 1], color=color, linewidth=1.4, alpha=0.9, label=label)
+
+        all_xy = np.concatenate([arr for arr, _, _ in series if arr.shape[0] > 0], axis=0)
+        x_min = min(float(np.min(all_xy[:, 0])), ref_x_min)
+        x_max = max(float(np.max(all_xy[:, 0])), ref_x_max)
+        y_min = min(float(np.min(all_xy[:, 1])), ref_y_min)
+        y_max = max(float(np.max(all_xy[:, 1])), ref_y_max)
+        x_pad = max(2.0, 0.12 * max(x_max - x_min, 1.0))
+        y_pad = max(2.0, 0.12 * max(y_max - y_min, 1.0))
+        ax_full.set_xlim(x_min - x_pad, x_max + x_pad)
+        ax_full.set_ylim(y_min - y_pad, y_max + y_pad)
+        ax_full.set_title("Trajektorie wzgledem mapy referencyjnej")
+        ax_full.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0)
+        fig.tight_layout(rect=[0.0, 0.0, 0.84, 1.0])
+        fig.savefig(traj_path, dpi=150)
+        plt.close(fig)
+        artifacts["trajectory_png"] = traj_path
+        coord_payload = {
+            "reference_map": {
+                "x_min": float(ref_x_min),
+                "x_max": float(ref_x_max),
+                "y_min": float(ref_y_min),
+                "y_max": float(ref_y_max),
+                "resolution_m_per_cell": float(ref_resolution),
+                "grid_shape": [int(ref_grid.shape[0]), int(ref_grid.shape[1])],
+            },
+            "series": {},
+        }
+        for arr, _color, label in series:
+            if arr.shape[0] == 0:
+                continue
+            outside_ratio, occ_hit_ratio = _trajectory_alignment_metrics(arr, ref_grid, ref_resolution, ref_origin)
+            coord_payload["series"][str(label)] = {
+                "count": int(arr.shape[0]),
+                "x_min": float(np.min(arr[:, 0])),
+                "x_max": float(np.max(arr[:, 0])),
+                "y_min": float(np.min(arr[:, 1])),
+                "y_max": float(np.max(arr[:, 1])),
+                "outside_map_pct": float(100.0 * outside_ratio),
+                "occupied_cell_hit_pct": float(100.0 * occ_hit_ratio),
+            }
+        coords_path = dataset_dir / "eval_trajectory_coordinates.json"
+        write_json(coords_path, coord_payload)
+        artifacts["trajectory_coordinates_json"] = coords_path
+
+    # Error plot without AI
+    err_path = dataset_dir / "eval_errors.png"
+    if t.size > 0 and e_baseline.size > 0 and eth_baseline.size > 0:
+        fig, (ax_pos, ax_theta) = plt.subplots(2, 1, figsize=(12.0, 7.2), sharex=True)
+        ax_pos.plot(t[: e_baseline.shape[0]], e_baseline, label="baseline", linewidth=1.5)
+        ax_theta.plot(t[: eth_baseline.shape[0]], eth_baseline, label="baseline", linewidth=1.5)
+        if t_robak.size > 0 and e_robak.size > 0 and eth_robak.size > 0:
+            n = min(t_robak.shape[0], e_robak.shape[0], eth_robak.shape[0])
+            ax_pos.plot(t_robak[:n], e_robak[:n], label="robak", alpha=0.85)
+            ax_theta.plot(t_robak[:n], eth_robak[:n], label="robak", alpha=0.85)
+        if t_rywak.size > 0 and e_rywak.size > 0 and eth_rywak.size > 0:
+            n = min(t_rywak.shape[0], e_rywak.shape[0], eth_rywak.shape[0])
+            ax_pos.plot(t_rywak[:n], e_rywak[:n], label="rywak", alpha=0.85)
+            ax_theta.plot(t_rywak[:n], eth_rywak[:n], label="rywak", alpha=0.85)
+        if include_ai and t_ai.size > 0 and e_ai.size > 0 and eth_ai.size > 0:
+            n = min(t_ai.shape[0], e_ai.shape[0], eth_ai.shape[0])
+            ax_pos.plot(t_ai[:n], e_ai[:n], label="ai", alpha=0.85)
+            ax_theta.plot(t_ai[:n], eth_ai[:n], label="ai", alpha=0.85)
+        t_max = float(
+            np.max(
+                np.asarray(
+                    [
+                        np.max(t[: e_baseline.shape[0]]) if e_baseline.size > 0 else 0.0,
+                        np.max(t_robak[: min(t_robak.shape[0], e_robak.shape[0])]) if e_robak.size > 0 else 0.0,
+                        np.max(t_rywak[: min(t_rywak.shape[0], e_rywak.shape[0])]) if e_rywak.size > 0 else 0.0,
+                        np.max(t_ai[: min(t_ai.shape[0], e_ai.shape[0])]) if (include_ai and e_ai.size > 0) else 0.0,
+                    ],
+                    dtype=np.float32,
+                )
+            )
+        )
+        if t_max > 0.0:
+            x_pad = max(0.5, 0.01 * t_max)
+            ax_theta.set_xlim(0.0, t_max + x_pad)
+        pos_series = [e_baseline]
+        th_series = [eth_baseline]
+        if e_robak.size > 0:
+            pos_series.append(e_robak[: min(t_robak.shape[0], e_robak.shape[0])])
+            th_series.append(eth_robak[: min(t_robak.shape[0], eth_robak.shape[0])])
+        if e_rywak.size > 0:
+            pos_series.append(e_rywak[: min(t_rywak.shape[0], e_rywak.shape[0])])
+            th_series.append(eth_rywak[: min(t_rywak.shape[0], eth_rywak.shape[0])])
+        if include_ai and e_ai.size > 0:
+            pos_series.append(e_ai[: min(t_ai.shape[0], e_ai.shape[0])])
+            th_series.append(eth_ai[: min(t_ai.shape[0], eth_ai.shape[0])])
+        pos_all = np.concatenate([np.asarray(s, dtype=np.float32).reshape(-1) for s in pos_series if np.asarray(s).size > 0])
+        th_all = np.concatenate([np.asarray(s, dtype=np.float32).reshape(-1) for s in th_series if np.asarray(s).size > 0])
+        if pos_all.size > 0:
+            pos_min = float(np.min(pos_all))
+            pos_max = float(np.max(pos_all))
+            pos_pad = max(0.05, 0.07 * max(pos_max - pos_min, 1e-3))
+            ax_pos.set_ylim(pos_min - pos_pad, pos_max + pos_pad)
+        if th_all.size > 0:
+            th_min = float(np.min(th_all))
+            th_max = float(np.max(th_all))
+            th_pad = max(0.03, 0.07 * max(th_max - th_min, 1e-3))
+            ax_theta.set_ylim(th_min - th_pad, th_max + th_pad)
+        ax_pos.set_title("Błąd pozycji")
+        ax_pos.set_ylabel("error [m]")
+        ax_pos.grid(True, alpha=0.3)
+        ax_pos.legend(loc="best")
+        ax_theta.set_title("Błąd orientacji")
+        ax_theta.set_xlabel("t [s]")
+        ax_theta.set_ylabel("|error| [rad]")
+        ax_theta.grid(True, alpha=0.3)
+        ax_theta.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(err_path, dpi=150)
+        plt.close(fig)
+        artifacts["errors_png"] = err_path
+
+    # Map layers plot without AI
+    maps_path = dataset_dir / "eval_maps.png"
+    if map_layers_npz.exists():
+        with np.load(map_layers_npz) as m:
+            key_order = ["ref", "baseline", "robak", "rywak"] + (["ai"] if include_ai else [])
+            keys = [k for k in key_order if k in m.files]
+            rotate_180 = bool(int(np.asarray(m["rotate_180"]).reshape(-1)[0])) if "rotate_180" in m.files else False
+            if keys:
+                n = len(keys)
+                ncols = min(2, n)
+                nrows = int(np.ceil(n / ncols))
+                fig, axes = plt.subplots(nrows, ncols, figsize=(5.6 * ncols, 5.4 * nrows), squeeze=False)
+                configure_figure(fig)
+                axes_flat = axes.ravel()
+                ref_occ = np.asarray(m["ref"], dtype=np.float32) if "ref" in m.files else None
+                if ref_occ is not None and rotate_180:
+                    ref_occ = np.rot90(ref_occ, 2)
+                for i, key in enumerate(keys):
+                    ax = axes_flat[i]
+                    configure_axes(ax)
+                    disp = np.asarray(m[key], dtype=np.float32)
+                    if rotate_180:
+                        disp = np.rot90(disp, 2)
+                    # Keep IoU values from raw maps, but render as match-overlay for readability.
+                    if key == "ref" or ref_occ is None or ref_occ.shape != disp.shape:
+                        ax.imshow(disp, origin="lower", cmap="gray", vmin=0.0, vmax=1.0, interpolation="nearest")
+                    else:
+                        overlay = render_map_match_overlay(ref_occ, disp)
+                        if overlay.size == 0:
+                            ax.imshow(disp, origin="lower", cmap="gray", vmin=0.0, vmax=1.0, interpolation="nearest")
+                        else:
+                            ax.imshow(overlay, origin="lower", interpolation="nearest")
+                    metric_key = f"iou_map_{key}" if key != "baseline" else "iou_map_baseline"
+                    iou = None
+                    if isinstance(results, dict):
+                        metrics = results.get("metrics", {})
+                        if isinstance(metrics, dict):
+                            iou = metrics.get(metric_key)
+                    title = key
+                    if isinstance(iou, (int, float)):
+                        title = f"{key} (IoU={float(iou):.3f})"
+                    ax.set_title(title)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                for j in range(n, len(axes_flat)):
+                    axes_flat[j].axis("off")
+                fig.suptitle("Porównanie map", fontsize=12, color="#f8fafc")
+                fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
+                fig.savefig(maps_path, dpi=160, facecolor=fig.get_facecolor())
+                plt.close(fig)
+                artifacts["maps_png"] = maps_path
+    return artifacts
 
 
 def render_training_curve(
@@ -1074,9 +2116,9 @@ def render_training_curve(
 
 def generate_training_curves_report(dataset_dir: Path) -> tuple[dict[str, Path], dict[str, Any]]:
     specs = [
-        ("ai", dataset_dir / "train_history.json", dataset_dir / "training_curve_ai.png", "AI: błąd uczenia i walidacji"),
-        ("robak", dataset_dir / "train_history_robak.json", dataset_dir / "training_curve_robak.png", "Robak: błąd uczenia i walidacji"),
-        ("rywak", dataset_dir / "train_history_rywak.json", dataset_dir / "training_curve_rywak.png", "Rywak: błąd uczenia i walidacji"),
+        ("ai", dataset_dir / "train_history.json", dataset_dir / "train_curve_ai.png", "AI: błąd uczenia i walidacji"),
+        ("robak", dataset_dir / "train_history_robak.json", dataset_dir / "train_curve_robak.png", "Robak: błąd uczenia i walidacji"),
+        ("rywak", dataset_dir / "train_history_rywak.json", dataset_dir / "train_curve_rywak.png", "Rywak: błąd uczenia i walidacji"),
     ]
 
     artifact_paths: dict[str, Path] = {}
@@ -1102,13 +2144,21 @@ def generate_training_curves_report(dataset_dir: Path) -> tuple[dict[str, Path],
 def generate_report(dataset_dir: Path) -> dict[str, Path]:
     artifact_updates: dict[str, Path] = {}
     combined_summary: dict[str, Any] = {}
+    include_ai = resolve_include_ai_in_artifacts(dataset_dir)
 
     baseline_artifacts, baseline_summary = generate_baseline_report(dataset_dir)
     if baseline_artifacts:
+        legacy_path = dataset_dir / LEGACY_NAME
+        if legacy_path.exists() and baseline_artifacts["legacy"].resolve() != legacy_path.resolve():
+            try:
+                legacy_path.unlink()
+            except Exception:
+                pass
         artifact_updates.update(
             {
                 "dataset_inspection_overview_png": baseline_artifacts["overview"],
                 "dataset_inspection_scans_png": baseline_artifacts["scans"],
+                "dataset_target_components_png": baseline_artifacts["target_components"],
                 "dataset_analysis_png": baseline_artifacts["legacy"],
             }
         )
@@ -1152,6 +2202,17 @@ def generate_report(dataset_dir: Path) -> dict[str, Path]:
         for key, path in training_artifacts.items():
             artifact_updates[f"training_curve_{key}_png"] = path
         print(f"[TRAIN] Zapisano podsumowanie: {training_summary_path}")
+
+    trajectory_artifacts, trajectory_summary = generate_trajectory_speed_report(dataset_dir, include_ai=include_ai)
+    if trajectory_artifacts:
+        combined_summary.update(trajectory_summary)
+        artifact_updates["trajectory_speed_png"] = trajectory_artifacts["trajectory_speed"]
+        print(f"[EVAL] Zapisano trajektorie z heatmapą prędkości: {trajectory_artifacts['trajectory_speed']}")
+
+    clean_eval_artifacts = generate_clean_eval_plots(dataset_dir, include_ai=include_ai)
+    if clean_eval_artifacts:
+        artifact_updates.update(clean_eval_artifacts)
+        print("[EVAL] Zapisano czytelne wykresy eval: trajectory/errors/maps")
 
     if not combined_summary:
         raise FileNotFoundError(

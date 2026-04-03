@@ -1,27 +1,27 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0"?>
 <sdf version="1.6">
   <model name="clinic_wall_shell">
     <static>true</static>
-    <link name="link">
-      <collision name="collision_1">
-        <geometry>
-          <mesh>
-            <uri>../aws_robomaker_hospital_floor_01_walls/meshes/aws_robomaker_hospital_floor_01_walls_collision.dae</uri>
-          </mesh>
-        </geometry>
-      </collision>
-      <visual name="visual_1">
-        <geometry>
-          <mesh>
-            <uri>../aws_robomaker_hospital_floor_01_walls/meshes/aws_robomaker_hospital_floor_01_walls_collision.dae</uri>
-          </mesh>
-        </geometry>
-        <material>
-          <ambient>0.86 0.86 0.86 1</ambient>
-          <diffuse>0.86 0.86 0.86 1</diffuse>
-          <specular>0.08 0.08 0.08 1</specular>
-        </material>
-      </visual>
-    </link>
+
+  <link name="wall_n">
+    <pose>0 20.61 1.425 0 0 0</pose>
+    <collision name="c"><geometry><box><size>28.22 0.22 2.85</size></box></geometry></collision>
+    <visual name="v"><geometry><box><size>28.22 0.22 2.85</size></box></geometry><material><ambient>0.82 0.83 0.86 1</ambient><diffuse>0.82 0.83 0.86 1</diffuse></material></visual>
+  </link>
+  <link name="wall_s">
+    <pose>0 -31.61 1.425 0 0 0</pose>
+    <collision name="c"><geometry><box><size>28.22 0.22 2.85</size></box></geometry></collision>
+    <visual name="v"><geometry><box><size>28.22 0.22 2.85</size></box></geometry><material><ambient>0.82 0.83 0.86 1</ambient><diffuse>0.82 0.83 0.86 1</diffuse></material></visual>
+  </link>
+  <link name="wall_e">
+    <pose>14.11 -5.5 1.425 0 0 0</pose>
+    <collision name="c"><geometry><box><size>0.22 52.22 2.85</size></box></geometry></collision>
+    <visual name="v"><geometry><box><size>0.22 52.22 2.85</size></box></geometry><material><ambient>0.82 0.83 0.86 1</ambient><diffuse>0.82 0.83 0.86 1</diffuse></material></visual>
+  </link>
+  <link name="wall_w">
+    <pose>-14.11 -5.5 1.425 0 0 0</pose>
+    <collision name="c"><geometry><box><size>0.22 52.22 2.85</size></box></geometry></collision>
+    <visual name="v"><geometry><box><size>0.22 52.22 2.85</size></box></geometry><material><ambient>0.82 0.83 0.86 1</ambient><diffuse>0.82 0.83 0.86 1</diffuse></material></visual>
+  </link>
   </model>
 </sdf>

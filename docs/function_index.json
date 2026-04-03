@@ -747,12 +747,12 @@
     {
       "name": "EvaluationMetadata.set_metrics",
       "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
-      "line": 208,
+      "line": 236,
       "kind": "method",
       "inputs": [
         "self",
-        "rmse_xy_baseline: float",
-        "rmse_theta_baseline: float",
+        "rmse_xy_odom_topic: float",
+        "rmse_theta_odom_topic: float",
         "rmse_xy_ai: Optional[float]",
         "rmse_theta_ai: Optional[float]",
         "iou_map_baseline: Optional[float]",
@@ -1016,12 +1016,12 @@
     {
       "name": "ExperimentLogger.end_evaluation",
       "file": "ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py",
-      "line": 608,
+      "line": 661,
       "kind": "method",
       "inputs": [
         "self",
-        "rmse_xy_baseline: float",
-        "rmse_theta_baseline: float",
+        "rmse_xy_odom_topic: float",
+        "rmse_theta_odom_topic: float",
         "rmse_xy_ai: Optional[float]",
         "rmse_theta_ai: Optional[float]",
         "iou_map_baseline: Optional[float]",

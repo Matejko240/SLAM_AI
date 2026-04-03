@@ -32,11 +32,20 @@ killall -9 scan_fix 2>/dev/null
 killall -9 gt_pose_publisher 2>/dev/null
 killall -9 odom_corruptor 2>/dev/null
 killall -9 auto_driver 2>/dev/null
+killall -9 planned_path_driver 2>/dev/null
+killall -9 dataset_motion_watchdog 2>/dev/null
 killall -9 lifecycle_manager 2>/dev/null
 killall -9 eval_node 2>/dev/null
 killall -9 dataset_recorder 2>/dev/null
 killall -9 train_model 2>/dev/null
 killall -9 infer_node 2>/dev/null
+# Instalowane executables mają osobne nazwy (train_model_robak itd.) — killall train_model ich nie łapie
+pkill -9 -f "/ai_slam_ai/train_model" 2>/dev/null
+pkill -9 -f "/ai_slam_ai/dataset_recorder" 2>/dev/null
+pkill -9 -f "/ai_slam_ai/infer_" 2>/dev/null
+pkill -9 -f "/ai_slam_bringup/scan_matcher" 2>/dev/null
+pkill -9 -f "/ai_slam_bringup/planned_path_driver" 2>/dev/null
+pkill -9 -f "/ai_slam_bringup/dataset_motion_watchdog" 2>/dev/null
 
 # Kill any remaining Python ROS2 nodes
 pkill -9 -f "ros2" 2>/dev/null

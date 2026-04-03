@@ -1,29 +1,26 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0"?>
 <sdf version="1.6">
   <model name="wastebasket">
     <static>true</static>
     <link name="link">
-      <collision name="collision_1">
-        <pose>0.001581 0.000308 0.312969 0 0 1.570796</pose>
+      <collision name="col">
         <geometry>
           <cylinder>
-            <radius>0.27</radius>
-            <length>0.63</length>
+            <radius>0.16</radius>
+            <length>0.38</length>
           </cylinder>
         </geometry>
       </collision>
-      <visual name="visual_1">
-        <pose>0.001581 0.000308 0.312969 0 0 1.570796</pose>
+      <visual name="vis">
         <geometry>
           <cylinder>
-            <radius>0.27</radius>
-            <length>0.63</length>
+            <radius>0.16</radius>
+            <length>0.38</length>
           </cylinder>
         </geometry>
         <material>
-          <ambient>0.68 0.68 0.68 1</ambient>
-          <diffuse>0.68 0.68 0.68 1</diffuse>
-          <specular>0.08 0.08 0.08 1</specular>
+          <ambient>0.62 0.6 0.58 1</ambient>
+          <diffuse>0.62 0.6 0.58 1</diffuse>
         </material>
       </visual>
     </link>

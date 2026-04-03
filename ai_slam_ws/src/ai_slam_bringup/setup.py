@@ -12,8 +12,10 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
         (f"share/{package_name}/config", glob("config/*.yaml")),
+        (f"share/{package_name}/config/planned_paths", glob("config/planned_paths/*.yaml")),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
     entry_points={
         "console_scripts": [
@@ -21,6 +23,8 @@ setup(
             "scan_fix=ai_slam_bringup.scan_fix:main",
             "gt_pose_publisher=ai_slam_bringup.gt_pose_publisher:main",
             "auto_driver=ai_slam_bringup.auto_driver:main",
+            "planned_path_driver=ai_slam_bringup.planned_path_driver:main",
+            "dataset_motion_watchdog=ai_slam_bringup.dataset_motion_watchdog:main",
             "lifecycle_manager=ai_slam_bringup.lifecycle_manager:main",
             "scan_matcher = ai_slam_bringup.scan_matcher:main",
         ],

@@ -22,7 +22,9 @@ from out_layout import (
     ensure_sweep_storage,
     iter_experiment_dirs,
     resolve_experiment_dir,
+    resolve_venv_site_packages,
 )
+from results_metric_keys import metrics_rmse_theta_odom, metrics_rmse_xy_odom
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +32,7 @@ CONFIG_DIR = REPO_ROOT / "ai_slam_ws" / "src" / "ai_slam_bringup" / "config"
 RUN_FULL_CYCLE = REPO_ROOT / "scripts" / "run_full_cycle.sh"
 CLEANUP_SCRIPT = REPO_ROOT / "scripts" / "cleanup.sh"
 DEFAULT_CONFIG_NAME = "experiment_config.yaml"
-VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.12" / "site-packages"
+VENV_SITE = resolve_venv_site_packages(REPO_ROOT)
 
 ROBAK_TRAIN_PARAM_KEYS = {
     "robak.lr",
@@ -209,6 +211,8 @@ def write_summary(summary_path: Path, rows: list[dict[str, Any]]) -> None:
         "rmse_xy_ai",
         "rmse_theta_ai",
         "iou_map_ai",
+        "rmse_xy_odom_topic",
+        "rmse_theta_odom_topic",
         "rmse_xy_baseline",
         "rmse_theta_baseline",
         "iou_map_baseline",
@@ -440,7 +444,7 @@ def shell_preamble() -> str:
         "source /opt/ros/jazzy/setup.bash",
         "if [ -f ai_slam_ws/install/setup.bash ]; then source ai_slam_ws/install/setup.bash; fi",
     ]
-    if VENV_SITE.is_dir():
+    if VENV_SITE is not None and VENV_SITE.is_dir():
         parts.append(f"export PYTHONPATH=\"${{PYTHONPATH:+$PYTHONPATH:}}{VENV_SITE}\"")
     parts.append(
         "if grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null; then "
@@ -471,7 +475,7 @@ def common_config_values(cfg: dict[str, Any]) -> dict[str, Any]:
     training_cfg = cfg.get("training", {}) if isinstance(cfg.get("training"), dict) else {}
     return {
         "seed": int(experiment_cfg.get("seed", 123)),
-        "dataset_wait_timeout": float(timing_cfg.get("dataset_wait_timeout", 120.0)),
+        "dataset_wait_timeout": float(timing_cfg.get("dataset_wait_timeout", 0.0)),
         "training_max_epochs": int(training_cfg.get("max_epochs", 200)),
         "training_patience": int(training_cfg.get("patience", 20)),
         "training_min_delta": float(training_cfg.get("min_delta", 1e-5)),
@@ -484,6 +488,7 @@ def common_config_values(cfg: dict[str, Any]) -> dict[str, Any]:
 def apply_eval_duration_override(cfg: dict[str, Any], eval_duration: float | None) -> None:
     if eval_duration is None:
         return
+    set_nested_value(cfg, ["pipeline", "evaluation_sec"], float(eval_duration))
     set_nested_value(cfg, ["timing", "eval_duration"], float(eval_duration))
 
 
@@ -636,6 +641,8 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
         after = {path.name for path in iter_experiment_dirs()}
         exp_id = discover_new_experiment(before, after)
         metrics = read_metrics(exp_id)
+        odom_xy = metrics_rmse_xy_odom(metrics)
+        odom_th = metrics_rmse_theta_odom(metrics)
         status = "done" if completed.returncode == 0 else f"failed({completed.returncode})"
         if completed.returncode != 0:
             had_failures = True
@@ -658,8 +665,10 @@ def run_full_cycle_sweep(args: argparse.Namespace) -> int:
                 "rmse_xy_ai": metrics.get("rmse_xy_ai"),
                 "rmse_theta_ai": metrics.get("rmse_theta_ai"),
                 "iou_map_ai": metrics.get("iou_map_ai"),
-                "rmse_xy_baseline": metrics.get("rmse_xy_baseline"),
-                "rmse_theta_baseline": metrics.get("rmse_theta_baseline"),
+                "rmse_xy_odom_topic": odom_xy,
+                "rmse_theta_odom_topic": odom_th,
+                "rmse_xy_baseline": odom_xy,
+                "rmse_theta_baseline": odom_th,
                 "iou_map_baseline": metrics.get("iou_map_baseline"),
             }
         )
@@ -773,6 +782,8 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
 
         elapsed = time.time() - started_at
         metrics = read_metrics(exp_id)
+        odom_xy = metrics_rmse_xy_odom(metrics)
+        odom_th = metrics_rmse_theta_odom(metrics)
         rows.append(
             {
                 "mode": "fixed_dataset",
@@ -793,8 +804,10 @@ def run_fixed_dataset_sweep(args: argparse.Namespace) -> int:
                 "rmse_xy_ai": metrics.get("rmse_xy_ai"),
                 "rmse_theta_ai": metrics.get("rmse_theta_ai"),
                 "iou_map_ai": metrics.get("iou_map_ai"),
-                "rmse_xy_baseline": metrics.get("rmse_xy_baseline"),
-                "rmse_theta_baseline": metrics.get("rmse_theta_baseline"),
+                "rmse_xy_odom_topic": odom_xy,
+                "rmse_theta_odom_topic": odom_th,
+                "rmse_xy_baseline": odom_xy,
+                "rmse_theta_baseline": odom_th,
                 "iou_map_baseline": metrics.get("iou_map_baseline"),
             }
         )
@@ -814,7 +827,12 @@ def main() -> int:
     parser.add_argument("--start", required=True, type=float, help="Wartosc poczatkowa.")
     parser.add_argument("--stop", required=True, type=float, help="Wartosc koncowa.")
     parser.add_argument("--step", required=True, type=float, help="Krok sweepu.")
-    parser.add_argument("--eval-duration", type=float, default=None, help="Nadpisanie timing.eval_duration dla każdej iteracji sweepa.")
+    parser.add_argument(
+        "--eval-duration",
+        type=float,
+        default=None,
+        help="Nadpisanie pipeline.evaluation_sec (i timing.eval_duration) dla każdej iteracji sweepa.",
+    )
     parser.add_argument(
         "--mode",
         choices=("fixed_dataset", "full_cycle"),

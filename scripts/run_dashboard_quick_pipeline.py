@@ -15,13 +15,19 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from out_layout import DASHBOARD_QUICK_CONFIG_DIR, ensure_experiment_storage, ensure_grouped_out_layout, resolve_experiment_dir
+from out_layout import (
+    DASHBOARD_QUICK_CONFIG_DIR,
+    ensure_experiment_storage,
+    ensure_grouped_out_layout,
+    resolve_experiment_dir,
+    resolve_venv_site_packages,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO_ROOT / "ai_slam_ws" / "src" / "ai_slam_bringup" / "config"
 TEMP_CONFIG_DIR = DASHBOARD_QUICK_CONFIG_DIR
-VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.12" / "site-packages"
+VENV_SITE = resolve_venv_site_packages(REPO_ROOT)
 ROS_DISTRO = os.environ.get("ROS_DISTRO", "jazzy")
 ROS_SETUP = Path(f"/opt/ros/{ROS_DISTRO}/setup.bash")
 WS_SETUP = REPO_ROOT / "ai_slam_ws" / "install" / "setup.bash"
@@ -118,15 +124,12 @@ def create_temp_config(
     experiment_id = forced_experiment_id or build_experiment_id(experiment_name)
 
     if dataset_duration is not None:
+        set_nested(payload, ["pipeline", "dataset_collection_sec"], float(dataset_duration))
         set_nested(payload, ["timing", "dataset_duration"], float(dataset_duration))
-        set_nested(payload, ["robak", "dataset_duration"], float(dataset_duration))
-        set_nested(payload, ["rywak", "dataset_duration"], float(dataset_duration))
         set_nested(payload, ["dataset", "max_samples"], 0)
-        set_nested(payload, ["robak", "max_samples"], 0)
-        set_nested(payload, ["rywak", "max_samples"], 0)
-        current_wait = float(get_cfg_value(payload, "timing", "dataset_wait_timeout", default=120.0))
-        set_nested(payload, ["timing", "dataset_wait_timeout"], max(current_wait, float(dataset_duration) + 180.0))
+        set_nested(payload, ["timing", "dataset_wait_timeout"], float(dataset_duration) * 2.0)
     if eval_duration is not None:
+        set_nested(payload, ["pipeline", "evaluation_sec"], float(eval_duration))
         set_nested(payload, ["timing", "eval_duration"], float(eval_duration))
     if dataset_world:
         set_nested(payload, ["simulation", "train_world"], str(dataset_world))
@@ -184,8 +187,9 @@ def build_ros_run_command(executable: str, params: list[tuple[str, Any]]) -> str
         f"source {shlex.quote(str(ROS_SETUP))}",
         f"if [ ! -f {shlex.quote(str(WS_SETUP))} ]; then echo '[QUICK][ERROR] Workspace is not built yet: {WS_SETUP}' >&2; exit 1; fi",
         f"source {shlex.quote(str(WS_SETUP))}",
+        'export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"',
     ]
-    if VENV_SITE.is_dir():
+    if VENV_SITE is not None and VENV_SITE.is_dir():
         parts.append(f"export PYTHONPATH=\"${{PYTHONPATH:+$PYTHONPATH:}}{VENV_SITE}\"")
     parts.append(f"ros2 run ai_slam_ai {executable} --ros-args {param_args}")
     return " && ".join(parts)
@@ -196,6 +200,13 @@ def run_shell_command(command: str) -> int:
     print("[QUICK]   " + command)
     completed = subprocess.run(["bash", "-lc", command], cwd=REPO_ROOT, check=False)
     return int(completed.returncode)
+
+
+def run_best_effort_cleanup(reason: str) -> None:
+    print(f"[QUICK] Cleanup: {reason}")
+    return_code = run_command(["bash", "./scripts/cleanup.sh"])
+    if return_code != 0:
+        print(f"[QUICK][WARN] cleanup.sh zakończył się kodem {return_code}; kontynuuję.")
 
 
 def ensure_runtime_ready() -> None:
@@ -310,21 +321,38 @@ def run_launch_phase(phase: str, config_path: Path, experiment_id: str, success_
 
 def run_full_cycle_quick(config_path: Path, experiment_id: str) -> int:
     ensure_experiment_storage(experiment_id)
-    return_code = run_command(
-        [
-            "bash",
-            "./scripts/run_full_cycle.sh",
-            str(config_path),
-            f"experiment_id:={experiment_id}",
-        ]
-    )
-    if return_code != 0 and quick_artifacts_complete(config_path, experiment_id, {"dataset", "train", "test"}):
-        print(
-            "[QUICK][WARN] Requested artifacts were saved successfully; "
-            "ignoring non-zero shutdown return code."
-        )
-        return 0
-    return return_code
+    print("[QUICK] Tryb sekwencyjny: dataset -> train_existing -> test")
+    run_best_effort_cleanup("przed fazą dataset")
+
+    dataset_rc = run_launch_phase("dataset", config_path, experiment_id, {"dataset"})
+    if dataset_rc != 0:
+        run_best_effort_cleanup("po nieudanej fazie dataset")
+        return dataset_rc
+
+    train_rc = train_existing_experiment(config_path, experiment_id)
+    if train_rc != 0:
+        run_best_effort_cleanup("po nieudanej fazie treningu")
+        return train_rc
+
+    run_best_effort_cleanup("przed fazą test")
+    test_rc = run_launch_phase("test", config_path, experiment_id, {"test"})
+    run_best_effort_cleanup("po zakończeniu full_cycle")
+    return test_rc
+
+
+def run_dataset_then_train_quick(config_path: Path, experiment_id: str) -> int:
+    ensure_experiment_storage(experiment_id)
+    print("[QUICK] Tryb sekwencyjny: dataset -> train_existing")
+    run_best_effort_cleanup("przed fazą dataset")
+
+    dataset_rc = run_launch_phase("dataset", config_path, experiment_id, {"dataset"})
+    if dataset_rc != 0:
+        run_best_effort_cleanup("po nieudanej fazie dataset")
+        return dataset_rc
+
+    train_rc = train_existing_experiment(config_path, experiment_id)
+    run_best_effort_cleanup("po zakończeniu dataset_train")
+    return train_rc
 
 
 def train_existing_experiment(base_config_path: Path, experiment_id: str) -> int:
@@ -336,7 +364,7 @@ def train_existing_experiment(base_config_path: Path, experiment_id: str) -> int
 
     out_dir = str((REPO_ROOT / "out").resolve())
     seed = int(get_cfg_value(cfg, "experiment", "seed", default=123))
-    dataset_wait_timeout = float(get_cfg_value(cfg, "timing", "dataset_wait_timeout", default=120.0))
+    dataset_wait_timeout = float(get_cfg_value(cfg, "timing", "dataset_wait_timeout", default=0.0))
     max_epochs = int(get_cfg_value(cfg, "training", "max_epochs", default=200))
     patience = int(get_cfg_value(cfg, "training", "patience", default=20))
     min_delta = float(get_cfg_value(cfg, "training", "min_delta", default=1e-5))
@@ -488,7 +516,7 @@ def main() -> int:
         return run_launch_phase("dataset", temp_config_path, experiment_id, {"dataset"})
 
     if args.mode == "dataset_train":
-        return run_launch_phase("train", temp_config_path, experiment_id, {"dataset", "train"})
+        return run_dataset_then_train_quick(temp_config_path, experiment_id)
 
     if args.mode == "test_existing":
         return run_launch_phase("test", temp_config_path, args.experiment_id.strip(), {"test"})

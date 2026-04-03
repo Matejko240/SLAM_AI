@@ -63,11 +63,12 @@
         <pose>-0.001425 -0.014447 0 0 -0 0</pose>
       </include>
     </model>
-    <model name="clinic_wall_shell_1">
+    <!-- Ściany wewnętrzne z reference_map_hospital.pgm (1:1 z mapą eval / A*) -->
+    <model name="clinic_interior_walls_1">
       <include>
-        <uri>model://clinic_wall_shell</uri>
+        <uri>model://clinic_interior_walls</uri>
         <static>true</static>
-        <pose>-0.013823 -0.013783 0 0 -0 0</pose>
+        <pose>0 0 0 0 0 0</pose>
       </include>
     </model>
     <model name="clinic_core_station_1">

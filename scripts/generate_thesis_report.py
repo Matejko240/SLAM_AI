@@ -13,9 +13,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from results_metric_keys import metrics_rmse_theta_odom, metrics_rmse_xy_odom
+
 
 METHODS = [
-    ("baseline", "Baseline", "rmse_xy_baseline", "rmse_theta_baseline", "iou_map_baseline"),
+    ("baseline", "Odom vs GT", "rmse_xy_odom_topic", "rmse_theta_odom_topic", "iou_map_baseline"),
     ("ai", "AI", "rmse_xy_ai", "rmse_theta_ai", "iou_map_ai"),
     ("robak", "Robak", "rmse_xy_robak", "rmse_theta_robak", "iou_map_robak"),
     ("rywak", "Rywak", "rmse_xy_rywak", "rmse_theta_rywak", "iou_map_rywak"),
@@ -98,8 +100,14 @@ def load_records(results_paths):
             "mode": data.get("mode"),
         }
         for _key, _label, rmse_xy_key, rmse_th_key, iou_key in METHODS:
-            rec[rmse_xy_key] = to_float(metrics.get(rmse_xy_key))
-            rec[rmse_th_key] = to_float(metrics.get(rmse_th_key))
+            if rmse_xy_key == "rmse_xy_odom_topic":
+                rec[rmse_xy_key] = to_float(metrics_rmse_xy_odom(metrics))
+            else:
+                rec[rmse_xy_key] = to_float(metrics.get(rmse_xy_key))
+            if rmse_th_key == "rmse_theta_odom_topic":
+                rec[rmse_th_key] = to_float(metrics_rmse_theta_odom(metrics))
+            else:
+                rec[rmse_th_key] = to_float(metrics.get(rmse_th_key))
             if iou_key is not None:
                 rec[iou_key] = to_float(metrics.get(iou_key))
 
@@ -115,8 +123,8 @@ def write_experiment_table(records, out_path: Path):
         "mode",
         "seed",
         "duration_sec",
-        "rmse_xy_baseline",
-        "rmse_theta_baseline",
+        "rmse_xy_odom_topic",
+        "rmse_theta_odom_topic",
         "iou_map_baseline",
         "rmse_xy_ai",
         "rmse_theta_ai",
@@ -174,8 +182,8 @@ def method_statistics(records):
         rmse_th_imp = []
         iou_imp = []
         for r in records:
-            b_xy = r.get("rmse_xy_baseline")
-            b_th = r.get("rmse_theta_baseline")
+            b_xy = r.get("rmse_xy_odom_topic")
+            b_th = r.get("rmse_theta_odom_topic")
             b_iou = r.get("iou_map_baseline")
             m_xy = r.get(rmse_xy_key)
             m_th = r.get(rmse_th_key)

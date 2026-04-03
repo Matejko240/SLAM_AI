@@ -22,9 +22,9 @@
         </constraints>
       </ode>
     </physics>
-    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
-    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
-    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"></plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"></plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"></plugin>
     <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
       <render_engine>ogre2</render_engine>
     </plugin>
@@ -6531,6 +6531,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        0.63
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -1.3800000000000001
@@ -6550,6 +6573,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -1.3800000000000001
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.24
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -6569,6 +6615,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         1.55
@@ -6588,6 +6657,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -1.55
@@ -6607,6 +6699,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         0.0
@@ -6626,6 +6741,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        0.0
+        -3.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            3.0
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -6680,6 +6818,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        0.63
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -1.3800000000000001
@@ -6699,6 +6860,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -1.3800000000000001
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.24
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -6718,6 +6902,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         1.55
@@ -6737,6 +6944,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -1.55
@@ -6756,6 +6986,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         0.0
@@ -6775,6 +7028,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        0.0
+        -3.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            3.0
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -6829,6 +7105,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        2.13
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            4.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -3.63
@@ -6848,6 +7147,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -3.63
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            4.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -6867,6 +7189,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         4.55
@@ -6886,6 +7231,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        4.55
+        -3.75
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            7.5
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -6.05
@@ -6905,6 +7273,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -6.05
+        -3.75
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            7.5
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         -0.75
@@ -6924,6 +7315,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        -0.75
+        -7.55
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            10.5
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <link name="counter_0">
         <pose>
@@ -7187,6 +7601,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -7785,6 +8211,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -8383,6 +8821,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -8981,6 +9431,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -9591,6 +10053,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -10189,6 +10663,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -10787,6 +11273,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -11385,6 +11883,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -11995,6 +12505,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -12593,6 +13115,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -13191,6 +13725,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -13789,6 +14335,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -14399,6 +14957,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -14997,6 +15567,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -15595,6 +16177,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -16193,6 +16787,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -16803,6 +17409,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -17401,6 +18019,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -17999,6 +18629,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -18597,6 +19239,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -19207,6 +19861,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -19805,6 +20471,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -20403,6 +21081,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -21001,6 +21691,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -21610,6 +22312,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        2.88
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            6.24
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -2.13
@@ -21629,6 +22354,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -2.13
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -21648,6 +22396,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         6.05
@@ -21667,6 +22438,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        6.05
+        -3.0
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            6.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -3.05
@@ -21686,6 +22480,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -3.05
+        -3.0
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            6.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         1.5
@@ -21705,6 +22522,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        1.5
+        -6.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            9.0
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <model name="table_and_chairs">
         <pose>
@@ -21881,6 +22721,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        1.3800000000000001
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            3.24
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -2.13
@@ -21900,6 +22763,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -2.13
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -21919,6 +22805,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         3.05
@@ -21938,6 +22847,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        3.05
+        -2.25
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            4.5
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -3.05
@@ -21957,6 +22889,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -3.05
+        -2.25
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            4.5
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         0.0
@@ -21976,6 +22931,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        0.0
+        -4.55
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            6.0
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <model name="table_and_chairs">
         <pose>
@@ -22074,38 +23052,6 @@
         <uri>model://whiteboard</uri>
       </include>
     </model>
-    <model name="zone_meet_c">
-      <static>true</static>
-      <pose>
-    4.5
-    13.6
-    0
-    0
-    0
-    -1.5707963267948966
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        0.0
-        -2.25
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            6.0
-            4.5
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
-    </model>
     <model name="zone_meet_d">
       <static>true</static>
       <pose>
@@ -22136,6 +23082,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        0.63
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -2.13
@@ -22155,6 +23124,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -2.13
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -22174,6 +23166,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         1.55
@@ -22193,6 +23208,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -3.05
@@ -22212,6 +23250,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -3.05
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         -0.75
@@ -22231,6 +23292,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        -0.75
+        -3.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            4.5
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <model name="corner_1">
         <static>true</static>
@@ -22260,6 +23344,27 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_x_0">
+            <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+            <geometry>
+              <box>
+                <size>
+              1.85
+              0.75
+              0.76
+            </size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
           <collision name="collision_y">
             <pose>
           -0.375
@@ -22277,17 +23382,25 @@
               </box>
             </geometry>
           </collision>
-          <visual name="visual">
-            <pose>0 0 0.75 0 0 0</pose>
+          <visual name="auto_vis_collision_y_1">
+            <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
             <geometry>
               <box>
-                <size>0.9 0.9 1.5</size>
+                <size>
+              0.75
+              1.85
+              0.76
+            </size>
               </box>
             </geometry>
             <material>
-              <ambient>0.83 0.83 0.85 1</ambient>
-              <diffuse>0.83 0.83 0.85 1</diffuse>
-              <specular>0.08 0.08 0.08 1</specular>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
             </material>
           </visual>
           <collision name="collision_for_visual">
@@ -22298,6 +23411,18 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_for_visual_2">
+            <pose>0 0 0.75 0 0 0</pose>
+            <geometry>
+              <box>
+                <size>0.9 0.9 1.5</size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <include>
           <pose>
@@ -22353,6 +23478,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        0.63
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -2.13
@@ -22372,6 +23520,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -2.13
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -22391,6 +23562,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         1.55
@@ -22410,6 +23604,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -3.05
@@ -22429,6 +23646,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -3.05
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         -0.75
@@ -22448,6 +23688,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        -0.75
+        -3.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            4.5
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <model name="corner_1">
         <static>true</static>
@@ -22477,6 +23740,27 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_x_0">
+            <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+            <geometry>
+              <box>
+                <size>
+              1.85
+              0.75
+              0.76
+            </size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
           <collision name="collision_y">
             <pose>
           -0.375
@@ -22494,17 +23778,25 @@
               </box>
             </geometry>
           </collision>
-          <visual name="visual">
-            <pose>0 0 0.75 0 0 0</pose>
+          <visual name="auto_vis_collision_y_1">
+            <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
             <geometry>
               <box>
-                <size>0.9 0.9 1.5</size>
+                <size>
+              0.75
+              1.85
+              0.76
+            </size>
               </box>
             </geometry>
             <material>
-              <ambient>0.83 0.83 0.85 1</ambient>
-              <diffuse>0.83 0.83 0.85 1</diffuse>
-              <specular>0.08 0.08 0.08 1</specular>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
             </material>
           </visual>
           <collision name="collision_for_visual">
@@ -22515,6 +23807,18 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_for_visual_2">
+            <pose>0 0 0.75 0 0 0</pose>
+            <geometry>
+              <box>
+                <size>0.9 0.9 1.5</size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <include>
           <pose>
@@ -22539,261 +23843,6 @@
   </pose>
         <uri>model://wastebasket</uri>
       </include>
-    </model>
-    <model name="focus_room_a">
-      <static>true</static>
-      <pose>
-    -4.6
-    7.5
-    0
-    0
-    0
-    1.5707963267948966
-  </pose>
-      <link name="link">
-        <collision name="right_of_door">
-          <pose>
-        1.3800000000000001
-        0.05
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            3.24
-            0.1
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="left_of_door">
-          <pose>
-        -2.13
-        0.05
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            1.74
-            0.1
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="top_of_door">
-          <pose>
-        -0.75
-        0.05
-        2.55
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            1.5
-            0.1
-            0.9
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="right">
-          <pose>
-        3.05
-        -2.25
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            0.1
-            4.5
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="left">
-          <pose>
-        -3.05
-        -2.25
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            0.1
-            4.5
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="back">
-          <pose>
-        0.0
-        -4.55
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            6.0
-            0.1
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
-      <model name="table_and_chairs">
-        <pose>
-    1.0499999999999998
-    -2.4000000000000004
-    0
-    0
-    0
-    0
-  </pose>
-        <include>
-          <uri>model://conference_table_small</uri>
-        </include>
-        <include>
-          <name>chair_-0.9_-0.7204611100756972</name>
-          <pose>
-        -0.9
-        -0.7204611100756972
-        0
-        0
-        0
-        3.1785013131726743
-      </pose>
-          <uri>model://desk_chair</uri>
-        </include>
-        <include>
-          <name>chair_-0.9_0.6008246604693279</name>
-          <pose>
-        -0.9
-        0.6008246604693279
-        0
-        0
-        0
-        0.36206490687605775
-      </pose>
-          <uri>model://desk_chair</uri>
-        </include>
-        <include>
-          <name>chair_0.0_-0.534246382357672</name>
-          <pose>
-        0.0
-        -0.534246382357672
-        0
-        0
-        0
-        3.3355085506986555
-      </pose>
-          <uri>model://desk_chair</uri>
-        </include>
-        <include>
-          <name>chair_0.0_0.7947051860876158</name>
-          <pose>
-        0.0
-        0.7947051860876158
-        0
-        0
-        0
-        0.27845875568840794
-      </pose>
-          <uri>model://desk_chair</uri>
-        </include>
-        <include>
-          <name>chair_0.9_-0.7196781325934869</name>
-          <pose>
-        0.9
-        -0.7196781325934869
-        0
-        0
-        0
-        3.5004320123329014
-      </pose>
-          <uri>model://desk_chair</uri>
-        </include>
-        <include>
-          <name>chair_0.9_0.5785956657835173</name>
-          <pose>
-        0.9
-        0.5785956657835173
-        0
-        0
-        0
-        -0.18382023168180872
-      </pose>
-          <uri>model://desk_chair</uri>
-        </include>
-      </model>
-      <include>
-        <pose>
-    -1.9
-    -3.68
-    0
-    0
-    0
-    2.66
-  </pose>
-        <uri>model://whiteboard</uri>
-      </include>
-    </model>
-    <model name="focus_room_b">
-      <static>true</static>
-      <pose>
-    -4.6
-    13.6
-    0
-    0
-    0
-    1.5707963267948966
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        0.0
-        -2.25
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            6.0
-            4.5
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
     </model>
     <model name="staff_service_a">
       <static>true</static>
@@ -22825,6 +23874,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        0.63
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -1.3800000000000001
@@ -22844,6 +23916,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -1.3800000000000001
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.24
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -22863,6 +23958,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         1.55
@@ -22882,6 +24000,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -1.55
@@ -22901,6 +24042,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         0.0
@@ -22920,6 +24084,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        0.0
+        -3.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            3.0
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -22943,102 +24130,6 @@
   </pose>
         <uri>model://wastebasket</uri>
       </include>
-    </model>
-    <model name="staff_service_b">
-      <static>true</static>
-      <pose>
-    -7.6
-    19.5
-    0
-    0
-    0
-    3.141592653589793
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        0.0
-        -1.5
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            3.0
-            3.0
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
-    </model>
-    <model name="workroom_a">
-      <static>true</static>
-      <pose>
-    -12.2
-    19.5
-    0
-    0
-    0
-    3.141592653589793
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        -0.75
-        -1.5
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            4.5
-            3.0
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
-    </model>
-    <model name="workroom_b">
-      <static>true</static>
-      <pose>
-    -16.8
-    19.5
-    0
-    0
-    0
-    3.141592653589793
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        -0.75
-        -1.5
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            4.5
-            3.0
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
     </model>
     <model name="workroom_c">
       <static>true</static>
@@ -23070,6 +24161,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        0.63
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -2.13
@@ -23089,6 +24203,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -2.13
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -23108,6 +24245,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         1.55
@@ -23127,6 +24287,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        1.55
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -3.05
@@ -23146,6 +24329,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -3.05
+        -1.5
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            3.0
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         -0.75
@@ -23165,6 +24371,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        -0.75
+        -3.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            4.5
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <model name="corner_1">
         <static>true</static>
@@ -23194,6 +24423,27 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_x_0">
+            <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+            <geometry>
+              <box>
+                <size>
+              1.85
+              0.75
+              0.76
+            </size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
           <collision name="collision_y">
             <pose>
           -0.375
@@ -23211,17 +24461,25 @@
               </box>
             </geometry>
           </collision>
-          <visual name="visual">
-            <pose>0 0 0.75 0 0 0</pose>
+          <visual name="auto_vis_collision_y_1">
+            <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
             <geometry>
               <box>
-                <size>0.9 0.9 1.5</size>
+                <size>
+              0.75
+              1.85
+              0.76
+            </size>
               </box>
             </geometry>
             <material>
-              <ambient>0.83 0.83 0.85 1</ambient>
-              <diffuse>0.83 0.83 0.85 1</diffuse>
-              <specular>0.08 0.08 0.08 1</specular>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
             </material>
           </visual>
           <collision name="collision_for_visual">
@@ -23232,6 +24490,18 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_for_visual_2">
+            <pose>0 0 0.75 0 0 0</pose>
+            <geometry>
+              <box>
+                <size>0.9 0.9 1.5</size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <include>
           <pose>
@@ -23287,6 +24557,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_of_door_novis">
+          <pose>
+        1.3800000000000001
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            3.24
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left_of_door">
           <pose>
         -2.13
@@ -23306,6 +24599,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_of_door_novis">
+          <pose>
+        -2.13
+        0.05
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.74
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="top_of_door">
           <pose>
         -0.75
@@ -23325,6 +24641,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_top_of_door_novis">
+          <pose>
+        -0.75
+        0.05
+        2.55
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            1.5
+            0.1
+            0.9
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="right">
           <pose>
         3.05
@@ -23344,6 +24683,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_right_novis">
+          <pose>
+        3.05
+        -2.25
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            4.5
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="left">
           <pose>
         -3.05
@@ -23363,6 +24725,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_left_novis">
+          <pose>
+        -3.05
+        -2.25
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            0.1
+            4.5
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="back">
           <pose>
         0.0
@@ -23382,6 +24767,29 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_back_novis">
+          <pose>
+        0.0
+        -4.55
+        1.5
+        0
+        0
+        0
+      </pose>
+          <geometry>
+            <box>
+              <size>
+            6.0
+            0.1
+            3.0
+          </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -23422,6 +24830,27 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_x_0">
+            <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+            <geometry>
+              <box>
+                <size>
+              1.85
+              0.75
+              0.76
+            </size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
           <collision name="collision_y">
             <pose>
           -0.375
@@ -23439,17 +24868,25 @@
               </box>
             </geometry>
           </collision>
-          <visual name="visual">
-            <pose>0 0 0.75 0 0 0</pose>
+          <visual name="auto_vis_collision_y_1">
+            <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
             <geometry>
               <box>
-                <size>0.9 0.9 1.5</size>
+                <size>
+              0.75
+              1.85
+              0.76
+            </size>
               </box>
             </geometry>
             <material>
-              <ambient>0.83 0.83 0.85 1</ambient>
-              <diffuse>0.83 0.83 0.85 1</diffuse>
-              <specular>0.08 0.08 0.08 1</specular>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
             </material>
           </visual>
           <collision name="collision_for_visual">
@@ -23460,6 +24897,18 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_for_visual_2">
+            <pose>0 0 0.75 0 0 0</pose>
+            <geometry>
+              <box>
+                <size>0.9 0.9 1.5</size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <include>
           <pose>
@@ -23501,6 +24950,27 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_x_0">
+            <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+            <geometry>
+              <box>
+                <size>
+              1.85
+              0.75
+              0.76
+            </size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
           <collision name="collision_y">
             <pose>
           -0.375
@@ -23518,17 +24988,25 @@
               </box>
             </geometry>
           </collision>
-          <visual name="visual">
-            <pose>0 0 0.75 0 0 0</pose>
+          <visual name="auto_vis_collision_y_1">
+            <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
             <geometry>
               <box>
-                <size>0.9 0.9 1.5</size>
+                <size>
+              0.75
+              1.85
+              0.76
+            </size>
               </box>
             </geometry>
             <material>
-              <ambient>0.83 0.83 0.85 1</ambient>
-              <diffuse>0.83 0.83 0.85 1</diffuse>
-              <specular>0.08 0.08 0.08 1</specular>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
             </material>
           </visual>
           <collision name="collision_for_visual">
@@ -23539,6 +25017,18 @@
               </box>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_for_visual_2">
+            <pose>0 0 0.75 0 0 0</pose>
+            <geometry>
+              <box>
+                <size>0.9 0.9 1.5</size>
+              </box>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <include>
           <pose>
@@ -23552,102 +25042,6 @@
           <uri>model://office_chair</uri>
         </include>
       </model>
-    </model>
-    <model name="focus_room_c">
-      <static>true</static>
-      <pose>
-    -12.0
-    4.5
-    0
-    0
-    0
-    0
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        0.0
-        -2.25
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            6.0
-            4.5
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
-    </model>
-    <model name="focus_room_d">
-      <static>true</static>
-      <pose>
-    -18.1
-    4.5
-    0
-    0
-    0
-    0
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        0.0
-        -2.25
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            6.0
-            4.5
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
-    </model>
-    <model name="focus_room_e">
-      <static>true</static>
-      <pose>
-    -24.2
-    4.5
-    0
-    0
-    0
-    0
-  </pose>
-      <link name="link">
-        <collision name="box_collision">
-          <pose>
-        0.0
-        -2.25
-        1.5
-        0
-        0
-        0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            6.0
-            4.5
-            3.0
-          </size>
-            </box>
-          </geometry>
-        </collision>
-      </link>
     </model>
     <model name="open_cluster_a">
       <static>true</static>
@@ -23672,6 +25066,22 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_y_0">
+          <pose>0 0 0.38 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>
+              1.5
+              3.7
+              0.76
+            </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="collision_x">
           <pose>0 0 0.38 0 0 0</pose>
           <geometry>
@@ -23684,17 +25094,20 @@
             </box>
           </geometry>
         </collision>
-        <visual name="visual">
-          <pose>0 0 0.75 0 0 0</pose>
+        <visual name="auto_vis_collision_x_1">
+          <pose>0 0 0.38 0 0 0</pose>
           <geometry>
             <box>
-              <size>1.8 1.8 1.5</size>
+              <size>
+              3.7
+              1.5
+              0.76
+            </size>
             </box>
           </geometry>
           <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
           </material>
         </visual>
         <collision name="collision_for_visual">
@@ -23705,6 +25118,18 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_2">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.8 1.8 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>chair_-1_-1</name>
@@ -23778,6 +25203,22 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_y_0">
+          <pose>0 0 0.38 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>
+              1.5
+              3.7
+              0.76
+            </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="collision_x">
           <pose>0 0 0.38 0 0 0</pose>
           <geometry>
@@ -23790,17 +25231,20 @@
             </box>
           </geometry>
         </collision>
-        <visual name="visual">
-          <pose>0 0 0.75 0 0 0</pose>
+        <visual name="auto_vis_collision_x_1">
+          <pose>0 0 0.38 0 0 0</pose>
           <geometry>
             <box>
-              <size>1.8 1.8 1.5</size>
+              <size>
+              3.7
+              1.5
+              0.76
+            </size>
             </box>
           </geometry>
           <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
           </material>
         </visual>
         <collision name="collision_for_visual">
@@ -23811,6 +25255,18 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_2">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.8 1.8 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>chair_-1_-1</name>
@@ -23889,6 +25345,27 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_x_0">
+          <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+          <geometry>
+            <box>
+              <size>
+              1.85
+              0.75
+              0.76
+            </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="collision_y">
           <pose>
           -0.375
@@ -23906,17 +25383,25 @@
             </box>
           </geometry>
         </collision>
-        <visual name="visual">
-          <pose>0 0 0.75 0 0 0</pose>
+        <visual name="auto_vis_collision_y_1">
+          <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
           <geometry>
             <box>
-              <size>0.9 0.9 1.5</size>
+              <size>
+              0.75
+              1.85
+              0.76
+            </size>
             </box>
           </geometry>
           <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
           </material>
         </visual>
         <collision name="collision_for_visual">
@@ -23927,6 +25412,18 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_2">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.9 0.9 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -23968,6 +25465,27 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_x_0">
+          <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+          <geometry>
+            <box>
+              <size>
+              1.85
+              0.75
+              0.76
+            </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="collision_y">
           <pose>
           -0.375
@@ -23985,17 +25503,25 @@
             </box>
           </geometry>
         </collision>
-        <visual name="visual">
-          <pose>0 0 0.75 0 0 0</pose>
+        <visual name="auto_vis_collision_y_1">
+          <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
           <geometry>
             <box>
-              <size>0.9 0.9 1.5</size>
+              <size>
+              0.75
+              1.85
+              0.76
+            </size>
             </box>
           </geometry>
           <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
           </material>
         </visual>
         <collision name="collision_for_visual">
@@ -24006,6 +25532,18 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_2">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.9 0.9 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -24047,6 +25585,27 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_x_0">
+          <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+          <geometry>
+            <box>
+              <size>
+              1.85
+              0.75
+              0.76
+            </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="collision_y">
           <pose>
           -0.375
@@ -24064,17 +25623,25 @@
             </box>
           </geometry>
         </collision>
-        <visual name="visual">
-          <pose>0 0 0.75 0 0 0</pose>
+        <visual name="auto_vis_collision_y_1">
+          <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
           <geometry>
             <box>
-              <size>0.9 0.9 1.5</size>
+              <size>
+              0.75
+              1.85
+              0.76
+            </size>
             </box>
           </geometry>
           <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
           </material>
         </visual>
         <collision name="collision_for_visual">
@@ -24085,6 +25652,18 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_2">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.9 0.9 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -24126,6 +25705,27 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_x_0">
+          <pose>
+          -0.925
+          -0.375
+          0.38
+          0 0 0
+        </pose>
+          <geometry>
+            <box>
+              <size>
+              1.85
+              0.75
+              0.76
+            </size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
         <collision name="collision_y">
           <pose>
           -0.375
@@ -24143,17 +25743,25 @@
             </box>
           </geometry>
         </collision>
-        <visual name="visual">
-          <pose>0 0 0.75 0 0 0</pose>
+        <visual name="auto_vis_collision_y_1">
+          <pose>
+          -0.375
+          -0.925
+          0.38
+          0 0 0
+        </pose>
           <geometry>
             <box>
-              <size>0.9 0.9 1.5</size>
+              <size>
+              0.75
+              1.85
+              0.76
+            </size>
             </box>
           </geometry>
           <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
           </material>
         </visual>
         <collision name="collision_for_visual">
@@ -24164,6 +25772,18 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_2">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.9 0.9 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <pose>
@@ -24188,19 +25808,6 @@
     0.0
   </pose>
       <link name="walls">
-        <visual name="visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
-          </material>
-        </visual>
         <visual name="visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -24474,33 +26081,6 @@
             <specular>0.08 0.08 0.08 1</specular>
           </material>
         </visual>
-        <collision name="collision">
-          <pose>
-        3.5999999999999996
-        0.0
-        0.75
-        0.0
-        0.0
-        0.0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            7.249999999999999
-            2.4999999999999996
-            1.5
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="collision_for_visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-        </collision>
         <collision name="collision_for_visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -24669,6 +26249,30 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_21_extra0">
+          <pose>7.2 0.9 0.75 0 0 -1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
+        <visual name="auto_vis_collision_for_visual_22_extra1">
+          <pose>7.2 -0.9 0.75 0 0 1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>desk_31</name>
@@ -25042,19 +26646,6 @@
     0.0
   </pose>
       <link name="walls">
-        <visual name="visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
-          </material>
-        </visual>
         <visual name="visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -25328,33 +26919,6 @@
             <specular>0.08 0.08 0.08 1</specular>
           </material>
         </visual>
-        <collision name="collision">
-          <pose>
-        3.5999999999999996
-        0.0
-        0.75
-        0.0
-        0.0
-        0.0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            7.249999999999999
-            2.4999999999999996
-            1.5
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="collision_for_visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-        </collision>
         <collision name="collision_for_visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -25523,6 +27087,30 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_21_extra0">
+          <pose>7.2 0.9 0.75 0 0 -1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
+        <visual name="auto_vis_collision_for_visual_22_extra1">
+          <pose>7.2 -0.9 0.75 0 0 1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>desk_31</name>
@@ -25896,19 +27484,6 @@
     0.0
   </pose>
       <link name="walls">
-        <visual name="visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
-          </material>
-        </visual>
         <visual name="visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -26182,33 +27757,6 @@
             <specular>0.08 0.08 0.08 1</specular>
           </material>
         </visual>
-        <collision name="collision">
-          <pose>
-        3.5999999999999996
-        0.0
-        0.75
-        0.0
-        0.0
-        0.0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            7.249999999999999
-            2.4999999999999996
-            1.5
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="collision_for_visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-        </collision>
         <collision name="collision_for_visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -26377,6 +27925,30 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_21_extra0">
+          <pose>7.2 0.9 0.75 0 0 -1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
+        <visual name="auto_vis_collision_for_visual_22_extra1">
+          <pose>7.2 -0.9 0.75 0 0 1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>desk_31</name>
@@ -26750,19 +28322,6 @@
     0.0
   </pose>
       <link name="walls">
-        <visual name="visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
-          </material>
-        </visual>
         <visual name="visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -26971,33 +28530,6 @@
             <specular>0.08 0.08 0.08 1</specular>
           </material>
         </visual>
-        <collision name="collision">
-          <pose>
-        2.6999999999999997
-        0.0
-        0.75
-        0.0
-        0.0
-        0.0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            5.449999999999999
-            2.4999999999999996
-            1.5
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="collision_for_visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-        </collision>
         <collision name="collision_for_visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -27126,6 +28658,30 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_16_extra0">
+          <pose>5.4 0.9 0.75 0 0 -1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
+        <visual name="auto_vis_collision_for_visual_17_extra1">
+          <pose>5.4 -0.9 0.75 0 0 1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>desk_24</name>
@@ -27409,19 +28965,6 @@
     0.0
   </pose>
       <link name="walls">
-        <visual name="visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
-          </material>
-        </visual>
         <visual name="visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -27630,33 +29173,6 @@
             <specular>0.08 0.08 0.08 1</specular>
           </material>
         </visual>
-        <collision name="collision">
-          <pose>
-        2.6999999999999997
-        0.0
-        0.75
-        0.0
-        0.0
-        0.0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            5.449999999999999
-            2.4999999999999996
-            1.5
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="collision_for_visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-        </collision>
         <collision name="collision_for_visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -27785,6 +29301,30 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_16_extra0">
+          <pose>5.4 0.9 0.75 0 0 -1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
+        <visual name="auto_vis_collision_for_visual_17_extra1">
+          <pose>5.4 -0.9 0.75 0 0 1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>desk_24</name>
@@ -28068,19 +29608,6 @@
     0.0
   </pose>
       <link name="walls">
-        <visual name="visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.83 0.83 0.85 1</ambient>
-            <diffuse>0.83 0.83 0.85 1</diffuse>
-            <specular>0.08 0.08 0.08 1</specular>
-          </material>
-        </visual>
         <visual name="visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -28289,33 +29816,6 @@
             <specular>0.08 0.08 0.08 1</specular>
           </material>
         </visual>
-        <collision name="collision">
-          <pose>
-        2.6999999999999997
-        0.0
-        0.75
-        0.0
-        0.0
-        0.0
-      </pose>
-          <geometry>
-            <box>
-              <size>
-            5.449999999999999
-            2.4999999999999996
-            1.5
-          </size>
-            </box>
-          </geometry>
-        </collision>
-        <collision name="collision_for_visual_1">
-          <pose>-0.3 0 0.75 0 0 0</pose>
-          <geometry>
-            <box>
-              <size>0.6 0.06 1.5</size>
-            </box>
-          </geometry>
-        </collision>
         <collision name="collision_for_visual_2">
           <pose>0.3 0 0.75 0 0 0</pose>
           <geometry>
@@ -28444,6 +29944,30 @@
             </box>
           </geometry>
         </collision>
+        <visual name="auto_vis_collision_for_visual_16_extra0">
+          <pose>5.4 0.9 0.75 0 0 -1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
+        <visual name="auto_vis_collision_for_visual_17_extra1">
+          <pose>5.4 -0.9 0.75 0 0 1.570796</pose>
+          <geometry>
+            <box>
+              <size>1.8 0.06 1.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.78 0.78 0.8 1</ambient>
+            <diffuse>0.78 0.78 0.8 1</diffuse>
+          </material>
+        </visual>
       </link>
       <include>
         <name>desk_24</name>
@@ -28938,6 +30462,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -29536,6 +31072,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -30134,6 +31682,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -30732,6 +32292,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -31330,6 +32902,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -31928,6 +33512,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -32526,6 +34122,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>
@@ -33124,6 +34732,18 @@
               </cylinder>
             </geometry>
           </collision>
+          <visual name="auto_vis_collision_novis">
+            <geometry>
+              <cylinder>
+                <radius>0.26</radius>
+                <length>1.4</length>
+              </cylinder>
+            </geometry>
+            <material>
+              <ambient>0.78 0.78 0.8 1</ambient>
+              <diffuse>0.78 0.78 0.8 1</diffuse>
+            </material>
+          </visual>
         </link>
         <link name="link_0">
           <pose frame="">-0.112954 0.002154 -0.208402 0 -0 0</pose>

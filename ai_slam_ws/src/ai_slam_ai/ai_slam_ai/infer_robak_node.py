@@ -15,7 +15,16 @@ from tf2_ros import TransformBroadcaster
 import torch
 import torch.nn as nn
 
-from .common import seed_all, ensure_dir, wrap, quat_from_yaw, yaw_from_quat, xytheta_from_odom, xytheta_from_pose_stamped
+from .common import (
+    seed_all,
+    ensure_dir,
+    quat_from_yaw,
+    select_torch_device,
+    synchronize_torch_device,
+    wrap,
+    xytheta_from_odom,
+    xytheta_from_pose_stamped,
+)
 from .experiment_logger import ExperimentLogger
 
 
@@ -96,7 +105,12 @@ class InferRobakNode(Node):
         self.declare_parameter("seed", 123)
         self.declare_parameter("out_dir", "out")
         self.declare_parameter("experiment_id", "")
+        self.declare_parameter(
+            "model_source_experiment_id",
+            "",
+        )  # jeśli niepuste: ładuj model z out/<id>/ zamiast z bieżącego experiment_id
         self.declare_parameter("model_name", "model_robak.pt")
+        self.declare_parameter("torch_device", "auto")
         self.declare_parameter("write_experiment_metadata", False)
 
         self.declare_parameter("scan_topic", "/scan_slam_robak")
@@ -118,6 +132,7 @@ class InferRobakNode(Node):
         self.declare_parameter("odom_delta_yaw_alpha", 0.45)
         self.declare_parameter("odom_pose_xy_alpha", 0.0)
         self.declare_parameter("odom_pose_xy_gain", 0.0)
+        self.declare_parameter("odom_pose_xy_alpha_max", 1.0)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -128,13 +143,45 @@ class InferRobakNode(Node):
         self.out_dir = self.exp_logger.get_output_dir()
         ensure_dir(self.out_dir)
 
-        self.model_path = os.path.join(self.out_dir, str(self.get_parameter("model_name").value))
+        model_src_id = str(self.get_parameter("model_source_experiment_id").value or "").strip()
+        model_name = str(self.get_parameter("model_name").value)
+        if model_src_id:
+            cand = os.path.abspath(os.path.join(base_out_dir, model_src_id))
+            base_abs = os.path.abspath(base_out_dir)
+            try:
+                if os.path.commonpath([base_abs, cand]) != base_abs:
+                    raise ValueError(f"model_source_experiment_id resolves outside out_dir: {cand}")
+            except ValueError as e:
+                raise ValueError(f"invalid model_source_experiment_id path: {cand}") from e
+            model_dir = cand
+        else:
+            model_dir = self.out_dir
+        self.model_path = os.path.join(model_dir, model_name)
+        self.get_logger().info(
+            f"[Robak] Model directory: {model_dir} (experiment output: {self.out_dir})"
+        )
+        self.torch_device_request = str(self.get_parameter("torch_device").value)
+        self.torch_device_info = select_torch_device(self.torch_device_request)
+        self.device = torch.device(self.torch_device_info.resolved)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
         self.publish_tf = bool(self.get_parameter("publish_tf").value)
         self.write_experiment_metadata = bool(self.get_parameter("write_experiment_metadata").value)
+        self.get_logger().info(
+            f"[Robak] Torch device: requested={self.torch_device_info.requested}, "
+            f"using={self.torch_device_info.resolved} ({self.torch_device_info.reason})"
+        )
+        if self.torch_device_info.warning:
+            self.get_logger().warn(self.torch_device_info.warning)
+        self.exp_logger.add_note(
+            f"infer_robak_node torch device requested={self.torch_device_info.requested}, "
+            f"resolved={self.torch_device_info.resolved}: {self.torch_device_info.reason}"
+        )
+        if self.torch_device_info.warning:
+            self.exp_logger.add_note(self.torch_device_info.warning)
+        self.exp_logger.save()
 
         self.init_from = str(self.get_parameter("init_from").value).lower()
         self.gt_topic = str(self.get_parameter("gt_topic").value)
@@ -148,15 +195,16 @@ class InferRobakNode(Node):
         self.odom_delta_yaw_alpha = float(self.get_parameter("odom_delta_yaw_alpha").value)
         self.odom_pose_xy_alpha = float(self.get_parameter("odom_pose_xy_alpha").value)
         self.odom_pose_xy_gain = float(self.get_parameter("odom_pose_xy_gain").value)
+        self.odom_pose_xy_alpha_max = float(self.get_parameter("odom_pose_xy_alpha_max").value)
 
         self.prev_scan = None
         self.prev_stamp = None
 
         self.model = None
-        self.x_mean = None
-        self.x_std = None
-        self.y_mean = None
-        self.y_std = None
+        self.x_mean_t = None
+        self.x_std_t = None
+        self.y_mean_t = None
+        self.y_std_t = None
 
         self.infer_start = None
         self.inference_count = 0
@@ -164,6 +212,7 @@ class InferRobakNode(Node):
 
         # pose
         self.pose_inited = False
+        self._bootstrap_pose_done = False
         self.x = 0.0
         self.y = 0.0
         self.th = 0.0
@@ -183,7 +232,7 @@ class InferRobakNode(Node):
         self.sub_gt = self.create_subscription(PoseStamped, self.gt_topic, self.on_gt, 50)
         self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 50)
 
-        self.timer = self.create_timer(0.5, self.try_load_model)
+        self.timer = self.create_timer(0.05, self.try_load_model)
         self.stats_timer = self.create_timer(10.0, self.periodic_save_stats)
 
         self.get_logger().info(
@@ -191,7 +240,8 @@ class InferRobakNode(Node):
             f"max_step_yaw={self.max_step_yaw}, ema={self.delta_ema_alpha}, "
             f"odom_heading_alpha={self.odom_heading_alpha}, odom_tol={self.odom_sync_tolerance_sec}, "
             f"odom_delta_xy_alpha={self.odom_delta_xy_alpha}, odom_delta_yaw_alpha={self.odom_delta_yaw_alpha}, "
-            f"odom_pose_xy_alpha={self.odom_pose_xy_alpha}, odom_pose_xy_gain={self.odom_pose_xy_gain}"
+            f"odom_pose_xy_alpha={self.odom_pose_xy_alpha}, odom_pose_xy_gain={self.odom_pose_xy_gain}, "
+            f"odom_pose_xy_alpha_max={self.odom_pose_xy_alpha_max}"
         )
 
     def on_gt(self, msg: PoseStamped):
@@ -199,6 +249,7 @@ class InferRobakNode(Node):
         if not self.pose_inited and self.init_from == "gt":
             self.x, self.y, self.th = xytheta_from_pose_stamped(msg)
             self.pose_inited = True
+        self._try_publish_bootstrap_pose()
 
     def on_odom(self, msg: Odometry):
         self.latest_odom = msg
@@ -208,6 +259,52 @@ class InferRobakNode(Node):
         if not self.pose_inited and self.init_from == "odom":
             self.x, self.y, self.th = x, y, th
             self.pose_inited = True
+        self._try_publish_bootstrap_pose()
+
+    def _publish_pose_stamped(self, stamp) -> None:
+        """Publish PoseStamped + TF at current (x, y, th) with the given header stamp."""
+        qx, qy, qz, qw = quat_from_yaw(self.th)
+        ps = PoseStamped()
+        ps.header.stamp = stamp
+        ps.header.frame_id = self.tf_parent
+        ps.pose.position.x = float(self.x)
+        ps.pose.position.y = float(self.y)
+        ps.pose.position.z = 0.0
+        ps.pose.orientation.x = qx
+        ps.pose.orientation.y = qy
+        ps.pose.orientation.z = qz
+        ps.pose.orientation.w = qw
+        self.pub_pose.publish(ps)
+
+        if self.publish_tf and self.tf_br is not None:
+            tfm = TransformStamped()
+            tfm.header.stamp = stamp
+            tfm.header.frame_id = self.tf_parent
+            tfm.child_frame_id = self.tf_child
+            tfm.transform.translation.x = float(self.x)
+            tfm.transform.translation.y = float(self.y)
+            tfm.transform.translation.z = 0.0
+            tfm.transform.rotation.x = qx
+            tfm.transform.rotation.y = qy
+            tfm.transform.rotation.z = qz
+            tfm.transform.rotation.w = qw
+            self.tf_br.sendTransform(tfm)
+
+    def _try_publish_bootstrap_pose(self) -> None:
+        """One-time pose/TF so eval can sync with GT before the second scan arrives."""
+        if self._bootstrap_pose_done or self.model is None or not self.pose_inited:
+            return
+        if self.init_from == "gt":
+            if self.latest_gt is None:
+                return
+            self._publish_pose_stamped(self.latest_gt.header.stamp)
+        elif self.init_from == "odom":
+            if self.latest_odom is None:
+                return
+            self._publish_pose_stamped(self.latest_odom.header.stamp)
+        else:
+            return
+        self._bootstrap_pose_done = True
 
     def _nearest_odom_xyth(self, t_scan: float):
         if not self.odom_buf:
@@ -230,12 +327,13 @@ class InferRobakNode(Node):
         payload = torch.load(self.model_path, map_location="cpu")
         self.model = RobakConv1D()
         self.model.load_state_dict(payload["state_dict"])
+        self.model.to(self.device)
         self.model.eval()
 
-        self.x_mean = payload["x_mean"].cpu().numpy().astype(np.float32)
-        self.x_std = payload["x_std"].cpu().numpy().astype(np.float32)
-        self.y_mean = payload["y_mean"].cpu().numpy().astype(np.float32)
-        self.y_std = payload["y_std"].cpu().numpy().astype(np.float32)
+        self.x_mean_t = payload["x_mean"].to(self.device, dtype=torch.float32).view(1, -1)
+        self.x_std_t = payload["x_std"].to(self.device, dtype=torch.float32).view(1, -1)
+        self.y_mean_t = payload["y_mean"].to(self.device, dtype=torch.float32)
+        self.y_std_t = payload["y_std"].to(self.device, dtype=torch.float32)
 
         self.infer_start = time.time()
 
@@ -248,9 +346,12 @@ class InferRobakNode(Node):
                 tf_parent=self.tf_parent,
                 tf_child=self.tf_child,
                 model_path=self.model_path,
+                torch_device_requested=self.torch_device_info.requested,
+                torch_device_used=self.torch_device_info.resolved,
             )
 
         self.get_logger().info(f"[Robak] Model loaded: {self.model_path}")
+        self._try_publish_bootstrap_pose()
 
     def periodic_save_stats(self):
         if self.infer_start is None or self.inference_count == 0:
@@ -288,18 +389,19 @@ class InferRobakNode(Node):
 
         X_pair = np.stack([self.prev_scan, scan], axis=0).astype(np.float32)   # (2,360)
         x_flat = X_pair.reshape(-1)                                            # (720,)
-        xn = (x_flat - self.x_mean) / np.maximum(self.x_std, 1e-6)
-        xt = torch.from_numpy(xn.reshape((1, 2, 360))).float()
+        xt = torch.from_numpy(x_flat.reshape((1, -1))).to(self.device, dtype=torch.float32)
 
         t0 = time.perf_counter()
-        with torch.no_grad():
-            yn = self.model(xt).cpu().numpy().reshape(-1).astype(np.float32)
+        synchronize_torch_device(self.device)
+        with torch.inference_mode():
+            xn = (xt - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
+            yn = self.model(xn.reshape((1, 2, 360))).reshape(-1)
+            y = (yn * self.y_std_t + self.y_mean_t).detach().cpu().numpy().astype(np.float32)
+        synchronize_torch_device(self.device)
         t1 = time.perf_counter()
 
         self.inference_times_ms.append((t1 - t0) * 1000.0)
         self.inference_count += 1
-
-        y = yn * self.y_std + self.y_mean
         dx, dy, dth = float(y[0]), float(y[1]), float(y[2])
 
         # Ogranicz pojedynczy krok i wygładź, żeby ograniczyć outliery.
@@ -312,6 +414,7 @@ class InferRobakNode(Node):
         if self.max_step_yaw > 0.0:
             dth = float(np.clip(dth, -self.max_step_yaw, self.max_step_yaw))
 
+        dxo = dyo = dtho = 0.0
         if self.prev_odom_xyth is not None and odom_xyth is not None:
             dxo, dyo, dtho = _delta_local(self.prev_odom_xyth, odom_xyth)
             w_xy = min(max(self.odom_delta_xy_alpha, 0.0), 1.0)
@@ -350,42 +453,24 @@ class InferRobakNode(Node):
         if odom_th is not None and self.odom_heading_alpha > 0.0:
             self.th = _interp_angle(self.th, odom_th, min(max(self.odom_heading_alpha, 0.0), 1.0))
 
+        odom_pose_anchor_w_xy = 0.0
+        err_to_odom_before_m = None
+        err_to_odom_after_m = None
         if odom_xyth is not None and (self.odom_pose_xy_alpha > 0.0 or self.odom_pose_xy_gain > 0.0):
             ox, oy, _ = odom_xyth
             err_xy = math.hypot(self.x - float(ox), self.y - float(oy))
+            err_to_odom_before_m = float(err_xy)
             norm = self.max_step_trans if self.max_step_trans > 1e-3 else 0.10
             w_base = min(max(self.odom_pose_xy_alpha, 0.0), 1.0)
             w_gain = max(0.0, self.odom_pose_xy_gain)
-            w_xy = min(max(w_base + w_gain * (err_xy / norm), 0.0), 1.0)
+            w_xy_max = min(max(self.odom_pose_xy_alpha_max, 0.0), 1.0)
+            w_xy = min(max(w_base + w_gain * (err_xy / norm), 0.0), w_xy_max)
+            odom_pose_anchor_w_xy = float(w_xy)
             self.x = (1.0 - w_xy) * self.x + w_xy * float(ox)
             self.y = (1.0 - w_xy) * self.y + w_xy * float(oy)
+            err_to_odom_after_m = float(math.hypot(self.x - float(ox), self.y - float(oy)))
 
-        ps = PoseStamped()
-        ps.header.stamp = msg.header.stamp
-        ps.header.frame_id = self.tf_parent
-        qx, qy, qz, qw = quat_from_yaw(self.th)
-        ps.pose.position.x = float(self.x)
-        ps.pose.position.y = float(self.y)
-        ps.pose.position.z = 0.0
-        ps.pose.orientation.x = qx
-        ps.pose.orientation.y = qy
-        ps.pose.orientation.z = qz
-        ps.pose.orientation.w = qw
-        self.pub_pose.publish(ps)
-
-        if self.publish_tf and self.tf_br is not None:
-            tfm = TransformStamped()
-            tfm.header.stamp = msg.header.stamp
-            tfm.header.frame_id = self.tf_parent
-            tfm.child_frame_id = self.tf_child
-            tfm.transform.translation.x = float(self.x)
-            tfm.transform.translation.y = float(self.y)
-            tfm.transform.translation.z = 0.0
-            tfm.transform.rotation.x = qx
-            tfm.transform.rotation.y = qy
-            tfm.transform.rotation.z = qz
-            tfm.transform.rotation.w = qw
-            self.tf_br.sendTransform(tfm)
+        self._publish_pose_stamped(msg.header.stamp)
 
         self.prev_scan = scan
         self.prev_stamp = msg.header.stamp

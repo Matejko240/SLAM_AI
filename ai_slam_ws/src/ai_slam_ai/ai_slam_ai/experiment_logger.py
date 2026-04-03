@@ -18,6 +18,24 @@ from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
 
+def _metrics_rmse_xy_odom(metrics: Dict[str, Any]) -> Any:
+    if not isinstance(metrics, dict):
+        return None
+    for key in ("rmse_xy_odom_topic", "rmse_xy_baseline"):
+        if key in metrics and metrics[key] is not None and metrics[key] != "":
+            return metrics[key]
+    return None
+
+
+def _metrics_rmse_theta_odom(metrics: Dict[str, Any]) -> Any:
+    if not isinstance(metrics, dict):
+        return None
+    for key in ("rmse_theta_odom_topic", "rmse_theta_baseline"):
+        if key in metrics and metrics[key] is not None and metrics[key] != "":
+            return metrics[key]
+    return None
+
+
 def get_system_info() -> Dict[str, Any]:
     """Pobiera informacje o systemie."""
     info = {
@@ -119,7 +137,8 @@ class TrainingMetadata:
     history_path: Optional[str] = None
     
     def set_parameters(self, seed: int, max_epochs: int, patience: int,
-                      min_delta: float, lr: float, val_ratio: float, batch_size: int):
+                      min_delta: float, lr: float, val_ratio: float, batch_size: int,
+                      torch_device_requested: str | None = None, torch_device_used: str | None = None):
         self.parameters = {
             "seed": seed,
             "max_epochs": max_epochs,
@@ -129,6 +148,10 @@ class TrainingMetadata:
             "validation_ratio": val_ratio,
             "batch_size": batch_size,
         }
+        if torch_device_requested is not None:
+            self.parameters["torch_device_requested"] = torch_device_requested
+        if torch_device_used is not None:
+            self.parameters["torch_device_used"] = torch_device_used
     
     def set_dataset_info(self, n_total: int, n_train: int, n_val: int, 
                          input_dim: int, output_dim: int):
@@ -168,7 +191,8 @@ class InferenceMetadata:
     model_path: Optional[str] = None
     
     def set_parameters(self, seed: int, scan_topic: str, odom_topic: str,
-                      pose_topic: str, tf_parent: str, tf_child: str):
+                      pose_topic: str, tf_parent: str, tf_child: str,
+                      torch_device_requested: str | None = None, torch_device_used: str | None = None):
         self.parameters = {
             "seed": seed,
             "scan_topic": scan_topic,
@@ -177,6 +201,10 @@ class InferenceMetadata:
             "tf_parent_frame": tf_parent,
             "tf_child_frame": tf_child,
         }
+        if torch_device_requested is not None:
+            self.parameters["torch_device_requested"] = torch_device_requested
+        if torch_device_used is not None:
+            self.parameters["torch_device_used"] = torch_device_used
     
     def set_statistics(self, n_predictions: int, total_duration_sec: float,
                        avg_inference_time_ms: float):
@@ -205,14 +233,16 @@ class EvaluationMetadata:
             "reference_map_yaml": reference_map_yaml,
         }
     
-    def set_metrics(self, rmse_xy_baseline: float, rmse_theta_baseline: float,
+    def set_metrics(self, rmse_xy_odom_topic: float, rmse_theta_odom_topic: float,
                    rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float],
                    iou_map_baseline: Optional[float], iou_map_ai: Optional[float],
                    n_samples: int, iou_map_robak: Optional[float] = None,
                    iou_map_rywak: Optional[float] = None):
         self.metrics = {
-            "rmse_xy_baseline": rmse_xy_baseline,
-            "rmse_theta_baseline": rmse_theta_baseline,
+            "rmse_xy_odom_topic": rmse_xy_odom_topic,
+            "rmse_theta_odom_topic": rmse_theta_odom_topic,
+            "rmse_xy_baseline": rmse_xy_odom_topic,
+            "rmse_theta_baseline": rmse_theta_odom_topic,
             "iou_map_baseline": iou_map_baseline,
             "rmse_xy_ai": rmse_xy_ai,
             "rmse_theta_ai": rmse_theta_ai,
@@ -222,13 +252,13 @@ class EvaluationMetadata:
             "n_evaluation_samples": n_samples,
         }
         
-        # Oblicz poprawę AI względem baseline
-        if rmse_xy_ai is not None and rmse_xy_baseline > 0:
+        # Oblicz poprawę AI względem odom (GT vs odom_topic)
+        if rmse_xy_ai is not None and rmse_xy_odom_topic > 0:
             self.metrics["rmse_xy_improvement_percent"] = \
-                round((rmse_xy_baseline - rmse_xy_ai) / rmse_xy_baseline * 100, 2)
-        if rmse_theta_ai is not None and rmse_theta_baseline > 0:
+                round((rmse_xy_odom_topic - rmse_xy_ai) / rmse_xy_odom_topic * 100, 2)
+        if rmse_theta_ai is not None and rmse_theta_odom_topic > 0:
             self.metrics["rmse_theta_improvement_percent"] = \
-                round((rmse_theta_baseline - rmse_theta_ai) / rmse_theta_baseline * 100, 2)
+                round((rmse_theta_odom_topic - rmse_theta_ai) / rmse_theta_odom_topic * 100, 2)
         if iou_map_ai is not None and iou_map_baseline is not None and iou_map_baseline > 0:
             self.metrics["iou_improvement_percent"] = \
                 round((iou_map_ai - iou_map_baseline) / iou_map_baseline * 100, 2)
@@ -522,13 +552,15 @@ class ExperimentLogger:
     # ==================== Training ====================
     
     def start_training(self, seed: int, max_epochs: int, patience: int,
-                       min_delta: float, lr: float, val_ratio: float, batch_size: int):
+                       min_delta: float, lr: float, val_ratio: float, batch_size: int,
+                       torch_device_requested: str | None = None, torch_device_used: str | None = None):
         """Rozpoczyna logowanie treningu."""
         self._reset_section("training")
         self.log.training.timing.start()
         self.log.training.set_parameters(
             seed=seed, max_epochs=max_epochs, patience=patience,
-            min_delta=min_delta, lr=lr, val_ratio=val_ratio, batch_size=batch_size
+            min_delta=min_delta, lr=lr, val_ratio=val_ratio, batch_size=batch_size,
+            torch_device_requested=torch_device_requested, torch_device_used=torch_device_used
         )
         self.log.add_note("Training started")
         self.save()
@@ -574,13 +606,15 @@ class ExperimentLogger:
     # ==================== Inference ====================
     
     def start_inference(self, seed: int, scan_topic: str, odom_topic: str,
-                        pose_topic: str, tf_parent: str, tf_child: str, model_path: str):
+                        pose_topic: str, tf_parent: str, tf_child: str, model_path: str,
+                        torch_device_requested: str | None = None, torch_device_used: str | None = None):
         """Rozpoczyna logowanie inferencji."""
         self._reset_section("inference")
         self.log.inference.timing.start()
         self.log.inference.set_parameters(
             seed=seed, scan_topic=scan_topic, odom_topic=odom_topic,
-            pose_topic=pose_topic, tf_parent=tf_parent, tf_child=tf_child
+            pose_topic=pose_topic, tf_parent=tf_parent, tf_child=tf_child,
+            torch_device_requested=torch_device_requested, torch_device_used=torch_device_used
         )
         self.log.inference.model_path = model_path
         self.log.add_note("Inference started")
@@ -624,7 +658,7 @@ class ExperimentLogger:
         self.log.add_note("Evaluation started")
         self.save()
     
-    def end_evaluation(self, rmse_xy_baseline: float, rmse_theta_baseline: float,
+    def end_evaluation(self, rmse_xy_odom_topic: float, rmse_theta_odom_topic: float,
                        rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float],
                        iou_map_baseline: Optional[float], iou_map_ai: Optional[float],
                        n_samples: int, artifacts: Dict[str, str],
@@ -634,7 +668,7 @@ class ExperimentLogger:
         self._mark_section_dirty("evaluation")
         self.log.evaluation.timing.end()
         self.log.evaluation.set_metrics(
-            rmse_xy_baseline=rmse_xy_baseline, rmse_theta_baseline=rmse_theta_baseline,
+            rmse_xy_odom_topic=rmse_xy_odom_topic, rmse_theta_odom_topic=rmse_theta_odom_topic,
             rmse_xy_ai=rmse_xy_ai, rmse_theta_ai=rmse_theta_ai,
             iou_map_baseline=iou_map_baseline, iou_map_ai=iou_map_ai,
             n_samples=n_samples,
@@ -850,7 +884,11 @@ class ExperimentLogger:
         if self.log.evaluation.metrics:
             lines.append("📈 EVALUATION METRICS:")
             m = self.log.evaluation.metrics
-            lines.append(f"   RMSE XY (baseline): {m.get('rmse_xy_baseline', 'N/A'):.4f}m")
+            oxy = _metrics_rmse_xy_odom(m)
+            try:
+                lines.append(f"   RMSE XY (odom vs GT): {float(oxy):.4f}m")
+            except (TypeError, ValueError):
+                lines.append("   RMSE XY (odom vs GT): N/A")
             if m.get('rmse_xy_ai') is not None:
                 lines.append(f"   RMSE XY (AI): {m.get('rmse_xy_ai'):.4f}m")
                 if m.get('rmse_xy_improvement_percent') is not None:
@@ -890,7 +928,10 @@ class ExperimentLogger:
         training = data.get("training", {})
         inference = data.get("inference", {})
         evaluation = data.get("evaluation", {})
-        
+        eval_metrics = evaluation.get("metrics", {}) if isinstance(evaluation.get("metrics"), dict) else {}
+        eval_rmse_xy_odom = _metrics_rmse_xy_odom(eval_metrics)
+        eval_rmse_theta_odom = _metrics_rmse_theta_odom(eval_metrics)
+
         # Przygotuj dane do zapisu
         row = {
             "experiment_id": data.get("experiment_id", self.log.experiment_id),
@@ -916,17 +957,19 @@ class ExperimentLogger:
             "infer_avg_time_ms": inference.get("statistics", {}).get("avg_inference_time_ms"),
             "infer_duration_sec": inference.get("timing", {}).get("duration_seconds"),
             # Evaluation
-            "eval_rmse_xy_baseline": evaluation.get("metrics", {}).get("rmse_xy_baseline"),
-            "eval_rmse_xy_ai": evaluation.get("metrics", {}).get("rmse_xy_ai"),
-            "eval_rmse_theta_baseline": evaluation.get("metrics", {}).get("rmse_theta_baseline"),
-            "eval_rmse_theta_ai": evaluation.get("metrics", {}).get("rmse_theta_ai"),
-            "eval_iou_baseline": evaluation.get("metrics", {}).get("iou_map_baseline"),
-            "eval_iou_ai": evaluation.get("metrics", {}).get("iou_map_ai"),
-            "eval_iou_robak": evaluation.get("metrics", {}).get("iou_map_robak"),
-            "eval_iou_rywak": evaluation.get("metrics", {}).get("iou_map_rywak"),
-            "eval_xy_improvement_pct": evaluation.get("metrics", {}).get("rmse_xy_improvement_percent"),
-            "eval_theta_improvement_pct": evaluation.get("metrics", {}).get("rmse_theta_improvement_percent"),
-            "eval_n_samples": evaluation.get("metrics", {}).get("n_evaluation_samples"),
+            "eval_rmse_xy_odom_topic": eval_rmse_xy_odom,
+            "eval_rmse_theta_odom_topic": eval_rmse_theta_odom,
+            "eval_rmse_xy_baseline": eval_rmse_xy_odom,
+            "eval_rmse_xy_ai": eval_metrics.get("rmse_xy_ai"),
+            "eval_rmse_theta_baseline": eval_rmse_theta_odom,
+            "eval_rmse_theta_ai": eval_metrics.get("rmse_theta_ai"),
+            "eval_iou_baseline": eval_metrics.get("iou_map_baseline"),
+            "eval_iou_ai": eval_metrics.get("iou_map_ai"),
+            "eval_iou_robak": eval_metrics.get("iou_map_robak"),
+            "eval_iou_rywak": eval_metrics.get("iou_map_rywak"),
+            "eval_xy_improvement_pct": eval_metrics.get("rmse_xy_improvement_percent"),
+            "eval_theta_improvement_pct": eval_metrics.get("rmse_theta_improvement_percent"),
+            "eval_n_samples": eval_metrics.get("n_evaluation_samples"),
             # Total
             "total_time_sec": data.get("total_experiment_time_sec"),
             "output_dir": self.out_dir,

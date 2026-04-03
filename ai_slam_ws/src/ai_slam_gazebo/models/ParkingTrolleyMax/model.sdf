@@ -3,23 +3,22 @@
   <model name="ParkingTrolleyMax">
     <static>true</static>
     <link name="link">
-      <pose>0 0 0.5 0 0 0</pose>
-      <collision name="collision">
+      <collision name="col">
         <geometry>
           <box>
-            <size>0.85 0.5 1.0</size>
+            <size>1.05 0.58 1.05</size>
           </box>
         </geometry>
       </collision>
-      <visual name="visual">
+      <visual name="vis">
         <geometry>
           <box>
-            <size>0.85 0.5 1.0</size>
+            <size>1.05 0.58 1.05</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.45 0.60 0.62 1</ambient>
-          <diffuse>0.45 0.60 0.62 1</diffuse>
+          <ambient>0.55 0.55 0.58 1</ambient>
+          <diffuse>0.55 0.55 0.58 1</diffuse>
         </material>
       </visual>
     </link>

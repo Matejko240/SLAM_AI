@@ -11,7 +11,16 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from .common import seed_all, ensure_dir, Normalizer, wait_for_npz_dataset
+from .common import (
+    seed_all,
+    ensure_dir,
+    Normalizer,
+    select_torch_device,
+    split_time_coverage_stats,
+    split_train_val_indices,
+    torch_state_dict_to_cpu,
+    wait_for_npz_dataset,
+)
 from .experiment_logger import ExperimentLogger
 
 
@@ -62,7 +71,10 @@ class TrainModelRywak(Node):
         self.declare_parameter("min_delta", 1e-5)
         self.declare_parameter("lr", 1e-3)
         self.declare_parameter("val_ratio", 0.2)
+        self.declare_parameter("split_strategy", "tail_holdout_no_shuffle")
         self.declare_parameter("batch_size", 128)
+        self.declare_parameter("torch_device", "auto")
+        self.declare_parameter("torch_deterministic", True)
         self.declare_parameter("dataset_wait_timeout", 600.0)
         self.declare_parameter("hidden_dims", [192, 96, 48])
         self.declare_parameter("dropout", 0.1)
@@ -74,7 +86,8 @@ class TrainModelRywak(Node):
         self.declare_parameter("loss_w_weight", 1.5)
 
         self.seed = int(self.get_parameter("seed").value)
-        seed_all(self.seed)
+        self.torch_deterministic = bool(self.get_parameter("torch_deterministic").value)
+        seed_all(self.seed, deterministic=self.torch_deterministic)
 
         base_out_dir = os.path.abspath(str(self.get_parameter("out_dir").value))
         experiment_id = str(self.get_parameter("experiment_id").value) or None
@@ -92,7 +105,9 @@ class TrainModelRywak(Node):
         self.min_delta = float(self.get_parameter("min_delta").value)
         self.lr = float(self.get_parameter("lr").value)
         self.val_ratio = float(self.get_parameter("val_ratio").value)
+        self.split_strategy = str(self.get_parameter("split_strategy").value)
         self.batch_size = int(self.get_parameter("batch_size").value)
+        self.torch_device_request = str(self.get_parameter("torch_device").value)
         self.dataset_wait_timeout = float(self.get_parameter("dataset_wait_timeout").value)
         self.write_experiment_metadata = bool(self.get_parameter("write_experiment_metadata").value)
         self.hidden_dims = _parse_hidden_dims(self.get_parameter("hidden_dims").value)
@@ -103,6 +118,22 @@ class TrainModelRywak(Node):
         self.clip_grad_norm = float(self.get_parameter("clip_grad_norm").value)
         self.loss_v_weight = float(self.get_parameter("loss_v_weight").value)
         self.loss_w_weight = float(self.get_parameter("loss_w_weight").value)
+        self.torch_device_info = select_torch_device(self.torch_device_request)
+        self.device = torch.device(self.torch_device_info.resolved)
+        self.exp_logger.add_note(
+            f"train_model_rywak torch device requested={self.torch_device_info.requested}, "
+            f"resolved={self.torch_device_info.resolved}: {self.torch_device_info.reason}"
+        )
+        if self.torch_device_info.warning:
+            self.exp_logger.add_note(self.torch_device_info.warning)
+        self.exp_logger.save()
+        self.get_logger().info(
+            f"[Rywak] Torch device: requested={self.torch_device_info.requested}, "
+            f"using={self.torch_device_info.resolved} ({self.torch_device_info.reason})"
+        )
+        self.get_logger().info(f"[Rywak] Torch deterministic mode: {self.torch_deterministic}")
+        if self.torch_device_info.warning:
+            self.get_logger().warn(self.torch_device_info.warning)
 
         self.timer = self.create_timer(0.5, self.run_once)
         self.did = False
@@ -119,7 +150,11 @@ class TrainModelRywak(Node):
             return
 
         self.get_logger().info(f"[Rywak] Waiting for dataset (timeout {self.dataset_wait_timeout:.0f}s): {self.dataset_path}")
-        dataset_ready, dataset_error = wait_for_npz_dataset(self.dataset_path, self.dataset_wait_timeout)
+        dataset_ready, dataset_error = wait_for_npz_dataset(
+            self.dataset_path,
+            self.dataset_wait_timeout,
+            required_keys=("X", "Y"),
+        )
 
         if not dataset_ready:
             if dataset_error is not None and os.path.exists(self.dataset_path):
@@ -138,6 +173,8 @@ class TrainModelRywak(Node):
                 lr=self.lr,
                 val_ratio=self.val_ratio,
                 batch_size=self.batch_size,
+                torch_device_requested=self.torch_device_info.requested,
+                torch_device_used=self.torch_device_info.resolved,
             )
 
         with np.load(self.dataset_path, allow_pickle=True) as data:
@@ -150,15 +187,21 @@ class TrainModelRywak(Node):
             rclpy.shutdown()
             return
 
-        idx = np.arange(n)
-        rng = np.random.default_rng(self.seed)
-        rng.shuffle(idx)
-        X = X[idx]
-        Y = Y[idx]
-
-        n_val = int(max(1, round(self.val_ratio * n)))
-        X_val, Y_val = X[:n_val], Y[:n_val]
-        X_tr, Y_tr = X[n_val:], Y[n_val:]
+        train_idx, val_idx, split_strategy_used = split_train_val_indices(
+            n,
+            self.val_ratio,
+            seed=self.seed,
+            split_strategy=self.split_strategy,
+        )
+        X_tr, Y_tr = X[train_idx], Y[train_idx]
+        X_val, Y_val = X[val_idx], Y[val_idx]
+        n_val = int(val_idx.size)
+        split_stats = split_time_coverage_stats(
+            n,
+            train_idx,
+            val_idx,
+            split_strategy=split_strategy_used,
+        )
 
         x_mean = X_tr.mean(axis=0)
         x_std = X_tr.std(axis=0) + 1e-6
@@ -168,10 +211,10 @@ class TrainModelRywak(Node):
         x_norm = Normalizer(x_mean, x_std)
         y_norm = Normalizer(y_mean, y_std)
 
-        X_tr_t = torch.from_numpy(x_norm.apply(X_tr)).float()
-        Y_tr_t = torch.from_numpy(y_norm.apply(Y_tr)).float()
-        X_val_t = torch.from_numpy(x_norm.apply(X_val)).float()
-        Y_val_t = torch.from_numpy(y_norm.apply(Y_val)).float()
+        X_tr_t = torch.from_numpy(x_norm.apply(X_tr)).float().to(self.device)
+        Y_tr_t = torch.from_numpy(y_norm.apply(Y_tr)).float().to(self.device)
+        X_val_t = torch.from_numpy(x_norm.apply(X_val)).float().to(self.device)
+        Y_val_t = torch.from_numpy(y_norm.apply(Y_val)).float().to(self.device)
 
         model = MLP2(
             in_dim=int(X.shape[1]),
@@ -179,8 +222,7 @@ class TrainModelRywak(Node):
             hidden_dims=self.hidden_dims,
             dropout=self.dropout,
         )
-        device = torch.device("cpu")
-        model.to(device)
+        model.to(self.device)
 
         if self.write_experiment_metadata:
             self.exp_logger.set_training_dataset_info(
@@ -197,7 +239,7 @@ class TrainModelRywak(Node):
         target_weights = torch.tensor(
             [max(self.loss_v_weight, 1e-6), max(self.loss_w_weight, 1e-6)],
             dtype=torch.float32,
-            device=device,
+            device=self.device,
         ).view(1, 2)
 
         best_val = float("inf")
@@ -211,21 +253,29 @@ class TrainModelRywak(Node):
             "huber_delta": self.huber_delta,
             "input_noise_std": self.input_noise_std,
             "clip_grad_norm": self.clip_grad_norm,
+            "split_strategy": split_strategy_used,
+            "split": split_stats,
             "loss_v_weight": self.loss_v_weight,
             "loss_w_weight": self.loss_w_weight,
+            "torch_device_requested": self.torch_device_info.requested,
+            "torch_device_used": self.torch_device_info.resolved,
+            "torch_device_reason": self.torch_device_info.reason,
             "epochs": [],
         }
+        if self.torch_device_info.warning:
+            history["torch_device_warning"] = self.torch_device_info.warning
 
         for epoch in range(1, self.max_epochs + 1):
             model.train()
-            perm = rng.permutation(X_tr_t.shape[0])
-            Xb = X_tr_t[perm]
-            Yb = Y_tr_t[perm]
+            rng = np.random.default_rng(self.seed + epoch)
+            perm = torch.from_numpy(rng.permutation(X_tr_t.shape[0]).astype(np.int64)).to(self.device)
+            Xb = X_tr_t.index_select(0, perm)
+            Yb = Y_tr_t.index_select(0, perm)
 
             train_losses = []
             for i in range(0, Xb.shape[0], self.batch_size):
-                xb = Xb[i:i + self.batch_size].to(device)
-                yb = Yb[i:i + self.batch_size].to(device)
+                xb = Xb[i:i + self.batch_size]
+                yb = Yb[i:i + self.batch_size]
                 if self.input_noise_std > 0.0:
                     xb = xb + self.input_noise_std * torch.randn_like(xb)
                 opt.zero_grad(set_to_none=True)
@@ -239,8 +289,8 @@ class TrainModelRywak(Node):
 
             model.eval()
             with torch.no_grad():
-                pred_val = model(X_val_t.to(device))
-                val_loss = float((loss_fn(pred_val, Y_val_t.to(device)) * target_weights).mean().detach().cpu().item())
+                pred_val = model(X_val_t)
+                val_loss = float((loss_fn(pred_val, Y_val_t) * target_weights).mean().detach().cpu().item())
 
             tr_loss = float(np.mean(train_losses)) if train_losses else val_loss
             history["epochs"].append({"epoch": epoch, "train_loss": tr_loss, "val_loss": val_loss})
@@ -259,7 +309,7 @@ class TrainModelRywak(Node):
             model.load_state_dict(best_state)
 
         payload = {
-            "state_dict": model.state_dict(),
+            "state_dict": torch_state_dict_to_cpu(model.state_dict()),
             "x_mean": torch.from_numpy(x_mean.astype(np.float32)),
             "x_std": torch.from_numpy(x_std.astype(np.float32)),
             "y_mean": torch.from_numpy(y_mean.astype(np.float32)),

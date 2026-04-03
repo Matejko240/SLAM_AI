@@ -1,27 +1,17 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0"?>
 <sdf version="1.6">
   <model name="clinic_floor_base">
     <static>true</static>
     <link name="link">
-      <collision name="collision_1">
-        <pose>0 -7 0 0 0 0</pose>
-        <geometry>
-          <box>
-            <size>28 58 0.04</size>
-          </box>
-        </geometry>
+      <pose>0 -5.5 0.01 0 0 0</pose>
+      <collision name="col">
+        <geometry><box><size>28.0 52.0 0.02</size></box></geometry>
       </collision>
-      <visual name="visual_1">
-        <pose>0 -7 0 0 0 0</pose>
-        <geometry>
-          <box>
-            <size>28 58 0.04</size>
-          </box>
-        </geometry>
+      <visual name="vis">
+        <geometry><box><size>28.0 52.0 0.02</size></box></geometry>
         <material>
-          <ambient>0.8 0.82 0.84 1</ambient>
-          <diffuse>0.8 0.82 0.84 1</diffuse>
-          <specular>0.08 0.08 0.08 1</specular>
+          <ambient>0.88 0.88 0.9 1</ambient>
+          <diffuse>0.88 0.88 0.9 1</diffuse>
         </material>
       </visual>
     </link>

@@ -440,9 +440,9 @@ Zestawienie wygenerowane automatycznie na podstawie plików `.py` w repozytorium
 - Opis: Ustawia parameters.
 
 ### EvaluationMetadata.set_metrics
-- Plik: `ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py:208`
+- Plik: `ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py:236`
 - Typ: `method`
-- Wejście: `self, rmse_xy_baseline: float, rmse_theta_baseline: float, rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float], iou_map_baseline: Optional[float], iou_map_ai: Optional[float], n_samples: int, iou_map_robak: Optional[float] = None, iou_map_rywak: Optional[float] = None`
+- Wejście: `self, rmse_xy_odom_topic: float, rmse_theta_odom_topic: float, rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float], iou_map_baseline: Optional[float], iou_map_ai: Optional[float], n_samples: int, iou_map_robak: Optional[float] = None, iou_map_rywak: Optional[float] = None`
 - Wyjście: `brak`
 - Opis: Ustawia metrics. Korzysta m.in. z: round.
 
@@ -573,9 +573,9 @@ Zestawienie wygenerowane automatycznie na podstawie plików `.py` w repozytorium
 - Opis: Rozpoczyna logowanie ewaluacji.
 
 ### ExperimentLogger.end_evaluation
-- Plik: `ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py:608`
+- Plik: `ai_slam_ws/src/ai_slam_ai/ai_slam_ai/experiment_logger.py:661`
 - Typ: `method`
-- Wejście: `self, rmse_xy_baseline: float, rmse_theta_baseline: float, rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float], iou_map_baseline: Optional[float], iou_map_ai: Optional[float], n_samples: int, artifacts: Dict[str, str], iou_map_robak: Optional[float] = None, iou_map_rywak: Optional[float] = None`
+- Wejście: `self, rmse_xy_odom_topic: float, rmse_theta_odom_topic: float, rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float], iou_map_baseline: Optional[float], iou_map_ai: Optional[float], n_samples: int, artifacts: Dict[str, str], iou_map_robak: Optional[float] = None, iou_map_rywak: Optional[float] = None`
 - Wyjście: `brak`
 - Opis: Kończy logowanie ewaluacji.
 

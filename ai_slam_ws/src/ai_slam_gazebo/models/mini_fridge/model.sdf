@@ -1,27 +1,24 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0"?>
 <sdf version="1.6">
   <model name="mini_fridge">
     <static>true</static>
     <link name="link">
-      <collision name="collision_1">
-        <pose>-0.002041 0.002974 0.524481 0 0 1.570796</pose>
+      <collision name="col">
         <geometry>
           <box>
-            <size>0.699729 0.708116 1.06716</size>
+            <size>0.55 0.55 0.88</size>
           </box>
         </geometry>
       </collision>
-      <visual name="visual_1">
-        <pose>-0.002041 0.002974 0.524481 0 0 1.570796</pose>
+      <visual name="vis">
         <geometry>
           <box>
-            <size>0.699729 0.708116 1.06716</size>
+            <size>0.55 0.55 0.88</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.68 0.68 0.68 1</ambient>
-          <diffuse>0.68 0.68 0.68 1</diffuse>
-          <specular>0.08 0.08 0.08 1</specular>
+          <ambient>0.75 0.78 0.82 1</ambient>
+          <diffuse>0.75 0.78 0.82 1</diffuse>
         </material>
       </visual>
     </link>

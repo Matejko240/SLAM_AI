@@ -10,7 +10,9 @@ if grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null; then
 fi
 
 # Blokada przed równoległym uruchomieniem wielu cykli.
-if command -v flock >/dev/null 2>&1; then
+# W środowiskach z agentami/sesjami shell lock fd może pozostać odziedziczony;
+# RUN_FULL_CYCLE_SKIP_LOCK=1 pozwala jawnie pominąć ten mechanizm.
+if command -v flock >/dev/null 2>&1 && [ "${RUN_FULL_CYCLE_SKIP_LOCK:-0}" != "1" ]; then
     LOCK_FILE="/tmp/slam_ai_run_full_cycle.lock"
     exec 9>"$LOCK_FILE"
     if ! flock -n 9; then
@@ -25,10 +27,18 @@ ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
 WS_SETUP="$ROOT_DIR/ai_slam_ws/install/setup.bash"
 CLEANUP_SCRIPT="$ROOT_DIR/scripts/cleanup.sh"
-VENV_SITE="$ROOT_DIR/.venv/lib/python3.12/site-packages"
-if [[ -d "$VENV_SITE" ]]; then
+VENV_SITE=""
+for _py in python3.12 python3.11 python3.10 python3; do
+  _cand="$ROOT_DIR/.venv/lib/${_py}/site-packages"
+  if [[ -d "$_cand" ]]; then
+    VENV_SITE="$_cand"
+    break
+  fi
+done
+if [[ -n "$VENV_SITE" ]]; then
     export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$VENV_SITE"
 fi
+export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 
 safe_source() {
     set +u
@@ -46,7 +56,7 @@ This command needs the ROS 2 + workspace runtime:
   2. Build the workspace:
      cd "$ROOT_DIR/ai_slam_ws"
      source "$ROS_SETUP"
-     colcon build --symlink-install
+     colcon build --symlink-install --build-base "$ROOT_DIR/ai_slam_ws/build" --install-base "$ROOT_DIR/ai_slam_ws/install" --log-base "$ROOT_DIR/ai_slam_ws/log"
 
 After that, retry from:
   cd "$ROOT_DIR"
@@ -87,6 +97,8 @@ fi
 
 if [[ "$CONFIG_FILE" = /* ]]; then
     CONFIG_PATH="$CONFIG_FILE"
+elif [[ -f "$CONFIG_FILE" ]]; then
+    CONFIG_PATH="$CONFIG_FILE"
 else
     CONFIG_PATH="ai_slam_ws/src/ai_slam_bringup/config/$CONFIG_FILE"
 fi
@@ -95,6 +107,7 @@ if [ ! -f "$CONFIG_PATH" ]; then
     echo "BŁĄD: Nie znaleziono pliku config: $CONFIG_PATH"
     exit 1
 fi
+CONFIG_PATH="$(realpath "$CONFIG_PATH")"
 
 # --- 1. Generowanie ID Eksperymentu ---
 EXP_ID=""
@@ -108,6 +121,37 @@ if [ -z "$EXP_ID" ]; then
     EXP_ID="exp_$(date +%Y%m%d_%H%M%S)"
 fi
 
+REQUESTED_PHASE="full"
+for arg in "$@"; do
+    if [[ "$arg" == phase:=* ]]; then
+        REQUESTED_PHASE="${arg#phase:=}"
+        break
+    fi
+done
+REQUESTED_PHASE="$(echo "$REQUESTED_PHASE" | tr '[:upper:]' '[:lower:]')"
+case "$REQUESTED_PHASE" in
+    full|"") REQUESTED_PHASE="full" ;;
+    train|dataset|test) ;;
+    *) REQUESTED_PHASE="full" ;;
+esac
+
+DO_TRAIN="true"
+DO_TEST="true"
+if [ "$REQUESTED_PHASE" = "test" ]; then
+    DO_TRAIN="false"
+fi
+if [ "$REQUESTED_PHASE" = "train" ] || [ "$REQUESTED_PHASE" = "dataset" ]; then
+    DO_TEST="false"
+fi
+
+PASSTHROUGH_ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == phase:=* ]]; then
+        continue
+    fi
+    PASSTHROUGH_ARGS+=("$arg")
+done
+
 # --- 2. Parsowanie Konfiguracji (bezpiecznie przez YAML) ---
 mapfile -t CONFIG_LINES < <(
 python3 - "$CONFIG_PATH" <<'PY'
@@ -120,14 +164,19 @@ with open(cfg_path, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f) or {}
 
 sim = cfg.get("simulation", {}) or {}
+pipeline = cfg.get("pipeline", {}) or {}
 timing = cfg.get("timing", {}) or {}
 evaluation = cfg.get("evaluation", {}) or {}
 
 train_map = str(sim.get("train_world", "world_house.sdf"))
 default_test_map = str(sim.get("test_world", "world_house.sdf"))
 default_ref_map = str(evaluation.get("reference_map_yaml", "reference_map.yaml"))
-dataset_time = timing.get("dataset_duration", 30.0)
-eval_time = timing.get("eval_duration", 60.0)
+dataset_time = pipeline.get("dataset_collection_sec")
+if dataset_time is None:
+    dataset_time = timing.get("dataset_duration", 30.0)
+eval_time = pipeline.get("evaluation_sec")
+if eval_time is None:
+    eval_time = timing.get("eval_duration", 60.0)
 
 scenarios = []
 for idx, item in enumerate(evaluation.get("test_scenarios", []) or [], start=1):
@@ -187,21 +236,29 @@ slugify() {
 echo "=========================================================="
 echo "ID EKSPERYMENTU: $EXP_ID"
 echo "=========================================================="
+if [ "$DO_TRAIN" = "true" ]; then
 echo "FAZA 1: TRENING"
 echo "Mapa: $TRAIN_MAP"
 echo "Czas datasetu: $DATASET_TIME s"
+else
+echo "FAZA 1: TRENING (POMINIĘTA, tryb phase:=$REQUESTED_PHASE)"
+fi
 echo "=========================================================="
 
+if [ "$DO_TRAIN" = "true" ]; then
 # Uruchamiamy trening
 TRAIN_LAUNCH_RC=0
+TRAIN_CMD=(
+    ros2 launch ai_slam_bringup demo.launch.py
+    "config:=$CONFIG_PATH"
+    "phase:=train"
+    "world_sdf:=$TRAIN_MAP"
+    "dataset_duration_sec:=$DATASET_TIME"
+    "experiment_id:=$EXP_ID"
+)
+TRAIN_CMD+=("${PASSTHROUGH_ARGS[@]}")
 set +e
-ros2 launch ai_slam_bringup demo.launch.py \
-    config:=$CONFIG_FILE \
-    phase:=train \
-    world_sdf:=$TRAIN_MAP \
-    dataset_duration_sec:=$DATASET_TIME \
-    experiment_id:=$EXP_ID \
-    "$@"
+"${TRAIN_CMD[@]}"
 TRAIN_LAUNCH_RC=$?
 set -e
 
@@ -231,7 +288,7 @@ robak = cfg.get("robak", {}) or {}
 rywak = cfg.get("rywak", {}) or {}
 
 mode = str(experiment.get("mode", "ai")).strip().lower()
-if mode == "ai":
+if mode == "ai" and bool(tracks.get("tor2_ai_slam", True)):
     print("model.pt")
     print("train_history.json")
 
@@ -281,11 +338,14 @@ fi
 
 echo "SUKCES: Artefakty treningu zapisane w $TRAIN_OUTPUT_DIR."
 echo "Przechodzę do fazy testów..."
+fi
 
 # Czyszczenie między fazami (ważne, żeby zamknąć poprzednie Gazebo)
+if [ "$DO_TEST" = "true" ]; then
 echo "--- Czyszczenie przed Faza 2 ---"
 "$CLEANUP_SCRIPT" || true
 sleep 5 # Dłuższa pauza, żeby Gazebo na pewno zniknęło
+fi
 
 SCENARIO_COUNT="${#TEST_SCENARIOS[@]}"
 if [ "$SCENARIO_COUNT" -le 0 ]; then
@@ -294,6 +354,7 @@ if [ "$SCENARIO_COUNT" -le 0 ]; then
     exit 1
 fi
 
+if [ "$DO_TEST" = "true" ]; then
 echo "Start FAZY 2..."
 echo "=========================================================="
 echo "FAZA 2: TEST / EWALUACJA"
@@ -352,7 +413,7 @@ PY
 
     TEST_CMD=(
         ros2 launch ai_slam_bringup demo.launch.py
-        "config:=$CONFIG_FILE"
+        "config:=$CONFIG_PATH"
         "phase:=test"
         "world_sdf:=$TEST_MAP"
         "reference_map_yaml:=$TEST_REF_MAP"
@@ -365,7 +426,7 @@ PY
     if [ -n "$OUTPUT_SUBDIR" ]; then
         TEST_CMD+=("evaluation_output_subdir:=$OUTPUT_SUBDIR")
     fi
-    TEST_CMD+=("$@")
+    TEST_CMD+=("${PASSTHROUGH_ARGS[@]}")
 
     TEST_LAUNCH_RC=0
     set +e
@@ -405,20 +466,23 @@ PY
         sleep 5
     fi
 done
+fi
 
-if [ "$SCENARIO_COUNT" -gt 1 ]; then
+if [ "$DO_TEST" = "true" ] && [ "$SCENARIO_COUNT" -gt 1 ]; then
     echo "--- Agregowanie wyników wielu scenariuszy testowych ---"
     python3 scripts/aggregate_multi_test_results.py "out/$EXP_ID" "${SCENARIO_RESULT_PATHS[@]}"
 fi
 
-RESULTS_PATH="out/$EXP_ID/results.json"
-if [ ! -f "$RESULTS_PATH" ]; then
-    if [ -f "ai_slam_ws/out/$EXP_ID/results.json" ]; then
-        RESULTS_PATH="ai_slam_ws/out/$EXP_ID/results.json"
-    else
-        echo "BŁĄD: Plik wyników nie istnieje: $RESULTS_PATH"
-        "$CLEANUP_SCRIPT" || true
-        exit 1
+if [ "$DO_TEST" = "true" ]; then
+    RESULTS_PATH="out/$EXP_ID/results.json"
+    if [ ! -f "$RESULTS_PATH" ]; then
+        if [ -f "ai_slam_ws/out/$EXP_ID/results.json" ]; then
+            RESULTS_PATH="ai_slam_ws/out/$EXP_ID/results.json"
+        else
+            echo "BŁĄD: Plik wyników nie istnieje: $RESULTS_PATH"
+            "$CLEANUP_SCRIPT" || true
+            exit 1
+        fi
     fi
 fi
 
@@ -426,8 +490,10 @@ echo ""
 echo "PEŁNY CYKL ZAKOŃCZONY"
 echo "Wyniki: out/$EXP_ID"
 
-echo "--- Generowanie raportów datasetu i treningu ---"
-python3 scripts/inspect_dataset.py "out/$EXP_ID" || true
+if [ "$DO_TEST" = "true" ] || [ "$DO_TRAIN" = "true" ]; then
+    echo "--- Generowanie raportów datasetu i treningu ---"
+    python3 scripts/inspect_dataset.py "out/$EXP_ID" || true
+fi
 
 # === FINALNE CZYSZCZENIE ===
 echo "--- Zamykanie wszystkich procesów (cleanup) ---"

@@ -288,10 +288,10 @@
       <frame_id>odom_raw</frame_id>
       <child_frame_id>base_link</child_frame_id>
       <odom_publish_frequency>50</odom_publish_frequency>
-      <max_linear_acceleration>2.0</max_linear_acceleration>
-      <max_angular_acceleration>4.0</max_angular_acceleration>
-      <max_linear_velocity>1.0</max_linear_velocity>
-      <max_angular_velocity>2.5</max_angular_velocity>
+      <max_linear_acceleration>8.0</max_linear_acceleration>
+      <max_angular_acceleration>12.0</max_angular_acceleration>
+      <max_linear_velocity>5.0</max_linear_velocity>
+      <max_angular_velocity>7.5</max_angular_velocity>
     </plugin>
   </model>
 </sdf>

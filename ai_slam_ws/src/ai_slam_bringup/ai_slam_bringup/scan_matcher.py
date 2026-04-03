@@ -324,8 +324,6 @@ class ScanMatcher(Node):
         return self._estimate_delta_local(grid, size, pts_curr_local, center=center)
 
     def on_scan(self, msg: LaserScan):
-        t_start = time.perf_counter()
-
         pts = scan_to_points(msg, self.max_use_range, self.max_points)
 
         if self.prev_scan_pts is None:
@@ -424,10 +422,6 @@ class ScanMatcher(Node):
         self.prev_scan_pts = pts
         self.prev_stamp = msg.header.stamp
 
-        t_end = time.perf_counter()
-        ms = (t_end - t_start) * 1000.0
-        if ms > self.warn_step_ms and (self.step_idx % 10) == 0:
-            self.get_logger().warn(f"scan_matcher step took {ms:.1f} ms (method={self.method})")
 
 
 def main():

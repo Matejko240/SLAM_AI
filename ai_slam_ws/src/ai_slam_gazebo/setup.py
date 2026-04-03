@@ -3,6 +3,7 @@ from glob import glob
 from pathlib import Path
 
 
+
 def collect_data_files(source_dir: str, target_prefix: str):
     base = Path(source_dir)
     entries = []
@@ -27,7 +28,9 @@ setup(
         (f"share/{package_name}/config", glob("config/*.yaml")),
         *collect_data_files("models", f"share/{package_name}/models"),
         *collect_data_files("media", f"share/{package_name}/media"),
+        (f"share/{package_name}/environment", glob("environment/*")),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
 )

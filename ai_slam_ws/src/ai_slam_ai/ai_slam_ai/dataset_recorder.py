@@ -12,6 +12,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Bool
 
 from .common import atomic_write_bytes, ensure_dir, seed_all, wrap, xytheta_from_odom, xytheta_from_pose_stamped
 from .experiment_logger import ExperimentLogger
@@ -70,6 +71,9 @@ class DatasetRecorder(Node):
         self.declare_parameter("sync_pair_gap_sec", 0.2)
         self.declare_parameter("interpolate_odom", True)
         self.declare_parameter("interpolate_gt", True)
+        self.declare_parameter("stop_on_planned_path_done", False)
+        self.declare_parameter("planned_path_done_topic", "/planned_path_done")
+        self.declare_parameter("planned_path_done_min_elapsed_sec", 0.0)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -91,6 +95,11 @@ class DatasetRecorder(Node):
         self.sync_pair_gap_sec = float(self.get_parameter("sync_pair_gap_sec").value)
         self.interpolate_odom = bool(self.get_parameter("interpolate_odom").value)
         self.interpolate_gt = bool(self.get_parameter("interpolate_gt").value)
+        self.stop_on_planned_path_done = bool(self.get_parameter("stop_on_planned_path_done").value)
+        self.planned_path_done_topic = str(self.get_parameter("planned_path_done_topic").value)
+        self.planned_path_done_min_elapsed_sec = float(
+            self.get_parameter("planned_path_done_min_elapsed_sec").value
+        )
 
         ensure_dir(self.out_dir)
         self.get_logger().info(f"Output directory: {self.out_dir}")
@@ -119,6 +128,7 @@ class DatasetRecorder(Node):
         self.topics_ready = False
         self.experiment_start = time.time()
         self.is_finishing = False
+        self.stop_reason = "duration_sec_reached_or_max_samples"
 
         self.sub_scan = self.create_subscription(
             LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data
@@ -129,6 +139,11 @@ class DatasetRecorder(Node):
         self.sub_gt = self.create_subscription(
             PoseStamped, self.gt_topic, self.on_gt, 50
         )
+        self.sub_path_done = None
+        if self.stop_on_planned_path_done:
+            self.sub_path_done = self.create_subscription(
+                Bool, self.planned_path_done_topic, self.on_planned_path_done, 10
+            )
 
         self.get_logger().info(
             f"Subscriptions created: scan={self.scan_topic} (BEST_EFFORT QoS), "
@@ -298,6 +313,7 @@ class DatasetRecorder(Node):
             self.scan_count += 1
 
             if self.max_samples_enabled and len(self.y) >= self.max_samples and not self.is_finishing:
+                self.stop_reason = "max_samples_reached"
                 self.save_and_exit()
                 return
 
@@ -350,7 +366,22 @@ class DatasetRecorder(Node):
                     f"pending={len(self.pending_scans)}"
                 )
         if elapsed >= self.duration_sec:
+            self.stop_reason = "duration_sec_reached"
             self.save_and_exit()
+
+    def on_planned_path_done(self, msg: Bool):
+        if self.is_finishing or not bool(msg.data):
+            return
+        if self.t0 is None:
+            return
+        elapsed = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
+        if elapsed < self.planned_path_done_min_elapsed_sec:
+            return
+        self.stop_reason = "planned_path_completed"
+        self.get_logger().info(
+            f"[DatasetRecorder] planned path completed; stopping at t={elapsed:.2f}s"
+        )
+        self.save_and_exit()
 
     def save_and_exit(self):
         if self.is_finishing:
@@ -390,6 +421,7 @@ class DatasetRecorder(Node):
             "scan_dim": np.int64(X_scan.shape[1]),
             "sync_tolerance_sec": np.float32(self.sync_tolerance_sec),
             "sync_pair_gap_sec": np.float32(self.sync_pair_gap_sec),
+            "stop_reason": np.asarray([self.stop_reason], dtype=object),
             "scan_rx": np.int64(self.scan_rx_count),
             "pending_drop_count": np.int64(self.pending_drop_count),
             "odom_sync_interp": np.int64(self.odom_sync_interp_count),

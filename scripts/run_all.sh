@@ -50,6 +50,9 @@ if [[ ! -f "$VENV_ACTIVATE" ]]; then
   exit 1
 fi
 
+echo "[0/8] Removing stray root colcon artifacts (if any)"
+rm -rf "$ROOT_DIR/build" "$ROOT_DIR/install" "$ROOT_DIR/log"
+
 cd "$WS_DIR"
 
 echo "[1/8] Removing build artifacts (build/install/log)"
@@ -67,7 +70,11 @@ echo "[3/8] Installing ROS dependencies with rosdep"
 rosdep install --from-paths src --ignore-src -r -y --skip-keys ament_python
 
 echo "[4/8] Building workspace"
-colcon build --symlink-install
+colcon build \
+  --symlink-install \
+  --build-base "$WS_DIR/build" \
+  --install-base "$WS_DIR/install" \
+  --log-base "$WS_DIR/log"
 
 echo "[5/8] Sourcing ROS Jazzy environment"
 safe_source /opt/ros/jazzy/setup.bash

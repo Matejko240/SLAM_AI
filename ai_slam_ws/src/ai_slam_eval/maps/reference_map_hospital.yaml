@@ -1,6 +1,7 @@
 image: reference_map_hospital.pgm
 resolution: 0.05
-origin: [-13.102516621379747, -35.571483227524, 0.0]
+origin: [-13.10252, -35.5715, 0.0]
 negate: 0
 occupied_thresh: 0.65
 free_thresh: 0.196
+occ_thresh: 128

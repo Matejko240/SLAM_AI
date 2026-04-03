@@ -26,6 +26,18 @@ def parse_bool(value, default=False):
     return default
 
 
+def normalize_trajectory_mode(value: str) -> str:
+    """Wyjście: auto | no_cycle | cycle (alias fixed_* zachowane dla kompatybilności)."""
+    mode = str(value).strip().lower()
+    if mode in ("", "auto", "auto_nav", "autodrive", "random", "any"):
+        return "auto"
+    if mode in ("fixed_no_cycle", "no_cycle", "nocycle", "acyclic", "without_cycles"):
+        return "no_cycle"
+    if mode in ("fixed_cycle", "cycle", "cyclic", "with_cycles"):
+        return "cycle"
+    return "auto"
+
+
 def yaw_from_quaternion(q) -> float:
     siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
     cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
@@ -65,6 +77,9 @@ class AutoDriver(Node):
         self.declare_parameter("linear_velocity_max", 0.0)
         self.declare_parameter("angular_velocity_min", 0.0)
         self.declare_parameter("angular_velocity_max", 0.0)
+        self.declare_parameter("reverse_probability", 0.0)
+        self.declare_parameter("reverse_speed_min", 0.0)
+        self.declare_parameter("reverse_speed_max", 0.0)
         self.declare_parameter("profile_change_interval_sec", 2.5)
         self.declare_parameter("profile_arc_probability", 0.35)
         self.declare_parameter("profile_arc_fraction_min", 0.12)
@@ -96,6 +111,21 @@ class AutoDriver(Node):
         self.declare_parameter("repeat_escape_trigger", 6)
         self.declare_parameter("repeat_escape_turn_sec", 2.8)
         self.declare_parameter("repeat_escape_heading_deg", 85.0)
+        self.declare_parameter("trajectory_mode", "auto")
+        self.declare_parameter("fixed_linear_velocity", 0.0)
+        self.declare_parameter("fixed_angular_velocity", 0.0)
+        self.declare_parameter("fixed_turn_direction", 1)
+        self.declare_parameter("fixed_turn_angle_deg", 90.0)
+        self.declare_parameter("no_cycle_straight_base_sec", 1.2)
+        self.declare_parameter("no_cycle_straight_step_sec", 0.55)
+        self.declare_parameter("no_cycle_levels", 14)
+        self.declare_parameter("cycle_straight_sec", 3.0)
+        # Legacy (gdy launch nadal podaje stare nazwy)
+        self.declare_parameter("fixed_no_cycle_straight_base_sec", 1.2)
+        self.declare_parameter("fixed_no_cycle_straight_step_sec", 0.55)
+        self.declare_parameter("fixed_no_cycle_levels", 14)
+        self.declare_parameter("fixed_cycle_straight_sec", 3.0)
+        self.declare_parameter("fixed_obstacle_avoidance", True)
         seed = int(self.get_parameter("seed").value)
         self.rng = np.random.default_rng(seed)
 
@@ -129,11 +159,17 @@ class AutoDriver(Node):
         linear_velocity_max = float(self.get_parameter("linear_velocity_max").value)
         angular_velocity_min = float(self.get_parameter("angular_velocity_min").value)
         angular_velocity_max = float(self.get_parameter("angular_velocity_max").value)
+        reverse_probability = float(self.get_parameter("reverse_probability").value)
+        reverse_speed_min = float(self.get_parameter("reverse_speed_min").value)
+        reverse_speed_max = float(self.get_parameter("reverse_speed_max").value)
 
         self.linear_velocity_min = max(0.0, linear_velocity_min if linear_velocity_min > 0.0 else self.v_forward)
         self.linear_velocity_max = max(self.linear_velocity_min, linear_velocity_max if linear_velocity_max > 0.0 else self.v_forward)
         self.angular_velocity_min = max(0.05, angular_velocity_min if angular_velocity_min > 0.0 else self.w_turn)
         self.angular_velocity_max = max(self.angular_velocity_min, angular_velocity_max if angular_velocity_max > 0.0 else self.w_turn)
+        self.reverse_probability = float(np.clip(reverse_probability, 0.0, 1.0))
+        self.reverse_speed_min = max(0.0, reverse_speed_min)
+        self.reverse_speed_max = max(self.reverse_speed_min, reverse_speed_max)
         self.profile_change_interval_sec = max(0.5, float(self.get_parameter("profile_change_interval_sec").value))
         self.profile_arc_probability = float(np.clip(self.get_parameter("profile_arc_probability").value, 0.0, 1.0))
         self.profile_arc_fraction_min = max(0.0, float(self.get_parameter("profile_arc_fraction_min").value))
@@ -182,6 +218,61 @@ class AutoDriver(Node):
         self.repeat_escape_heading_rad = math.radians(
             float(self.get_parameter("repeat_escape_heading_deg").value)
         )
+        self.trajectory_mode = normalize_trajectory_mode(
+            self.get_parameter("trajectory_mode").value
+        )
+
+        fixed_linear_velocity = float(self.get_parameter("fixed_linear_velocity").value)
+        fixed_angular_velocity = float(self.get_parameter("fixed_angular_velocity").value)
+        self.fixed_linear_velocity = (
+            fixed_linear_velocity
+            if fixed_linear_velocity > 0.0
+            else max(0.08, min(abs(self.v_forward), 0.45))
+        )
+        self.fixed_angular_velocity = (
+            fixed_angular_velocity
+            if fixed_angular_velocity > 0.0
+            else max(0.20, min(abs(self.w_turn), 1.20))
+        )
+        self.fixed_turn_direction = 1 if int(self.get_parameter("fixed_turn_direction").value) >= 0 else -1
+        self.fixed_turn_angle_rad = math.radians(
+            max(10.0, float(self.get_parameter("fixed_turn_angle_deg").value))
+        )
+        _def_nc_base, _def_nc_step, _def_nc_lv, _def_cy = 1.2, 0.55, 14, 3.0
+        _n_base = float(self.get_parameter("no_cycle_straight_base_sec").value)
+        _o_base = float(self.get_parameter("fixed_no_cycle_straight_base_sec").value)
+        self.no_cycle_straight_base_sec = max(
+            0.2,
+            _o_base if abs(_n_base - _def_nc_base) < 1e-9 and abs(_o_base - _def_nc_base) > 1e-9 else _n_base,
+        )
+        _n_step = float(self.get_parameter("no_cycle_straight_step_sec").value)
+        _o_step = float(self.get_parameter("fixed_no_cycle_straight_step_sec").value)
+        self.no_cycle_straight_step_sec = max(
+            0.0,
+            _o_step if abs(_n_step - _def_nc_step) < 1e-9 and abs(_o_step - _def_nc_step) > 1e-9 else _n_step,
+        )
+        _n_lv = int(self.get_parameter("no_cycle_levels").value)
+        _o_lv = int(self.get_parameter("fixed_no_cycle_levels").value)
+        self.no_cycle_levels = max(
+            1,
+            _o_lv if _n_lv == _def_nc_lv and _o_lv != _def_nc_lv else _n_lv,
+        )
+        _n_cy = float(self.get_parameter("cycle_straight_sec").value)
+        _o_cy = float(self.get_parameter("fixed_cycle_straight_sec").value)
+        self.cycle_straight_sec = max(
+            0.2,
+            _o_cy if abs(_n_cy - _def_cy) < 1e-9 and abs(_o_cy - _def_cy) > 1e-9 else _n_cy,
+        )
+        self.fixed_obstacle_avoidance = parse_bool(
+            self.get_parameter("fixed_obstacle_avoidance").value,
+            default=True,
+        )
+
+        self.fixed_segments: list[tuple[float, float, int]] = []
+        self.fixed_segment_index = 0
+        self.fixed_segment_ticks_left = 0
+        self.fixed_segment_loop = False
+        self._configure_fixed_trajectory()
         
         self.min_front = None
         self.min_left = None
@@ -256,6 +347,153 @@ class AutoDriver(Node):
         self._dbg_tick = 0
         self._dbg_last_reason = ""
         self._refresh_motion_profile(force=True)
+        if self.trajectory_mode != "auto":
+            self.get_logger().info(
+                f"[DRV] Scripted trajectory mode={self.trajectory_mode} (no_cycle|cycle), "
+                f"v={self.fixed_linear_velocity:.2f}m/s, w={self.fixed_angular_velocity:.2f}rad/s"
+            )
+        else:
+            self.get_logger().info("[DRV] Reactive navigation mode (auto)")
+
+    def _configure_fixed_trajectory(self) -> None:
+        self.fixed_segments = []
+        self.fixed_segment_index = 0
+        self.fixed_segment_ticks_left = 0
+        self.fixed_segment_loop = False
+        if self.trajectory_mode == "auto":
+            return
+
+        turn_ticks = max(
+            1,
+            int(round((self.fixed_turn_angle_rad / max(0.1, self.fixed_angular_velocity)) * self.rate_hz)),
+        )
+        turn_w = float(self.fixed_turn_direction) * self.fixed_angular_velocity
+
+        if self.trajectory_mode == "no_cycle":
+            self.fixed_segment_loop = False
+            for level in range(self.no_cycle_levels):
+                straight_sec = self.no_cycle_straight_base_sec + level * self.no_cycle_straight_step_sec
+                straight_ticks = max(1, int(round(straight_sec * self.rate_hz)))
+                self.fixed_segments.append((self.fixed_linear_velocity, 0.0, straight_ticks))
+                self.fixed_segments.append((0.0, turn_w, turn_ticks))
+                self.fixed_segments.append((self.fixed_linear_velocity, 0.0, straight_ticks))
+                self.fixed_segments.append((0.0, turn_w, turn_ticks))
+            tail_ticks = max(
+                1,
+                int(
+                    round(
+                        (
+                            self.no_cycle_straight_base_sec
+                            + self.no_cycle_levels * self.no_cycle_straight_step_sec
+                        )
+                        * self.rate_hz
+                    )
+                ),
+            )
+            self.fixed_segments.append((self.fixed_linear_velocity, 0.0, tail_ticks))
+        elif self.trajectory_mode == "cycle":
+            self.fixed_segment_loop = True
+            straight_ticks = max(1, int(round(self.cycle_straight_sec * self.rate_hz)))
+            for _ in range(4):
+                self.fixed_segments.append((self.fixed_linear_velocity, 0.0, straight_ticks))
+                self.fixed_segments.append((0.0, turn_w, turn_ticks))
+
+        if self.fixed_segments:
+            self.fixed_segment_ticks_left = int(self.fixed_segments[0][2])
+            self.current_forward_speed = self.fixed_linear_velocity
+            self.current_turn_speed = self.fixed_angular_velocity
+
+    def _next_fixed_command(self) -> tuple[float, float]:
+        if not self.fixed_segments:
+            return 0.0, 0.0
+        if self.fixed_segment_ticks_left <= 0:
+            self.fixed_segment_index += 1
+            if self.fixed_segment_index >= len(self.fixed_segments):
+                if self.fixed_segment_loop:
+                    self.fixed_segment_index = 0
+                else:
+                    self.fixed_segment_index = len(self.fixed_segments) - 1
+            self.fixed_segment_ticks_left = int(self.fixed_segments[self.fixed_segment_index][2])
+
+        v, w, _ticks = self.fixed_segments[self.fixed_segment_index]
+        self.fixed_segment_ticks_left -= 1
+        return float(v), float(w)
+
+    def _publish_fixed_recovery(self, twist: Twist, reason: str) -> None:
+        self._publish_cmd(twist, reason)
+
+    def _on_timer_fixed_trajectory(self, twist: Twist) -> None:
+        if self.stuck_counter > self.stuck_threshold:
+            self._start_recovery(
+                turn_dir=self._choose_turn_dir(),
+                backup_sec=1.2,
+                turn_sec=1.8,
+                turn_linear_speed=0.0,
+                min_fraction=0.75,
+                max_fraction=1.0,
+                cooldown_sec=1.2,
+            )
+
+        if self.backup_ticks > 0:
+            twist.linear.x = -0.18
+            twist.angular.z = min(self.angular_velocity_max, 0.35 * max(0.05, self.current_turn_speed)) * self.turn_dir
+            self.backup_ticks -= 1
+            self._publish_fixed_recovery(twist, "fixed_backup")
+            return
+
+        if self.turn_ticks > 0:
+            twist.linear.x = self.turn_linear_speed
+            twist.angular.z = float(self.turn_dir) * max(0.05, self.current_turn_speed)
+            self.turn_ticks -= 1
+            self._publish_fixed_recovery(twist, "fixed_turn")
+            return
+
+        if self.turn_cooldown > 0:
+            self.turn_cooldown -= 1
+
+        if self.fixed_obstacle_avoidance:
+            front_obstacle = (self.min_front is not None) and (self.min_front < self.front_threshold)
+            emergency_front = (self.min_front is not None) and (self.min_front < self.emergency_threshold)
+            emergency_fl = (self.min_front_left is not None) and (self.min_front_left < self.emergency_threshold)
+            emergency_fr = (self.min_front_right is not None) and (self.min_front_right < self.emergency_threshold)
+
+            if (emergency_front or emergency_fl or emergency_fr) and self.last_cmd_forward:
+                turn_dir = self._choose_turn_dir()
+                if self.min_front_left is not None and self.min_front_right is not None:
+                    turn_dir = -1 if self.min_front_left < self.min_front_right else 1
+                self._start_recovery(
+                    turn_dir=turn_dir,
+                    backup_sec=1.1,
+                    turn_sec=1.8,
+                    turn_linear_speed=0.0,
+                    min_fraction=0.75,
+                    max_fraction=1.0,
+                    cooldown_sec=1.3,
+                )
+                twist.linear.x = -0.22
+                twist.angular.z = min(self.angular_velocity_max, 0.30 * max(0.05, self.current_turn_speed)) * self.turn_dir
+                self._publish_fixed_recovery(twist, "fixed_emergency_recovery")
+                return
+
+            if self.turn_cooldown == 0 and front_obstacle:
+                self._start_turn(
+                    turn_dir=self._choose_turn_dir(),
+                    turn_sec=0.9,
+                    linear_speed=0.0,
+                    min_fraction=0.55,
+                    max_fraction=0.85,
+                    cooldown_sec=1.0,
+                )
+                twist.linear.x = 0.0
+                twist.angular.z = float(self.turn_dir) * self.current_turn_speed
+                self._publish_fixed_recovery(twist, "fixed_obstacle_turn")
+                return
+
+        twist.linear.x, twist.angular.z = self._next_fixed_command()
+        self._publish_cmd(
+            twist,
+            f"{self.trajectory_mode}_seg{self.fixed_segment_index}",
+        )
 
     def _choose_turn_dir(self) -> int:
         if self.avg_left is not None and self.avg_right is not None:
@@ -495,15 +733,19 @@ class AutoDriver(Node):
             1.0,
         )
         heading_scale = max(0.18, 1.0 - 0.82 * abs(self.filtered_heading) / max(self.nav_sector_rad, 1e-4))
-        base_speed = max(0.0, float(self.current_forward_speed))
-        linear = base_speed * clearance_scale * heading_scale
-
-        if self.front_clearance > self.emergency_threshold * 1.1 and local_min > self.nav_safe_clearance:
-            linear = max(self.nav_min_linear_speed, linear)
+        base_speed = float(self.current_forward_speed)
+        if base_speed >= 0.0:
+            linear = base_speed * clearance_scale * heading_scale
         else:
+            # Keep reverse moves slower but do not force them to positive.
+            linear = base_speed * max(0.55, heading_scale)
+
+        if base_speed >= 0.0 and self.front_clearance > self.emergency_threshold * 1.1 and local_min > self.nav_safe_clearance:
+            linear = max(self.nav_min_linear_speed, linear)
+        elif base_speed >= 0.0:
             linear = 0.0
 
-        if abs(self.filtered_heading) > math.radians(65.0):
+        if base_speed >= 0.0 and abs(self.filtered_heading) > math.radians(65.0):
             linear = min(linear, max(self.nav_min_linear_speed, 0.08))
 
         return float(linear), float(angular), "gap_follow"
@@ -531,6 +773,9 @@ class AutoDriver(Node):
         self.current_forward_speed = float(
             self.rng.uniform(self.linear_velocity_min, self.linear_velocity_max)
         )
+        if self.reverse_probability > 0.0 and self.reverse_speed_max > 0.0 and self.rng.random() < self.reverse_probability:
+            rev_mag = float(self.rng.uniform(self.reverse_speed_min, self.reverse_speed_max))
+            self.current_forward_speed = -rev_mag
         self.current_turn_speed = self._sample_turn_speed(min_fraction=0.75, max_fraction=1.0)
         self.current_cruise_steering = 0.0
 
@@ -731,14 +976,22 @@ class AutoDriver(Node):
     def on_timer(self):
         twist = Twist()
         self._dbg_tick += 1
-        self.profile_tick_counter += 1
-        self._refresh_motion_profile()
+        if self.trajectory_mode == "auto":
+            self.profile_tick_counter += 1
+            self._refresh_motion_profile()
+        else:
+            self.current_forward_speed = self.fixed_linear_velocity
+            self.current_turn_speed = self.fixed_angular_velocity
         reason = "drive"
 
         if self._last_scan_time is None or self.scan_ranges is None or self.scan_angles is None:
             if self.debug and (self._dbg_tick % 20 == 0):
                 self.get_logger().warn(f"[DRV] Waiting for LaserScan on topic: {self.scan_topic}")
             self._publish_cmd(twist, "waiting_for_scan")
+            return
+
+        if self.trajectory_mode != "auto":
+            self._on_timer_fixed_trajectory(twist)
             return
 
         if self.repetition_counter >= self.repeat_escape_trigger:
@@ -768,7 +1021,7 @@ class AutoDriver(Node):
                     cooldown_sec=1.8,
                 )
                 twist.linear.x = -0.18
-                twist.angular.z = min(1.0, 0.30 * max(0.05, self.current_turn_speed)) * self.turn_dir
+                twist.angular.z = min(self.angular_velocity_max, 0.30 * max(0.05, self.current_turn_speed)) * self.turn_dir
                 self._publish_cmd(twist, "repetition_escape_recovery")
                 return
 
@@ -829,7 +1082,7 @@ class AutoDriver(Node):
         # Backup phase (reverse)
         if self.backup_ticks > 0:
             twist.linear.x = -0.2  # faster reverse
-            twist.angular.z = min(1.2, 0.35 * max(0.05, self.current_turn_speed)) * self.turn_dir
+            twist.angular.z = min(self.angular_velocity_max, 0.35 * max(0.05, self.current_turn_speed)) * self.turn_dir
             self.backup_ticks -= 1
             self._publish_cmd(twist, reason if reason != "drive" else "backup")
             return
@@ -872,7 +1125,7 @@ class AutoDriver(Node):
                 cooldown_sec=1.5,
             )
             twist.linear.x = -0.25  # fast reverse
-            twist.angular.z = min(1.2, 0.3 * max(0.05, self.current_turn_speed)) * self.turn_dir
+            twist.angular.z = min(self.angular_velocity_max, 0.3 * max(0.05, self.current_turn_speed)) * self.turn_dir
             self._publish_cmd(twist, "emergency_recovery")
             return
         
@@ -881,7 +1134,7 @@ class AutoDriver(Node):
         if super_close and self.last_cmd_forward:
             twist.linear.x = -0.2
             self.current_turn_speed = self._sample_turn_speed(min_fraction=0.55, max_fraction=0.8)
-            twist.angular.z = float(self.rng.choice([-1.0, 1.0])) * min(1.0, 0.4 * self.current_turn_speed)
+            twist.angular.z = float(self.rng.choice([-1.0, 1.0])) * min(self.angular_velocity_max, 0.4 * self.current_turn_speed)
             reason = "super_close_backup"
             self._publish_cmd(twist, reason)
             return
@@ -907,7 +1160,7 @@ class AutoDriver(Node):
             )
             self.obstacle_counter = 0
             twist.linear.x = -0.2
-            twist.angular.z = min(1.0, 0.30 * max(0.05, self.current_turn_speed)) * self.turn_dir
+            twist.angular.z = min(self.angular_velocity_max, 0.30 * max(0.05, self.current_turn_speed)) * self.turn_dir
             self._publish_cmd(twist, "obstacle_recovery")
             return
 
@@ -934,7 +1187,7 @@ class AutoDriver(Node):
                     cooldown_sec=1.2,
                 )
                 twist.linear.x = -0.18
-                twist.angular.z = min(1.0, 0.30 * max(0.05, self.current_turn_speed)) * self.turn_dir
+                twist.angular.z = min(self.angular_velocity_max, 0.30 * max(0.05, self.current_turn_speed)) * self.turn_dir
                 self._publish_cmd(twist, "obstacle_recovery")
                 return
             else:
@@ -991,7 +1244,7 @@ class AutoDriver(Node):
                 cooldown_sec=1.4,
             )
             twist.linear.x = -0.16
-            twist.angular.z = min(1.0, 0.25 * max(0.05, self.current_turn_speed)) * self.turn_dir
+            twist.angular.z = min(self.angular_velocity_max, 0.25 * max(0.05, self.current_turn_speed)) * self.turn_dir
             self._publish_cmd(twist, "no_safe_gap")
             return
 

@@ -6,6 +6,7 @@ ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 OS_CODENAME="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
 
 echo "=== Rozpoczynam instalację zależności dla projektu SLAM AI ==="
 echo "Repo root: ${REPO_ROOT}"
@@ -84,9 +85,27 @@ source "${VENV_DIR}/bin/activate"
 echo "Aktualizacja pip..."
 pip install --upgrade pip setuptools wheel
 
-echo "--- Instalacja PyTorch dla GTX 1050 Ti (CUDA 11.8) ---"
-# KLUCZOWE: Instalacja wersji kompatybilnej z Python 3.12 oraz Pascal GPU (GTX 10xx)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+echo "--- Instalacja PyTorch z kanału: ${TORCH_INDEX_URL} ---"
+echo "Jeśli chcesz wymusić inny build, ustaw TORCH_INDEX_URL przed uruchomieniem skryptu."
+pip install --upgrade torch torchvision torchaudio --index-url "${TORCH_INDEX_URL}"
+
+echo "--- Weryfikacja PyTorch / CUDA ---"
+python - <<'PY'
+import torch
+print("torch", torch.__version__)
+print("cuda_available", torch.cuda.is_available())
+print("cuda_version", torch.version.cuda)
+print("device_count", torch.cuda.device_count())
+if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    print("device0", torch.cuda.get_device_name(0))
+    try:
+        x = torch.randn(32, 32, device="cuda")
+        y = x @ x
+        torch.cuda.synchronize()
+        print("cuda_smoke_test", "ok", tuple(y.shape))
+    except Exception as exc:
+        print("cuda_smoke_test", "failed", exc)
+PY
 
 echo "--- Instalacja pozostałych bibliotek ---"
 pip install numpy matplotlib transforms3d scipy pyyaml

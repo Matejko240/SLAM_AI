@@ -4,11 +4,38 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Iterator
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def resolve_venv_site_packages(repo_root: Path | None = None) -> Path | None:
+    """Katalog site-packages z lokalnego .venv (dowolna wersja python3.x)."""
+    root = repo_root if repo_root is not None else REPO_ROOT
+    lib = root / ".venv" / "lib"
+    if not lib.is_dir():
+        return None
+    candidates: list[Path] = []
+    for child in lib.iterdir():
+        if not child.is_dir() or not child.name.startswith("python"):
+            continue
+        site = child / "site-packages"
+        if site.is_dir():
+            candidates.append(site)
+    if not candidates:
+        return None
+
+    def _ver_key(site: Path) -> tuple[int, int]:
+        m = re.match(r"python(\d+)\.(\d+)", site.parent.name)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+        return (0, 0)
+
+    candidates.sort(key=_ver_key, reverse=True)
+    return candidates[0]
 OUT_DIR = REPO_ROOT / "out"
 EXPERIMENTS_DIR = OUT_DIR / "experiments"
 SWEEPS_DIR = OUT_DIR / "sweeps"
@@ -128,13 +155,18 @@ def _sync_dataset_views() -> None:
     patterns = (
         "dataset*.npz",
         "trajectory_data.npz",
+        "eval_trajectory_data.npz",
         "dataset_inspection_*.png",
         "dataset_inspection_*.json",
         "dataset_*coverage*.png",
         "dataset_*coverage*.json",
         "training_curve_*.png",
+        "train_curve_*.png",
         "training_inspection_summary.json",
+        "train_inspection_summary.json",
         "experiment_inspection_summary.json",
+        "eval_*.png",
+        "eval_*.npz",
     )
     for exp_dir in _iter_named_dirs(EXPERIMENTS_DIR, "exp_"):
         dataset_view_dir = DATASETS_DIR / exp_dir.name
@@ -145,25 +177,82 @@ def _sync_dataset_views() -> None:
                     _ensure_symlink(dataset_view_dir / artifact.name, artifact)
 
 
+def _migrate_group_to_root(group_dir: Path, prefix: str) -> None:
+    """Move real exp_* dirs from grouped folder back to out/ root."""
+    if not group_dir.exists() or not group_dir.is_dir():
+        return
+    for child in sorted(group_dir.iterdir(), key=lambda item: item.name):
+        if not child.name.startswith(prefix):
+            continue
+        _cleanup_stale_symlink(child)
+        target = OUT_DIR / child.name
+        if child.is_symlink():
+            try:
+                resolved = child.resolve()
+                if target.exists() and target.resolve() == resolved:
+                    child.unlink()
+                elif not target.exists():
+                    _ensure_symlink(target, resolved)
+                    child.unlink()
+            except Exception:
+                continue
+            continue
+        if child.is_dir():
+            if not target.exists():
+                child.rename(target)
+            # if target already exists, keep child untouched to avoid destructive merge
+
+
+def _cleanup_group_alias_dir(group_dir: Path) -> None:
+    """Delete grouped alias dir if it only contains symlinks."""
+    if not group_dir.exists() or not group_dir.is_dir():
+        return
+    removable = True
+    for child in group_dir.iterdir():
+        if child.is_symlink():
+            child.unlink()
+            continue
+        if child.is_dir():
+            child_removable = True
+            for nested in child.iterdir():
+                if nested.is_symlink():
+                    nested.unlink()
+                else:
+                    child_removable = False
+            if child_removable:
+                try:
+                    child.rmdir()
+                except OSError:
+                    removable = False
+            else:
+                removable = False
+            continue
+        removable = False
+    if removable:
+        try:
+            group_dir.rmdir()
+        except OSError:
+            pass
+
+
 def ensure_grouped_out_layout() -> None:
     _ensure_dir(OUT_DIR)
-    _ensure_dir(EXPERIMENTS_DIR)
     _ensure_dir(SWEEPS_DIR)
-    _ensure_dir(DATASETS_DIR)
     _ensure_dir(JOBS_DIR)
     _ensure_dir(QUICK_CONFIGS_DIR)
+    _ensure_dir(DASHBOARD_JOBS_DIR)
+    _ensure_dir(DASHBOARD_QUICK_CONFIG_DIR)
 
-    _adopt_legacy_dataset_experiments()
-    _sync_named_group(EXPERIMENTS_DIR, "exp_")
-    _sync_named_group(SWEEPS_DIR, "sweep")
-    _sync_special_dir(DASHBOARD_JOBS_DIR, "dashboard_jobs")
-    _sync_special_dir(DASHBOARD_QUICK_CONFIG_DIR, "dashboard_quick_configs")
-    _sync_dataset_views()
+    # One-folder policy: all experiment artifacts stay in out/exp_* only.
+    _migrate_group_to_root(EXPERIMENTS_DIR, "exp_")
+    _migrate_group_to_root(DATASETS_DIR, "exp_")
+    _cleanup_group_alias_dir(EXPERIMENTS_DIR)
+    _cleanup_group_alias_dir(DATASETS_DIR)
 
 
 def iter_experiment_dirs() -> list[Path]:
     ensure_grouped_out_layout()
-    return list(_iter_named_dirs(EXPERIMENTS_DIR, "exp_"))
+    return list(_iter_named_dirs(OUT_DIR, "exp_"))
 
 
 def iter_sweep_dirs() -> list[Path]:
@@ -173,9 +262,15 @@ def iter_sweep_dirs() -> list[Path]:
 
 def resolve_experiment_dir(experiment_id: str) -> Path:
     ensure_grouped_out_layout()
-    for candidate in (EXPERIMENTS_DIR / experiment_id, OUT_DIR / experiment_id):
-        if candidate.is_dir():
-            return candidate.resolve()
+    candidate = OUT_DIR / experiment_id
+    if candidate.is_dir():
+        return candidate.resolve()
+    legacy_grouped = EXPERIMENTS_DIR / experiment_id
+    if legacy_grouped.is_dir():
+        return legacy_grouped.resolve()
+    legacy_dataset = DATASETS_DIR / experiment_id
+    if legacy_dataset.is_dir():
+        return legacy_dataset.resolve()
     raise FileNotFoundError(f"Nie znaleziono eksperymentu: {experiment_id}")
 
 
@@ -189,17 +284,9 @@ def resolve_sweep_dir(sweep_id: str) -> Path:
 
 def ensure_experiment_storage(experiment_id: str) -> Path:
     ensure_grouped_out_layout()
-    legacy_dir = OUT_DIR / experiment_id
-    if legacy_dir.exists() and legacy_dir.is_dir() and not legacy_dir.is_symlink():
-        _ensure_symlink(EXPERIMENTS_DIR / experiment_id, legacy_dir)
-        _sync_dataset_views()
-        return legacy_dir.resolve()
-
-    grouped_dir = EXPERIMENTS_DIR / experiment_id
-    grouped_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_symlink(OUT_DIR / experiment_id, grouped_dir)
-    _sync_dataset_views()
-    return grouped_dir.resolve()
+    exp_dir = OUT_DIR / experiment_id
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    return exp_dir.resolve()
 
 
 def ensure_sweep_storage(sweep_id: str) -> Path:

@@ -3,23 +3,24 @@
   <model name="Chair">
     <static>true</static>
     <link name="link">
-      <pose>0 0 0.475 0 0 0</pose>
-      <collision name="collision">
+      <collision name="col">
         <geometry>
-          <box>
-            <size>0.55 0.55 0.95</size>
-          </box>
+          <cylinder>
+            <radius>0.26</radius>
+            <length>0.9</length>
+          </cylinder>
         </geometry>
       </collision>
-      <visual name="visual">
+      <visual name="vis">
         <geometry>
-          <box>
-            <size>0.55 0.55 0.95</size>
-          </box>
+          <cylinder>
+            <radius>0.26</radius>
+            <length>0.9</length>
+          </cylinder>
         </geometry>
         <material>
-          <ambient>0.52 0.48 0.42 1</ambient>
-          <diffuse>0.52 0.48 0.42 1</diffuse>
+          <ambient>0.35 0.38 0.42 1</ambient>
+          <diffuse>0.35 0.38 0.42 1</diffuse>
         </material>
       </visual>
     </link>

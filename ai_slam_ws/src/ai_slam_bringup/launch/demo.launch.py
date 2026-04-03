@@ -1,6 +1,10 @@
 """
 AI SLAM Demo Launch File - z centralną konfiguracją
 
+Izolacja torów (badania):
+  Baseline / AI / Robak / Rywak: osobne topic skanu, osobne instancje slam_toolbox i map.
+  Inferencja metod NIE używa kotwicy scanmatch (usunięte) — tylko model + odom/GT wg węzła.
+
 Użycie:
   # Domyślna konfiguracja:
   ros2 launch ai_slam_bringup demo.launch.py
@@ -12,6 +16,13 @@ Użycie:
   # Override pojedynczych parametrów:
   ros2 launch ai_slam_bringup demo.launch.py mode:=baseline duration_sec:=60
   ros2 launch ai_slam_bringup demo.launch.py config:=fast_test.yaml seed:=999
+
+Czas datasetu / ewaluacji (wspólny dla torów): pipeline.dataset_collection_sec, pipeline.evaluation_sec
+(w YAML); bez pipeline — timing.dataset_duration / timing.eval_duration. Timeouty oczekiwania na dataset
+i model skaluje lifecycle (max( wartość_z_yaml, szacunek )) — przy 0 w YAML zostaje tylko szacunek.
+
+Sterowanie: driver.use_planned_path true → planned_path_driver (kotwice + opcjonalnie A* na mapie ref.),
+false → auto_driver (reaktywny / skryptowany).
 """
 import os
 import yaml
@@ -21,15 +32,14 @@ import copy
 import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument, TimerAction, SetEnvironmentVariable, 
-    IncludeLaunchDescription, EmitEvent, LogInfo, RegisterEventHandler,
+    IncludeLaunchDescription, EmitEvent, LogInfo, RegisterEventHandler, ExecuteProcess,
     OpaqueFunction
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.events import matches_action
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -79,6 +89,27 @@ def get_config_value(config: dict, *keys, default=None):
     return value
 
 
+def driver_cfg_float(config: dict, new_key: str, old_key: str, default: float) -> float:
+    """Preferuje nowe klucze driver.* (np. no_cycle_*), z fallbackiem na fixed_*."""
+    v = get_config_value(config, "driver", new_key, default=None)
+    if v is not None and str(v).strip() != "":
+        return float(v)
+    v2 = get_config_value(config, "driver", old_key, default=None)
+    if v2 is not None and str(v2).strip() != "":
+        return float(v2)
+    return float(default)
+
+
+def driver_cfg_int(config: dict, new_key: str, old_key: str, default: int) -> int:
+    v = get_config_value(config, "driver", new_key, default=None)
+    if v is not None and str(v).strip() != "":
+        return int(v)
+    v2 = get_config_value(config, "driver", old_key, default=None)
+    if v2 is not None and str(v2).strip() != "":
+        return int(v2)
+    return int(default)
+
+
 def parse_bool(value, default=False):
     """Konwertuje bool/str/int na bool w sposób odporny na 'false' jako string."""
     if isinstance(value, bool):
@@ -93,6 +124,36 @@ def parse_bool(value, default=False):
     if isinstance(value, (int, float)):
         return bool(value)
     return default
+
+
+def normalize_dataset_trajectory_mode(value: str) -> str:
+    mode = str(value).strip().lower()
+    if mode in {"no_cycle", "nocycle", "acyclic", "without_cycles"}:
+        return "no_cycle"
+    if mode in {"cycle", "cyclic", "with_cycles"}:
+        return "cycle"
+    return "any"
+
+
+def normalize_balance_merge_strategy(value: str) -> str:
+    mode = str(value).strip().lower()
+    if mode in {"component_concat", "concat", "components", "sum"}:
+        return "component_concat"
+    if mode in {"intersection", "intersect"}:
+        return "intersection"
+    return "union_unique"
+
+
+def normalize_driver_trajectory_mode(value: str) -> str:
+    """Tryb sterownika: auto | no_cycle | cycle (aliasy fixed_* nadal działają)."""
+    mode = str(value).strip().lower()
+    if mode in {"", "auto", "auto_nav", "autodrive", "random", "any"}:
+        return "auto"
+    if mode in {"no_cycle", "nocycle", "acyclic", "without_cycles", "fixed_no_cycle"}:
+        return "no_cycle"
+    if mode in {"cycle", "cyclic", "with_cycles", "fixed_cycle"}:
+        return "cycle"
+    return "auto"
 
 
 def merge_params(*param_dicts):
@@ -148,8 +209,8 @@ DEFAULT_WORLD_SPAWN_POSES = {
     "world_house": {"x": 5.0, "y": 0.0, "z": 0.10, "yaw": 0.0},
     "world_office.sdf": {"x": 0.03, "y": 2.27, "z": 0.10, "yaw": 0.0},
     "world_office": {"x": 0.03, "y": 2.27, "z": 0.10, "yaw": 0.0},
-    "world_hospital.sdf": {"x": 0.72, "y": 11.60, "z": 0.10, "yaw": 0.0},
-    "world_hospital": {"x": 0.72, "y": 11.60, "z": 0.10, "yaw": 0.0},
+    "world_hospital.sdf": {"x": 0.00, "y": -25.00, "z": 0.10, "yaw": 0.0},
+    "world_hospital": {"x": 0.00, "y": -25.00, "z": 0.10, "yaw": 0.0},
 }
 
 
@@ -338,9 +399,33 @@ def launch_setup(context, *args, **kwargs):
     test_world_sdf = str(get_config_value(cfg, "simulation", "test_world", default="world_house.sdf"))
 
     # === CZASY ===
-    eval_duration_sec = float(get_param("eval_duration_sec", ["timing", "eval_duration"], 60.0))
-    dataset_duration_sec = float(get_param("dataset_duration_sec", ["timing", "dataset_duration"], 45.0))
-    dataset_wait_timeout = float(get_config_value(cfg, "timing", "dataset_wait_timeout", default=120.0))
+    # pipeline.* = wspólne okna dla AI + Robak + Rywak; timing.* = fallback (np. fast_test bez pipeline)
+    def _dataset_duration_from_cfg() -> float:
+        pipe = get_config_value(cfg, "pipeline", "dataset_collection_sec", default=None)
+        if pipe is not None:
+            return float(pipe)
+        return float(get_config_value(cfg, "timing", "dataset_duration", default=45.0))
+
+    def _eval_duration_from_cfg() -> float:
+        pipe = get_config_value(cfg, "pipeline", "evaluation_sec", default=None)
+        if pipe is not None:
+            return float(pipe)
+        return float(get_config_value(cfg, "timing", "eval_duration", default=60.0))
+
+    _launch_eval = LaunchConfiguration("eval_duration_sec").perform(context)
+    if _launch_eval == "__USE_CONFIG__":
+        eval_duration_sec = _eval_duration_from_cfg()
+    else:
+        eval_duration_sec = float(_launch_eval)
+
+    _launch_ds = LaunchConfiguration("dataset_duration_sec").perform(context)
+    if _launch_ds == "__USE_CONFIG__":
+        dataset_duration_sec = _dataset_duration_from_cfg()
+    else:
+        dataset_duration_sec = float(_launch_ds)
+
+    # 0 = tylko skalowanie dynamiczne (max(0, faza)) w lifecycle; >0 = dodatkowy dolny limit
+    dataset_wait_timeout = float(get_config_value(cfg, "timing", "dataset_wait_timeout", default=0.0))
     bridge_delay = float(get_config_value(cfg, "timing", "bridge_delay", default=3.0))
     spawn_delay = float(get_config_value(cfg, "timing", "spawn_delay", default=5.0))
     slam_configure_delay = float(get_config_value(cfg, "timing", "slam_configure_delay", default=2.0))
@@ -352,13 +437,19 @@ def launch_setup(context, *args, **kwargs):
     learning_rate = float(get_config_value(cfg, "training", "learning_rate", default=0.001))
     batch_size = int(get_config_value(cfg, "training", "batch_size", default=128))
     validation_ratio = float(get_config_value(cfg, "training", "validation_ratio", default=0.2))
+    split_strategy = str(get_config_value(cfg, "training", "split_strategy", default="tail_holdout_no_shuffle"))
+    torch_deterministic = parse_bool(
+        get_config_value(cfg, "training", "torch_deterministic", default=True),
+        default=True,
+    )
     skip_if_model_exists = parse_bool(
         get_config_value(cfg, "training", "skip_if_model_exists", default=True),
         default=True,
     )
     
     # === DATASET ===
-    dataset_max_samples = int(get_config_value(cfg, "dataset", "max_samples", default=5000))
+    # 0 = wyłącza limit próbek — zatrzymanie po duration_sec (patrz dataset_recorder*.py)
+    dataset_max_samples = int(get_config_value(cfg, "dataset", "max_samples", default=0))
     dataset_scan_topic = str(get_config_value(cfg, "dataset", "scan_topic", default="/scan"))
     dataset_odom_topic = str(get_config_value(cfg, "dataset", "odom_topic", default="/odom"))
     dataset_gt_topic = str(get_config_value(cfg, "dataset", "gt_topic", default="/ground_truth_pose"))
@@ -366,6 +457,48 @@ def launch_setup(context, *args, **kwargs):
     dataset_sync_pair_gap_sec = float(get_config_value(cfg, "dataset", "sync_pair_gap_sec", default=0.2))
     dataset_interpolate_odom = parse_bool(get_config_value(cfg, "dataset", "interpolate_odom", default=True), default=True)
     dataset_interpolate_gt = parse_bool(get_config_value(cfg, "dataset", "interpolate_gt", default=True), default=True)
+    dataset_stop_on_planned_done = parse_bool(
+        get_config_value(cfg, "dataset", "stop_on_planned_path_done", default=False),
+        default=False,
+    )
+    dataset_planned_done_topic = str(
+        get_config_value(cfg, "dataset", "planned_path_done_topic", default="/planned_path_done")
+    )
+    dataset_planned_done_min_elapsed_sec = float(
+        get_config_value(cfg, "dataset", "planned_path_done_min_elapsed_sec", default=0.0)
+    )
+    dataset_motion_watchdog_enabled = parse_bool(
+        get_config_value(cfg, "dataset", "motion_stall_watchdog_enabled", default=False),
+        default=False,
+    )
+    dataset_motion_watchdog_pose_topic = str(
+        get_config_value(cfg, "dataset", "motion_stall_pose_topic", default=dataset_gt_topic)
+    )
+    dataset_motion_watchdog_min_delta_m = float(
+        get_config_value(cfg, "dataset", "motion_stall_min_delta_m", default=0.035)
+    )
+    dataset_motion_watchdog_timeout_sec = float(
+        get_config_value(cfg, "dataset", "motion_stall_timeout_sec", default=35.0)
+    )
+    dataset_motion_watchdog_startup_grace_sec = float(
+        get_config_value(cfg, "dataset", "motion_stall_startup_grace_sec", default=18.0)
+    )
+    dataset_motion_watchdog_no_pose_timeout_sec = float(
+        get_config_value(cfg, "dataset", "motion_stall_no_pose_timeout_sec", default=20.0)
+    )
+    dataset_motion_watchdog_check_hz = float(
+        get_config_value(cfg, "dataset", "motion_stall_check_hz", default=4.0)
+    )
+    dataset_motion_watchdog_enable_window_guard = parse_bool(
+        get_config_value(cfg, "dataset", "motion_stall_enable_window_guard", default=True),
+        default=True,
+    )
+    dataset_motion_watchdog_min_window_progress_m = float(
+        get_config_value(cfg, "dataset", "motion_stall_min_window_progress_m", default=0.12)
+    )
+    dataset_motion_watchdog_window_span_ratio = float(
+        get_config_value(cfg, "dataset", "motion_stall_window_span_ratio", default=1.8)
+    )
     gt_cfg = get_config_value(cfg, "ground_truth", default={})
     gt_use_tf_world = parse_bool(gt_cfg.get("use_tf_world", True), default=True)
     gt_tf_world_topic = str(gt_cfg.get("tf_world_topic", "/tf_world"))
@@ -385,10 +518,15 @@ def launch_setup(context, *args, **kwargs):
     gt_heuristic_max_score = float(gt_cfg.get("heuristic_max_score", 12.0))
     gt_heuristic_bootstrap_max_score = float(gt_cfg.get("heuristic_bootstrap_max_score", 64.0))
     gt_heuristic_max_step = float(gt_cfg.get("heuristic_max_step_m", 0.8))
-    gt_debug_every_n = int(gt_cfg.get("debug_every_n", 2000))
+    gt_ignore_tf_world_after_gz_pose = parse_bool(
+        gt_cfg.get("ignore_tf_world_after_gz_pose", True),
+        default=True,
+    )
+    gt_debug_every_n = int(gt_cfg.get("debug_every_n", 0))
     
     # === INFERENCE ===
-    model_wait_timeout = float(get_config_value(cfg, "inference", "model_wait_timeout", default=300.0))
+    # 0 = tylko skalowanie z eval_duration_sec w lifecycle (max(0, 2*eval+60))
+    model_wait_timeout = float(get_config_value(cfg, "inference", "model_wait_timeout", default=0.0))
     infer_scan_topic = get_config_value(cfg, "inference", "scan_topic", default="/scan_slam_ai")
     infer_odom_topic = get_config_value(cfg, "inference", "odom_topic", default="/odom")
 
@@ -397,6 +535,8 @@ def launch_setup(context, *args, **kwargs):
     infer_odom_ai_topic = get_config_value(cfg, "inference", "output_odom_topic", default="/odom_ai")
     infer_tf_parent = get_config_value(cfg, "inference", "tf_parent_frame", default="odom_ai")
     infer_tf_child  = get_config_value(cfg, "inference", "tf_child_frame", default="base_link_ai")
+    infer_max_correction_trans = float(get_config_value(cfg, "inference", "max_correction_trans", default=0.0))
+    infer_max_correction_yaw = float(get_config_value(cfg, "inference", "max_correction_yaw", default=0.0))
 
     # === ODOMETRY ===
     rw_sigma_xy = float(get_config_value(cfg, "odometry", "rw_sigma_xy", default=0.005))
@@ -428,6 +568,9 @@ def launch_setup(context, *args, **kwargs):
     driver_linear_vel_max = float(get_config_value(cfg, "driver", "linear_velocity_max", default=driver_linear_vel))
     driver_angular_vel_min = float(get_config_value(cfg, "driver", "angular_velocity_min", default=driver_angular_vel))
     driver_angular_vel_max = float(get_config_value(cfg, "driver", "angular_velocity_max", default=driver_angular_vel))
+    driver_reverse_probability = float(get_config_value(cfg, "driver", "reverse_probability", default=0.0))
+    driver_reverse_speed_min = float(get_config_value(cfg, "driver", "reverse_speed_min", default=0.0))
+    driver_reverse_speed_max = float(get_config_value(cfg, "driver", "reverse_speed_max", default=0.0))
     driver_profile_change_interval = float(
         get_config_value(cfg, "driver", "profile_change_interval_sec", default=2.5)
     )
@@ -521,6 +664,35 @@ def launch_setup(context, *args, **kwargs):
     )
     driver_debug = parse_bool(get_config_value(cfg, "driver", "debug", default=True), default=True)
     driver_debug_every_n = int(get_config_value(cfg, "driver", "debug_every_n", default=10))
+    driver_trajectory_mode_cfg = str(get_config_value(cfg, "driver", "trajectory_mode", default="auto"))
+    driver_fixed_linear_velocity = float(
+        get_config_value(cfg, "driver", "fixed_linear_velocity", default=0.0)
+    )
+    driver_fixed_angular_velocity = float(
+        get_config_value(cfg, "driver", "fixed_angular_velocity", default=0.0)
+    )
+    driver_fixed_turn_direction = int(
+        get_config_value(cfg, "driver", "fixed_turn_direction", default=1)
+    )
+    driver_fixed_turn_angle_deg = float(
+        get_config_value(cfg, "driver", "fixed_turn_angle_deg", default=90.0)
+    )
+    driver_no_cycle_straight_base_sec = driver_cfg_float(
+        cfg, "no_cycle_straight_base_sec", "fixed_no_cycle_straight_base_sec", 1.2
+    )
+    driver_no_cycle_straight_step_sec = driver_cfg_float(
+        cfg, "no_cycle_straight_step_sec", "fixed_no_cycle_straight_step_sec", 0.55
+    )
+    driver_no_cycle_levels = driver_cfg_int(
+        cfg, "no_cycle_levels", "fixed_no_cycle_levels", 14
+    )
+    driver_cycle_straight_sec = driver_cfg_float(
+        cfg, "cycle_straight_sec", "fixed_cycle_straight_sec", 3.0
+    )
+    driver_fixed_obstacle_avoidance = parse_bool(
+        get_config_value(cfg, "driver", "fixed_obstacle_avoidance", default=True),
+        default=True,
+    )
 
     # === ROBAK (ALSAI) ===
     robak_cfg = get_config_value(cfg, "robak", default={})
@@ -535,30 +707,73 @@ def launch_setup(context, *args, **kwargs):
     robak_min_pair_dyaw = float(robak_cfg.get("min_pair_dyaw", 0.0))
     robak_min_pair_dt_sec = float(robak_cfg.get("min_pair_dt_sec", 0.0))
     robak_pair_filter_mode = str(robak_cfg.get("pair_filter_mode", "any"))
-    robak_max_pair_dist = float(robak_cfg.get("max_pair_dist", robak_cfg.get("max_delta_dist", 0.5)))
+    robak_max_pair_dist = float(robak_cfg.get("max_pair_dist", robak_cfg.get("max_delta_dist", 1.0)))
     robak_max_pair_dyaw = float(robak_cfg.get("max_pair_dyaw", robak_cfg.get("max_delta_yaw", math.pi)))
+    robak_trajectory_mode = normalize_dataset_trajectory_mode(
+        robak_cfg.get("trajectory_mode", "any")
+    )
+    robak_trajectory_cell_size_m = float(robak_cfg.get("trajectory_cell_size_m", 0.20))
+    robak_cycle_min_repeat_hits = int(robak_cfg.get("cycle_min_repeat_hits", 1))
+    robak_balance_histograms = parse_bool(robak_cfg.get("balance_histograms", True), default=True)
+    robak_balance_bins = int(robak_cfg.get("balance_bins", 24))
+    robak_balance_translation_use_abs = parse_bool(
+        robak_cfg.get("balance_translation_use_abs", False), default=False
+    )
+    robak_balance_rotation_use_abs = parse_bool(
+        robak_cfg.get("balance_rotation_use_abs", True), default=True
+    )
+    robak_balance_translation_hist_min_m = float(robak_cfg.get("balance_translation_hist_min_m", 0.0))
+    robak_balance_translation_hist_max_m = float(robak_cfg.get("balance_translation_hist_max_m", 1.0))
+    robak_balance_rotation_hist_min_deg = float(robak_cfg.get("balance_rotation_hist_min_deg", 0.0))
+    robak_balance_rotation_hist_max_deg = float(robak_cfg.get("balance_rotation_hist_max_deg", 180.0))
+    robak_balance_target_quantile = float(robak_cfg.get("balance_target_quantile", 0.35))
+    robak_balance_target_min_per_bin = int(robak_cfg.get("balance_target_min_per_bin", 8))
+    robak_balance_upsample_sparse_bins = parse_bool(
+        robak_cfg.get("balance_upsample_sparse_bins", True), default=True
+    )
+    robak_balance_merge_strategy = normalize_balance_merge_strategy(
+        str(robak_cfg.get("balance_merge_strategy", "union_unique"))
+    )
+    robak_save_balanced_component_datasets = parse_bool(
+        robak_cfg.get("save_balanced_component_datasets", True), default=True
+    )
+    robak_balanced_translation_dataset_name = str(
+        robak_cfg.get("balanced_translation_dataset_name", "dataset_robak_translation_balanced.npz")
+    )
+    robak_balanced_rotation_dataset_name = str(
+        robak_cfg.get("balanced_rotation_dataset_name", "dataset_robak_rotation_balanced.npz")
+    )
     robak_label_frame = str(robak_cfg.get("label_frame", "local"))
     robak_sync_tolerance = float(robak_cfg.get("sync_tolerance_sec", 0.08))
     robak_sync_pair_gap = float(robak_cfg.get("sync_pair_gap_sec", dataset_sync_pair_gap_sec))
     robak_interpolate_gt = parse_bool(robak_cfg.get("interpolate_gt", True), default=True)
-    robak_aug_noise_std_scale = float(robak_cfg.get("augment_noise_std_scale", 0.0))
-    robak_aug_cut_fraction = float(robak_cfg.get("augment_cut_fraction", 0.0))
+    robak_aug_noise_std_scale = float(robak_cfg.get("augment_noise_std_scale", 0.1))
+    robak_aug_cut_fraction = float(robak_cfg.get("augment_cut_fraction", 0.1))
     robak_aug_cut_max_points = int(robak_cfg.get("augment_cut_max_points", 20))
-    robak_infer_max_step_trans = float(robak_cfg.get("infer_max_step_trans", 0.12))
-    robak_infer_max_step_yaw = float(robak_cfg.get("infer_max_step_yaw", 0.35))
-    robak_infer_delta_ema_alpha = float(robak_cfg.get("infer_delta_ema_alpha", 0.55))
-    robak_infer_odom_heading_alpha = float(robak_cfg.get("infer_odom_heading_alpha", 0.20))
+    robak_infer_max_step_trans = float(robak_cfg.get("infer_max_step_trans", 0.10))
+    robak_infer_max_step_yaw = float(robak_cfg.get("infer_max_step_yaw", 0.30))
+    robak_infer_delta_ema_alpha = float(robak_cfg.get("infer_delta_ema_alpha", 0.65))
+    robak_infer_odom_heading_alpha = float(robak_cfg.get("infer_odom_heading_alpha", 0.30))
     robak_infer_odom_sync_tolerance = float(robak_cfg.get("infer_odom_sync_tolerance_sec", 0.08))
-    robak_infer_odom_delta_xy_alpha = float(robak_cfg.get("infer_odom_delta_xy_alpha", 0.35))
-    robak_infer_odom_delta_yaw_alpha = float(robak_cfg.get("infer_odom_delta_yaw_alpha", 0.45))
-    robak_infer_odom_pose_xy_alpha = float(robak_cfg.get("infer_odom_pose_xy_alpha", 0.0))
-    robak_infer_odom_pose_xy_gain = float(robak_cfg.get("infer_odom_pose_xy_gain", 0.0))
+    robak_infer_odom_delta_xy_alpha = float(robak_cfg.get("infer_odom_delta_xy_alpha", 0.55))
+    robak_infer_odom_delta_yaw_alpha = float(robak_cfg.get("infer_odom_delta_yaw_alpha", 0.65))
+    robak_infer_odom_pose_xy_alpha = float(robak_cfg.get("infer_odom_pose_xy_alpha", 0.12))
+    robak_infer_odom_pose_xy_gain = float(robak_cfg.get("infer_odom_pose_xy_gain", 0.30))
+    robak_infer_odom_pose_xy_alpha_max = float(robak_cfg.get("infer_odom_pose_xy_alpha_max", 1.0))
     robak_lr = float(robak_cfg.get("lr", learning_rate))
     robak_epochs = int(robak_cfg.get("max_epochs", max_epochs))
     robak_patience = int(robak_cfg.get("patience", patience))
     robak_val_ratio = float(robak_cfg.get("val_ratio", validation_ratio))
+    robak_split_strategy = str(robak_cfg.get("split_strategy", split_strategy))
     robak_batch = int(robak_cfg.get("batch_size", batch_size))
+    robak_torch_deterministic = parse_bool(
+        robak_cfg.get("torch_deterministic", torch_deterministic),
+        default=torch_deterministic,
+    )
     robak_pose_topic = str(robak_cfg.get("pose_topic", "/pose_robak"))
+    robak_pose_topic_no_slam = str(robak_cfg.get("pose_topic_no_slam", "/pose_robak_no_slam"))
+    robak_tf_parent_no_slam = str(robak_cfg.get("tf_parent_no_slam", "odom_robak_no_slam"))
+    robak_tf_child_no_slam = str(robak_cfg.get("tf_child_no_slam", "base_link_robak_no_slam"))
 
     # === RYWAK ===
     rywak_cfg = get_config_value(cfg, "rywak", default={})
@@ -577,6 +792,47 @@ def launch_setup(context, *args, **kwargs):
     rywak_min_sample_dt_sec = float(rywak_cfg.get("min_sample_dt_sec", 0.0))
     rywak_min_delta_scan_rms = float(rywak_cfg.get("min_delta_scan_rms", 0.0))
     rywak_sample_filter_mode = str(rywak_cfg.get("sample_filter_mode", "any"))
+    rywak_balance_histograms = parse_bool(
+        rywak_cfg.get("balance_histograms", True),
+        default=True,
+    )
+    rywak_balance_bins = int(rywak_cfg.get("balance_bins", 24))
+    rywak_balance_linear_use_abs = parse_bool(
+        rywak_cfg.get("balance_linear_use_abs", True),
+        default=True,
+    )
+    rywak_balance_angular_use_abs = parse_bool(
+        rywak_cfg.get("balance_angular_use_abs", True),
+        default=True,
+    )
+    rywak_balance_linear_hist_min_mps = float(rywak_cfg.get("balance_linear_hist_min_mps", 0.0))
+    rywak_balance_linear_hist_max_mps = float(rywak_cfg.get("balance_linear_hist_max_mps", 2.0))
+    rywak_balance_angular_hist_min_radps = float(rywak_cfg.get("balance_angular_hist_min_radps", 0.0))
+    rywak_balance_angular_hist_max_radps = float(rywak_cfg.get("balance_angular_hist_max_radps", 3.0))
+    rywak_balance_target_quantile = float(rywak_cfg.get("balance_target_quantile", 0.35))
+    rywak_balance_target_min_per_bin = int(rywak_cfg.get("balance_target_min_per_bin", 8))
+    rywak_balance_upsample_sparse_bins = parse_bool(
+        rywak_cfg.get("balance_upsample_sparse_bins", True),
+        default=True,
+    )
+    rywak_balance_merge_strategy = normalize_balance_merge_strategy(
+        str(rywak_cfg.get("balance_merge_strategy", "union_unique"))
+    )
+    rywak_save_balanced_component_datasets = parse_bool(
+        rywak_cfg.get("save_balanced_component_datasets", True),
+        default=True,
+    )
+    rywak_trajectory_mode = normalize_dataset_trajectory_mode(
+        rywak_cfg.get("trajectory_mode", "any")
+    )
+    rywak_trajectory_cell_size_m = float(rywak_cfg.get("trajectory_cell_size_m", 0.20))
+    rywak_cycle_min_repeat_hits = int(rywak_cfg.get("cycle_min_repeat_hits", 1))
+    rywak_balanced_linear_dataset_name = str(
+        rywak_cfg.get("balanced_linear_dataset_name", "dataset_rywak_linear_balanced.npz")
+    )
+    rywak_balanced_angular_dataset_name = str(
+        rywak_cfg.get("balanced_angular_dataset_name", "dataset_rywak_angular_balanced.npz")
+    )
     rywak_hidden_dims = list(rywak_cfg.get("hidden_dims", [192, 96, 48]))
     rywak_dropout = float(rywak_cfg.get("dropout", 0.1))
     rywak_weight_decay = float(rywak_cfg.get("weight_decay", 1e-4))
@@ -603,8 +859,16 @@ def launch_setup(context, *args, **kwargs):
     rywak_epochs = int(rywak_cfg.get("max_epochs", max_epochs))
     rywak_patience = int(rywak_cfg.get("patience", patience))
     rywak_val_ratio = float(rywak_cfg.get("val_ratio", validation_ratio))
+    rywak_split_strategy = str(rywak_cfg.get("split_strategy", split_strategy))
     rywak_batch = int(rywak_cfg.get("batch_size", batch_size))
+    rywak_torch_deterministic = parse_bool(
+        rywak_cfg.get("torch_deterministic", torch_deterministic),
+        default=torch_deterministic,
+    )
     rywak_pose_topic = str(rywak_cfg.get("pose_topic", "/pose_rywak"))
+    rywak_pose_topic_no_slam = str(rywak_cfg.get("pose_topic_no_slam", "/pose_rywak_no_slam"))
+    rywak_tf_parent_no_slam = str(rywak_cfg.get("tf_parent_no_slam", "odom_rywak_no_slam"))
+    rywak_tf_child_no_slam = str(rywak_cfg.get("tf_child_no_slam", "base_link_rywak_no_slam"))
     # === SLAM TOOLBOX ===
     slam_cfg_root = get_config_value(cfg, "slam", default={})
     slam_common_cfg = get_config_value(cfg, "slam", "common", default={})
@@ -645,6 +909,15 @@ def launch_setup(context, *args, **kwargs):
         experiment_id = experiment_id_launch
     else:
         experiment_id = generate_experiment_id()
+
+    # Opcjonalnie: ładuj modele *.pt z innego podfolderu out/ (np. test-only z nowym experiment_id)
+    _msrc_launch = LaunchConfiguration("model_source_experiment_id").perform(context)
+    if _msrc_launch == "__USE_CONFIG__":
+        model_source_experiment_id = str(
+            get_config_value(cfg, "experiment", "model_source_experiment_id", default="")
+        ).strip()
+    else:
+        model_source_experiment_id = str(_msrc_launch).strip()
     
     # === ŚCIEŻKI ===
     gazebo_share = get_package_share_directory("ai_slam_gazebo")
@@ -776,6 +1049,69 @@ def launch_setup(context, *args, **kwargs):
                 reference_map_yaml = candidate_eval
     else:
         reference_map_yaml = prefer_source_path(eval_source_share, eval_share, "maps", "reference_map.yaml")
+
+    pp_cfg = get_config_value(cfg, "driver", "planned_path", default={}) or {}
+    pp_cfg = dict(pp_cfg)
+    _wo = pp_cfg.get("world_overrides")
+    _bw = os.path.basename(selected_world_sdf) if selected_world_sdf else ""
+    if isinstance(_wo, dict) and _bw and _bw in _wo:
+        _extra = _wo[_bw]
+        if isinstance(_extra, dict):
+            pp_cfg.update(_extra)
+    driver_use_planned_path = parse_bool(
+        get_config_value(cfg, "driver", "use_planned_path", default=False),
+        default=False,
+    )
+    planned_spec_rel = str(pp_cfg.get("spec_yaml", "planned_paths/office_example.yaml")).strip()
+    planned_spec_path = (
+        planned_spec_rel
+        if os.path.isabs(planned_spec_rel)
+        else prefer_source_path(bringup_source_share, bringup_share, "config", planned_spec_rel)
+    )
+    ref_plan_cfg = str(pp_cfg.get("reference_map_yaml", "")).strip()
+    if ref_plan_cfg:
+        planned_ref_map = (
+            ref_plan_cfg
+            if os.path.isabs(ref_plan_cfg)
+            else prefer_source_path(eval_source_share, eval_share, "maps", ref_plan_cfg)
+        )
+    else:
+        planned_ref_map = reference_map_yaml
+    planned_pose_topic = str(pp_cfg.get("pose_topic", "/ground_truth_pose"))
+    planned_cmd_topic = str(pp_cfg.get("cmd_topic", "/cmd_vel"))
+    planned_lookahead_m = float(pp_cfg.get("lookahead_m", 0.35))
+    planned_linear_max = float(pp_cfg.get("linear_vel_max", driver_linear_vel))
+    planned_angular_max = float(pp_cfg.get("angular_vel_max", driver_angular_vel))
+    planned_goal_tol = float(pp_cfg.get("goal_tolerance_m", 0.22))
+    planned_loop = parse_bool(pp_cfg.get("loop_path", True), default=True)
+    planned_rate_hz = float(pp_cfg.get("rate_hz", 20.0))
+    planned_heading_gain = float(pp_cfg.get("heading_gain", 2.2))
+    planned_heading_stop_deg = float(pp_cfg.get("heading_stop_deg", 55.0))
+    planned_heading_resume_deg = float(pp_cfg.get("heading_resume_deg", 35.0))
+    planned_turn_direction_guard_deg = float(pp_cfg.get("turn_direction_guard_deg", 18.0))
+    planned_turn_direction_preference = float(pp_cfg.get("turn_direction_preference", 1.0))
+    planned_alignment_cos_power = float(pp_cfg.get("alignment_cos_power", 2.0))
+    planned_nearest_backtrack_points = int(pp_cfg.get("nearest_backtrack_points", 8))
+    planned_nearest_horizon_m = float(pp_cfg.get("nearest_horizon_m", 6.0))
+    planned_dataset_excitation_enabled = parse_bool(
+        pp_cfg.get("dataset_excitation_enabled", False), default=False
+    )
+    planned_excitation_period_sec = float(pp_cfg.get("excitation_period_sec", 12.0))
+    planned_excitation_v_min_scale = float(pp_cfg.get("excitation_v_min_scale", 0.25))
+    planned_excitation_v_max_scale = float(pp_cfg.get("excitation_v_max_scale", 1.0))
+    planned_excitation_heading_bias_deg = float(pp_cfg.get("excitation_heading_bias_deg", 12.0))
+    planned_dense_default = float(pp_cfg.get("dense_step_m", 0.2))
+    planned_map_flip_y = parse_bool(pp_cfg.get("map_flip_y", True), default=True)
+    planned_inflate_m = float(pp_cfg.get("inflate_robot_m", 0.35))
+    planned_use_astar_param = parse_bool(pp_cfg.get("use_astar", True), default=True)
+    planned_pub_ref_marker = parse_bool(pp_cfg.get("publish_reference_path_marker", True), default=True)
+    planned_pub_dense_marker = parse_bool(pp_cfg.get("publish_dense_path_marker", True), default=True)
+    planned_ref_marker_topic = str(pp_cfg.get("reference_path_marker_topic", "/planned_path_reference"))
+    planned_dense_marker_topic = str(pp_cfg.get("reference_path_dense_marker_topic", "/planned_path_dense"))
+    planned_marker_frame = str(pp_cfg.get("reference_path_marker_frame", "world"))
+    planned_publish_done_topic = parse_bool(pp_cfg.get("publish_completion_topic", True), default=True)
+    planned_done_topic = str(pp_cfg.get("completion_topic", "/planned_path_done"))
+
     eval_sync_tolerance = float(get_config_value(cfg, "evaluation", "sync_tolerance_sec", default=0.15))
     eval_maps_rotate_180 = parse_bool(get_config_value(cfg, "evaluation", "maps_rotate_180", default=True), default=True)
     eval_maps_max_cols = int(get_config_value(cfg, "evaluation", "maps_max_cols", default=3))
@@ -799,6 +1135,13 @@ def launch_setup(context, *args, **kwargs):
     eval_points_logodds_max = float(
         get_config_value(cfg, "evaluation", "points_logodds_max", default=4.0)
     )
+    eval_gt_jump_filter_enabled = parse_bool(
+        get_config_value(cfg, "evaluation", "gt_jump_filter_enabled", default=True),
+        default=True,
+    )
+    eval_gt_jump_filter_max_step_m = float(
+        get_config_value(cfg, "evaluation", "gt_jump_filter_max_step_m", default=2.0)
+    )
     
     gz_sim_launch_py = os.path.join(ros_gz_sim_share, "launch", "gz_sim.launch.py")
 
@@ -818,8 +1161,27 @@ def launch_setup(context, *args, **kwargs):
     print(f"  GUI: {gui}")
     print(f"  Eval duration: {eval_duration_sec}s")
     print(f"  Dataset duration: {dataset_duration_sec}s")
+    print(
+        f"  Driver: {'planned_path (' + planned_spec_path + ')' if driver_use_planned_path else 'auto_driver'}"
+    )
+    if driver_use_planned_path:
+        print(f"  Planned path ref. map: {planned_ref_map}")
+        if isinstance(_wo, dict) and _bw and _bw in _wo:
+            print(f"  (world_overrides zastosowane dla świata: {_bw})")
+    if dataset_motion_watchdog_enabled:
+        print(
+            "  Dataset motion watchdog: "
+            f"topic={dataset_motion_watchdog_pose_topic}, "
+            f"min_delta={dataset_motion_watchdog_min_delta_m:.3f}m, "
+            f"stall_timeout={dataset_motion_watchdog_timeout_sec:.1f}s, "
+            f"startup_grace={dataset_motion_watchdog_startup_grace_sec:.1f}s, "
+            f"window_guard={dataset_motion_watchdog_enable_window_guard}, "
+            f"window_min_progress={dataset_motion_watchdog_min_window_progress_m:.3f}m"
+        )
     print(f"  Training: max_epochs={max_epochs}, patience={patience}, lr={learning_rate}")
     print(f"  Output: {out_dir}/{experiment_id}")
+    if model_source_experiment_id:
+        print(f"  Model source (load *.pt from): {out_dir}/{model_source_experiment_id}")
     print("="*70 + "\n")
 
     # === URDF ===
@@ -831,10 +1193,20 @@ def launch_setup(context, *args, **kwargs):
     is_gui = (gui == "true")
     tracks_cfg = get_config_value(cfg, "tracks", default={})
 
-    tor3_local_enabled = bool(tracks_cfg.get("tor3_local", True))
-    tor4_bruteforce_enabled = bool(tracks_cfg.get("tor4_bruteforce", False))
-    tor5_robak_enabled = bool(tracks_cfg.get("tor5_robak", False))
-    tor6_rywak_enabled = bool(tracks_cfg.get("tor6_rywak", False))
+    tor1_baseline_enabled = parse_bool(tracks_cfg.get("tor1_baseline", True), default=True)
+    tor2_ai_slam_enabled = parse_bool(tracks_cfg.get("tor2_ai_slam", True), default=True)
+    tor3_local_enabled = parse_bool(tracks_cfg.get("tor3_local", True), default=True)
+    tor4_bruteforce_enabled = parse_bool(tracks_cfg.get("tor4_bruteforce", False), default=False)
+    tor5_robak_enabled = parse_bool(tracks_cfg.get("tor5_robak", False), default=False)
+    tor6_rywak_enabled = parse_bool(tracks_cfg.get("tor6_rywak", False), default=False)
+    tor7_robak_no_slam_enabled = parse_bool(
+        tracks_cfg.get("tor7_robak_no_slam", False),
+        default=False,
+    )
+    tor8_rywak_no_slam_enabled = parse_bool(
+        tracks_cfg.get("tor8_rywak_no_slam", False),
+        default=False,
+    )
 
     # fazy (zakładam, że zmienną `phase` już wcześniej wyliczysz z get_param)
     do_dataset_phase = is_ai_mode and (phase in ("full", "train", "dataset"))
@@ -842,21 +1214,55 @@ def launch_setup(context, *args, **kwargs):
     do_test_phase  = is_ai_mode and (phase in ("full", "test"))
     do_eval_phase  = (phase in ("full", "test"))
     do_train_only = is_ai_mode and (phase == "train")
+    # Dataset AI-SLAM można włączyć zarówno torem baseline (tor1), jak i ai_slam (tor2).
+    # Dzięki temu preset datasetowy może mieć tor2 wyłączony, bez utraty dataset_recorder.
+    ai_dataset_enabled = (tor1_baseline_enabled or tor2_ai_slam_enabled) and do_dataset_phase
+    ai_train_enabled = tor2_ai_slam_enabled and do_train_phase
+    ai_test_enabled = tor2_ai_slam_enabled and do_test_phase
     # Robak / Rywak: osobne fazy train/test
     robak_dataset_enabled = tor5_robak_enabled and do_dataset_phase
     robak_train_enabled = tor5_robak_enabled and do_train_phase
     robak_test_enabled  = tor5_robak_enabled and do_test_phase
+    robak_no_slam_test_enabled = tor7_robak_no_slam_enabled and do_test_phase
     rywak_dataset_enabled = tor6_rywak_enabled and do_dataset_phase
     rywak_train_enabled = tor6_rywak_enabled and do_train_phase
     rywak_test_enabled  = tor6_rywak_enabled and do_test_phase
+    rywak_no_slam_test_enabled = tor8_rywak_no_slam_enabled and do_test_phase
+    # Izolacja: osobny scan_fix → /scan_slam_robak|rywak (ten sam łańcuch co SLAM danej metody).
+    robak_scan_chain_enabled = robak_dataset_enabled or robak_test_enabled or robak_no_slam_test_enabled
+    rywak_scan_chain_enabled = rywak_dataset_enabled or rywak_test_enabled or rywak_no_slam_test_enabled
+    robak_dataset_scan_topic = "/scan_slam_robak" if robak_scan_chain_enabled else dataset_scan_topic
+    rywak_dataset_scan_topic = "/scan_slam_rywak" if rywak_scan_chain_enabled else dataset_scan_topic
+
+    driver_trajectory_mode = normalize_driver_trajectory_mode(driver_trajectory_mode_cfg)
+    if driver_trajectory_mode == "auto":
+        requested_dataset_modes = []
+        if robak_dataset_enabled and robak_trajectory_mode in ("no_cycle", "cycle"):
+            requested_dataset_modes.append(robak_trajectory_mode)
+        if rywak_dataset_enabled and rywak_trajectory_mode in ("no_cycle", "cycle"):
+            requested_dataset_modes.append(rywak_trajectory_mode)
+        if requested_dataset_modes and len(set(requested_dataset_modes)) == 1:
+            mode = requested_dataset_modes[0]
+            driver_trajectory_mode = "no_cycle" if mode == "no_cycle" else "cycle"
+        else:
+            driver_trajectory_mode = "auto"
     max_dataset_phase_duration = max(
-        dataset_duration_sec if do_dataset_phase else 0.0,
+        dataset_duration_sec if ai_dataset_enabled else 0.0,
         robak_dataset_duration if robak_dataset_enabled else 0.0,
         rywak_dataset_duration if rywak_dataset_enabled else 0.0,
     )
-    effective_dataset_wait_timeout = max(
-        dataset_wait_timeout,
-        max_dataset_phase_duration + 180.0 if max_dataset_phase_duration > 0.0 else dataset_wait_timeout,
+    if max_dataset_phase_duration > 0.0:
+        # Trainers may start before recorders finish and real-time factor can drop below 1.0.
+        # Keep a conservative wall-time buffer to avoid false "Dataset not found" failures.
+        effective_dataset_wait_timeout = max(
+            float(dataset_wait_timeout),
+            float(max_dataset_phase_duration) * 3.0 + 300.0,
+        )
+    else:
+        effective_dataset_wait_timeout = float(dataset_wait_timeout)
+    effective_model_wait_timeout = max(
+        float(model_wait_timeout),
+        float(eval_duration_sec) * 2.0 + 60.0,
     )
     # tracki tylko w test/full (w train oszczędzamy CPU)
     tor3_local_enabled = tor3_local_enabled and do_eval_phase
@@ -932,7 +1338,7 @@ def launch_setup(context, *args, **kwargs):
             "frame_id": "base_link_ai",
         }],
         output="screen",
-        condition=IfCondition(str(do_test_phase).lower()),
+        condition=IfCondition(str(ai_test_enabled).lower()),
     )
 
     scan_fix_robak = Node(
@@ -946,7 +1352,7 @@ def launch_setup(context, *args, **kwargs):
             "frame_id": "base_link_robak",
         }],
         output="screen",
-        condition=IfCondition(str(robak_test_enabled).lower()),
+        condition=IfCondition(str(robak_scan_chain_enabled).lower()),
     )
 
     scan_fix_rywak = Node(
@@ -960,7 +1366,7 @@ def launch_setup(context, *args, **kwargs):
             "frame_id": "base_link_rywak",
         }],
         output="screen",
-        condition=IfCondition(str(rywak_test_enabled).lower()),
+        condition=IfCondition(str(rywak_scan_chain_enabled).lower()),
     )
     sm3_cfg = get_config_value(cfg, "scan_matcher", "tor3", default={})
     sm4_cfg = get_config_value(cfg, "scan_matcher", "tor4", default={})
@@ -1032,6 +1438,7 @@ def launch_setup(context, *args, **kwargs):
             "heuristic_max_score": gt_heuristic_max_score,
             "heuristic_bootstrap_max_score": gt_heuristic_bootstrap_max_score,
             "heuristic_max_step_m": gt_heuristic_max_step,
+            "ignore_tf_world_after_gz_pose": gt_ignore_tf_world_after_gz_pose,
             "debug_every_n": gt_debug_every_n,
         }],
         output="screen",
@@ -1053,7 +1460,7 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
-    driver = Node(
+    driver_auto = Node(
         package="ai_slam_bringup",
         executable="auto_driver",
         parameters=[{
@@ -1077,6 +1484,9 @@ def launch_setup(context, *args, **kwargs):
             "linear_velocity_max": driver_linear_vel_max,
             "angular_velocity_min": driver_angular_vel_min,
             "angular_velocity_max": driver_angular_vel_max,
+            "reverse_probability": driver_reverse_probability,
+            "reverse_speed_min": driver_reverse_speed_min,
+            "reverse_speed_max": driver_reverse_speed_max,
             "profile_change_interval_sec": driver_profile_change_interval,
             "profile_arc_probability": driver_profile_arc_probability,
             "profile_arc_fraction_min": driver_profile_arc_fraction_min,
@@ -1108,11 +1518,66 @@ def launch_setup(context, *args, **kwargs):
             "repeat_escape_trigger": driver_repeat_escape_trigger,
             "repeat_escape_turn_sec": driver_repeat_escape_turn_sec,
             "repeat_escape_heading_deg": driver_repeat_escape_heading_deg,
+            "trajectory_mode": driver_trajectory_mode,
+            "fixed_linear_velocity": driver_fixed_linear_velocity,
+            "fixed_angular_velocity": driver_fixed_angular_velocity,
+            "fixed_turn_direction": driver_fixed_turn_direction,
+            "fixed_turn_angle_deg": driver_fixed_turn_angle_deg,
+            "no_cycle_straight_base_sec": driver_no_cycle_straight_base_sec,
+            "no_cycle_straight_step_sec": driver_no_cycle_straight_step_sec,
+            "no_cycle_levels": driver_no_cycle_levels,
+            "cycle_straight_sec": driver_cycle_straight_sec,
+            "fixed_obstacle_avoidance": driver_fixed_obstacle_avoidance,
             "debug": driver_debug,
             "debug_every_n": driver_debug_every_n,
             "odom_topic": odom_in_topic,  # zwykle /odom_raw
         }],
         output="screen",
+        condition=UnlessCondition(str(driver_use_planned_path).lower()),
+    )
+
+    driver_planned = Node(
+        package="ai_slam_bringup",
+        executable="planned_path_driver",
+        parameters=[{
+            "use_sim_time": True,
+            "path_spec_yaml": planned_spec_path,
+            "reference_map_yaml": planned_ref_map,
+            "use_astar": planned_use_astar_param,
+            "map_flip_y": planned_map_flip_y,
+            "inflate_robot_m": planned_inflate_m,
+            "dense_step_m": planned_dense_default,
+            "pose_topic": planned_pose_topic,
+            "cmd_topic": planned_cmd_topic,
+            "lookahead_m": planned_lookahead_m,
+            "linear_vel_max": planned_linear_max,
+            "angular_vel_max": planned_angular_max,
+            "goal_tolerance_m": planned_goal_tol,
+            "loop_path": planned_loop,
+            "rate_hz": planned_rate_hz,
+            "heading_gain": planned_heading_gain,
+            "heading_stop_deg": planned_heading_stop_deg,
+            "heading_resume_deg": planned_heading_resume_deg,
+            "turn_direction_guard_deg": planned_turn_direction_guard_deg,
+            "turn_direction_preference": planned_turn_direction_preference,
+            "alignment_cos_power": planned_alignment_cos_power,
+            "nearest_backtrack_points": planned_nearest_backtrack_points,
+            "nearest_horizon_m": planned_nearest_horizon_m,
+            "dataset_excitation_enabled": planned_dataset_excitation_enabled,
+            "excitation_period_sec": planned_excitation_period_sec,
+            "excitation_v_min_scale": planned_excitation_v_min_scale,
+            "excitation_v_max_scale": planned_excitation_v_max_scale,
+            "excitation_heading_bias_deg": planned_excitation_heading_bias_deg,
+            "publish_completion_topic": planned_publish_done_topic,
+            "completion_topic": planned_done_topic,
+            "publish_reference_path_marker": planned_pub_ref_marker,
+            "publish_dense_path_marker": planned_pub_dense_marker,
+            "reference_path_marker_topic": planned_ref_marker_topic,
+            "reference_path_dense_marker_topic": planned_dense_marker_topic,
+            "reference_path_marker_frame": planned_marker_frame,
+        }],
+        output="screen",
+        condition=IfCondition(str(driver_use_planned_path).lower()),
     )
 
     # SLAM Toolbox nodes - output="log" to suppress TF_OLD_DATA spam
@@ -1124,6 +1589,9 @@ def launch_setup(context, *args, **kwargs):
         parameters=[slam_params_baseline, {"use_sim_time": True}, slam_baseline_params],
         output="log",  # Redirect to log file instead of screen
         arguments=["--ros-args", "--log-level", "warn"],
+        # W fazie dataset SLAM baseline nie jest potrzebny (datasety idą z /scan_slam,/scan_slam_robak,/scan_slam_rywak).
+        # Wyłączenie go znacząco poprawia real-time factor.
+        condition=IfCondition(str(do_eval_phase).lower()),
     )
 
     slam_ai = LifecycleNode(
@@ -1135,7 +1603,7 @@ def launch_setup(context, *args, **kwargs):
         arguments=["--ros-args", "--log-level", "warn"],
         remappings=[("/map", "/map_ai")],
         output="log",  # Redirect to log file instead of screen
-        condition=IfCondition(str(do_test_phase).lower()),
+        condition=IfCondition(str(ai_test_enabled).lower()),
     )
     slam_robak = LifecycleNode(
         package="slam_toolbox",
@@ -1169,7 +1637,8 @@ def launch_setup(context, *args, **kwargs):
                 lifecycle_node_matcher=matches_action(slam_baseline),
                 transition_id=Transition.TRANSITION_CONFIGURE
             ))
-        ]
+        ],
+        condition=IfCondition(str(do_eval_phase).lower()),
     )
     
     activate_baseline = RegisterEventHandler(
@@ -1184,7 +1653,8 @@ def launch_setup(context, *args, **kwargs):
                     transition_id=Transition.TRANSITION_ACTIVATE
                 ))
             ]
-        )
+        ),
+        condition=IfCondition(str(do_eval_phase).lower()),
     )
 
     configure_ai = TimerAction(
@@ -1195,7 +1665,7 @@ def launch_setup(context, *args, **kwargs):
                 transition_id=Transition.TRANSITION_CONFIGURE
             ))
         ],
-        condition=IfCondition(str(do_test_phase).lower()),
+        condition=IfCondition(str(ai_test_enabled).lower()),
     )
     
     activate_ai = RegisterEventHandler(
@@ -1211,7 +1681,7 @@ def launch_setup(context, *args, **kwargs):
                 ))
             ]
         ),
-        condition=IfCondition(str(do_test_phase).lower()),
+        condition=IfCondition(str(ai_test_enabled).lower()),
     )
     configure_robak = TimerAction(
         period=slam_configure_delay,
@@ -1268,6 +1738,26 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # AI Pipeline nodes
+    dataset_motion_watchdog = Node(
+        package="ai_slam_bringup",
+        executable="dataset_motion_watchdog",
+        parameters=[{
+            "use_sim_time": True,
+            "pose_topic": dataset_motion_watchdog_pose_topic,
+            "min_motion_delta_m": dataset_motion_watchdog_min_delta_m,
+            "stall_timeout_sec": dataset_motion_watchdog_timeout_sec,
+            "startup_grace_sec": dataset_motion_watchdog_startup_grace_sec,
+            "no_pose_timeout_sec": dataset_motion_watchdog_no_pose_timeout_sec,
+            "check_hz": dataset_motion_watchdog_check_hz,
+            "enable_window_progress_guard": dataset_motion_watchdog_enable_window_guard,
+            "stall_min_window_progress_m": dataset_motion_watchdog_min_window_progress_m,
+            "stall_window_span_ratio": dataset_motion_watchdog_window_span_ratio,
+            "log_alive_heartbeat": False,
+        }],
+        output="screen",
+        condition=IfCondition(str(do_dataset_phase and dataset_motion_watchdog_enabled).lower()),
+    )
+
     dataset_rec = Node(
         package="ai_slam_ai",
         executable="dataset_recorder",
@@ -1285,9 +1775,12 @@ def launch_setup(context, *args, **kwargs):
             "sync_pair_gap_sec": dataset_sync_pair_gap_sec,
             "interpolate_odom": dataset_interpolate_odom,
             "interpolate_gt": dataset_interpolate_gt,
+            "stop_on_planned_path_done": dataset_stop_on_planned_done,
+            "planned_path_done_topic": dataset_planned_done_topic,
+            "planned_path_done_min_elapsed_sec": dataset_planned_done_min_elapsed_sec,
         }],
         output="screen",
-        condition=IfCondition(str(do_dataset_phase).lower()),
+        condition=IfCondition(str(ai_dataset_enabled).lower()),
     )
 
     trainer = Node(
@@ -1306,9 +1799,11 @@ def launch_setup(context, *args, **kwargs):
             "lr": learning_rate,
             "batch_size": batch_size,
             "val_ratio": validation_ratio,
+            "split_strategy": split_strategy,
+            "torch_deterministic": torch_deterministic,
         }],
         output="screen",
-        condition=IfCondition(str(do_train_phase).lower()),
+        condition=IfCondition(str(ai_train_enabled).lower()),
     )
 
     infer = Node(
@@ -1319,17 +1814,20 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed, 
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "model_wait_timeout": model_wait_timeout,
+            "model_source_experiment_id": model_source_experiment_id,
+            "model_wait_timeout": effective_model_wait_timeout,
             "scan_topic": infer_scan_topic,
             "odom_topic": infer_odom_topic,
             "pose_topic": infer_pose_topic,         # zgodnie z infer_node.py :contentReference[oaicite:18]{index=18}
             "odom_ai_topic": infer_odom_ai_topic,   # zgodnie z infer_node.py :contentReference[oaicite:19]{index=19}
             "tf_parent": infer_tf_parent,           # zgodnie z infer_node.py :contentReference[oaicite:20]{index=20}
             "tf_child": infer_tf_child,             # zgodnie z infer_node.py :contentReference[oaicite:21]{index=21}
+            "max_correction_trans": infer_max_correction_trans,
+            "max_correction_yaw": infer_max_correction_yaw,
    
         }],
         output="screen",
-        condition=IfCondition(str(do_test_phase).lower()),
+        condition=IfCondition(str(ai_test_enabled).lower()),
     )
     # --- PORÓWNANIA: Robak (scan-scan -> delta pose) ---
     dataset_rec_robak = Node(
@@ -1342,7 +1840,7 @@ def launch_setup(context, *args, **kwargs):
             "experiment_id": experiment_id,
             "duration_sec": robak_dataset_duration,
             "max_samples": robak_max_samples,
-            "scan_topic": dataset_scan_topic,
+            "scan_topic": robak_dataset_scan_topic,
             "gt_topic": dataset_gt_topic,
             "dataset_name": robak_dataset_name,
             "offsets": robak_offsets,
@@ -1352,6 +1850,9 @@ def launch_setup(context, *args, **kwargs):
             "pair_filter_mode": robak_pair_filter_mode,
             "max_pair_dist": robak_max_pair_dist,
             "max_pair_dyaw": robak_max_pair_dyaw,
+            "trajectory_mode": robak_trajectory_mode,
+            "trajectory_cell_size_m": robak_trajectory_cell_size_m,
+            "cycle_min_repeat_hits": robak_cycle_min_repeat_hits,
             "label_frame": robak_label_frame,
             "sync_tolerance_sec": robak_sync_tolerance,
             "sync_pair_gap_sec": robak_sync_pair_gap,
@@ -1359,6 +1860,24 @@ def launch_setup(context, *args, **kwargs):
             "augment_noise_std_scale": robak_aug_noise_std_scale,
             "augment_cut_fraction": robak_aug_cut_fraction,
             "augment_cut_max_points": robak_aug_cut_max_points,
+            "balance_histograms": robak_balance_histograms,
+            "balance_bins": robak_balance_bins,
+            "balance_translation_use_abs": robak_balance_translation_use_abs,
+            "balance_rotation_use_abs": robak_balance_rotation_use_abs,
+            "balance_translation_hist_min_m": robak_balance_translation_hist_min_m,
+            "balance_translation_hist_max_m": robak_balance_translation_hist_max_m,
+            "balance_rotation_hist_min_deg": robak_balance_rotation_hist_min_deg,
+            "balance_rotation_hist_max_deg": robak_balance_rotation_hist_max_deg,
+            "balance_target_quantile": robak_balance_target_quantile,
+            "balance_target_min_per_bin": robak_balance_target_min_per_bin,
+            "balance_upsample_sparse_bins": robak_balance_upsample_sparse_bins,
+            "balance_merge_strategy": robak_balance_merge_strategy,
+            "save_balanced_component_datasets": robak_save_balanced_component_datasets,
+            "balanced_translation_dataset_name": robak_balanced_translation_dataset_name,
+            "balanced_rotation_dataset_name": robak_balanced_rotation_dataset_name,
+            "stop_on_planned_path_done": dataset_stop_on_planned_done,
+            "planned_path_done_topic": dataset_planned_done_topic,
+            "planned_path_done_min_elapsed_sec": dataset_planned_done_min_elapsed_sec,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -1384,6 +1903,8 @@ def launch_setup(context, *args, **kwargs):
             "lr": robak_lr,
             "batch_size": robak_batch,
             "val_ratio": robak_val_ratio,
+            "split_strategy": robak_split_strategy,
+            "torch_deterministic": robak_torch_deterministic,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -1398,6 +1919,7 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
+            "model_source_experiment_id": model_source_experiment_id,
             "model_name": robak_model_name,
             "scan_topic": "/scan_slam_robak",
             "pose_topic": robak_pose_topic,
@@ -1413,10 +1935,44 @@ def launch_setup(context, *args, **kwargs):
             "odom_delta_yaw_alpha": robak_infer_odom_delta_yaw_alpha,
             "odom_pose_xy_alpha": robak_infer_odom_pose_xy_alpha,
             "odom_pose_xy_gain": robak_infer_odom_pose_xy_gain,
+            "odom_pose_xy_alpha_max": robak_infer_odom_pose_xy_alpha_max,
             "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(robak_test_enabled).lower()),
+    )
+    infer_robak_no_slam = Node(
+        package="ai_slam_ai",
+        executable="infer_robak_node",
+        parameters=[{
+            "use_sim_time": True,
+            "seed": seed,
+            "out_dir": out_dir,
+            "experiment_id": experiment_id,
+            "model_source_experiment_id": model_source_experiment_id,
+            "model_name": robak_model_name,
+            # Ten sam tor skanu co Robak+SLAM (scan_fix_robak); różnica to brak mapy SLAM w pętli.
+            "scan_topic": "/scan_slam_robak",
+            "pose_topic": robak_pose_topic_no_slam,
+            "tf_parent": robak_tf_parent_no_slam,
+            "tf_child": robak_tf_child_no_slam,
+            "init_from": "gt",
+            "gt_topic": dataset_gt_topic,
+            "odom_topic": odom_in_topic,
+            "max_step_trans": robak_infer_max_step_trans,
+            "max_step_yaw": robak_infer_max_step_yaw,
+            "delta_ema_alpha": robak_infer_delta_ema_alpha,
+            "odom_heading_alpha": robak_infer_odom_heading_alpha,
+            "odom_sync_tolerance_sec": robak_infer_odom_sync_tolerance,
+            "odom_delta_xy_alpha": robak_infer_odom_delta_xy_alpha,
+            "odom_delta_yaw_alpha": robak_infer_odom_delta_yaw_alpha,
+            "odom_pose_xy_alpha": robak_infer_odom_pose_xy_alpha,
+            "odom_pose_xy_gain": robak_infer_odom_pose_xy_gain,
+            "odom_pose_xy_alpha_max": robak_infer_odom_pose_xy_alpha_max,
+            "write_experiment_metadata": False,
+        }],
+        output="screen",
+        condition=IfCondition(str(robak_no_slam_test_enabled).lower()),
     )
 
     # --- PORÓWNANIA: Rywak (d_theta1 + d_theta2 + delta_scan -> v,w) ---
@@ -1430,7 +1986,7 @@ def launch_setup(context, *args, **kwargs):
             "experiment_id": experiment_id,
             "duration_sec": rywak_dataset_duration,
             "max_samples": rywak_max_samples,
-            "scan_topic": dataset_scan_topic,
+            "scan_topic": rywak_dataset_scan_topic,
             "odom_topic": rywak_odom_label_topic,
             "sync_tolerance_sec": rywak_sync_tolerance,
             "interpolate_odom": rywak_interpolate_odom,
@@ -1441,6 +1997,27 @@ def launch_setup(context, *args, **kwargs):
             "min_sample_dt_sec": rywak_min_sample_dt_sec,
             "min_delta_scan_rms": rywak_min_delta_scan_rms,
             "sample_filter_mode": rywak_sample_filter_mode,
+            "balance_histograms": rywak_balance_histograms,
+            "balance_bins": rywak_balance_bins,
+            "balance_linear_use_abs": rywak_balance_linear_use_abs,
+            "balance_angular_use_abs": rywak_balance_angular_use_abs,
+            "balance_linear_hist_min_mps": rywak_balance_linear_hist_min_mps,
+            "balance_linear_hist_max_mps": rywak_balance_linear_hist_max_mps,
+            "balance_angular_hist_min_radps": rywak_balance_angular_hist_min_radps,
+            "balance_angular_hist_max_radps": rywak_balance_angular_hist_max_radps,
+            "balance_target_quantile": rywak_balance_target_quantile,
+            "balance_target_min_per_bin": rywak_balance_target_min_per_bin,
+            "balance_upsample_sparse_bins": rywak_balance_upsample_sparse_bins,
+            "balance_merge_strategy": rywak_balance_merge_strategy,
+            "save_balanced_component_datasets": rywak_save_balanced_component_datasets,
+            "balanced_linear_dataset_name": rywak_balanced_linear_dataset_name,
+            "balanced_angular_dataset_name": rywak_balanced_angular_dataset_name,
+            "stop_on_planned_path_done": dataset_stop_on_planned_done,
+            "planned_path_done_topic": dataset_planned_done_topic,
+            "planned_path_done_min_elapsed_sec": dataset_planned_done_min_elapsed_sec,
+            "trajectory_mode": rywak_trajectory_mode,
+            "trajectory_cell_size_m": rywak_trajectory_cell_size_m,
+            "cycle_min_repeat_hits": rywak_cycle_min_repeat_hits,
             "dataset_name": rywak_dataset_name,
             "write_experiment_metadata": False,
         }],
@@ -1467,6 +2044,8 @@ def launch_setup(context, *args, **kwargs):
             "lr": rywak_lr,
             "batch_size": rywak_batch,
             "val_ratio": rywak_val_ratio,
+            "split_strategy": rywak_split_strategy,
+            "torch_deterministic": rywak_torch_deterministic,
             "hidden_dims": rywak_hidden_dims,
             "dropout": rywak_dropout,
             "weight_decay": rywak_weight_decay,
@@ -1489,6 +2068,7 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
+            "model_source_experiment_id": model_source_experiment_id,
             "model_name": rywak_model_name,
             "scan_topic": "/scan_slam_rywak",
             "pose_topic": rywak_pose_topic,
@@ -1516,6 +2096,45 @@ def launch_setup(context, *args, **kwargs):
         }],
         output="screen",
         condition=IfCondition(str(rywak_test_enabled).lower()),
+    )
+    infer_rywak_no_slam = Node(
+        package="ai_slam_ai",
+        executable="infer_rywak_node",
+        parameters=[{
+            "use_sim_time": True,
+            "seed": seed,
+            "out_dir": out_dir,
+            "experiment_id": experiment_id,
+            "model_source_experiment_id": model_source_experiment_id,
+            "model_name": rywak_model_name,
+            "scan_topic": "/scan_slam_rywak",
+            "pose_topic": rywak_pose_topic_no_slam,
+            "tf_parent": rywak_tf_parent_no_slam,
+            "tf_child": rywak_tf_child_no_slam,
+            "odom_topic": rywak_odom_label_topic,
+            "init_from_odom_topic": odom_in_topic,
+            "sync_tolerance_sec": rywak_sync_tolerance,
+            "interpolate_odom": rywak_interpolate_odom,
+            "sync_pair_gap_sec": rywak_sync_pair_gap,
+            "delta_scan_clip": rywak_delta_scan_clip,
+            "v_clip_abs": rywak_v_clip_abs,
+            "w_clip_abs": rywak_w_clip_abs,
+            "fuse_odom_v_weight": rywak_fuse_odom_v_weight,
+            "fuse_odom_w_weight": rywak_fuse_odom_w_weight,
+            "fuse_odom_v_gain": rywak_fuse_odom_v_gain,
+            "fuse_odom_w_gain": rywak_fuse_odom_w_gain,
+            "vel_ema_alpha": rywak_vel_ema_alpha,
+            "anchor_yaw_to_odom": rywak_anchor_yaw_to_odom,
+            "anchor_xy_to_odom": rywak_anchor_xy_to_odom,
+            "anchor_xy_to_odom_gain": rywak_anchor_xy_to_odom_gain,
+            "heading_for_xy_odom_weight": rywak_heading_for_xy_odom_weight,
+            "xy_step_odom_weight": rywak_xy_step_odom_weight,
+            "xy_step_odom_gain": rywak_xy_step_odom_gain,
+            "max_integration_dt": rywak_max_integration_dt,
+            "write_experiment_metadata": False,
+        }],
+        output="screen",
+        condition=IfCondition(str(rywak_no_slam_test_enabled).lower()),
     )
     evaluator = Node(
         package="ai_slam_eval",
@@ -1550,11 +2169,15 @@ def launch_setup(context, *args, **kwargs):
             "points_free_logodds_miss": eval_points_free_logodds_miss,
             "points_logodds_min": eval_points_logodds_min,
             "points_logodds_max": eval_points_logodds_max,
+            "gt_jump_filter_enabled": eval_gt_jump_filter_enabled,
+            "gt_jump_filter_max_step_m": eval_gt_jump_filter_max_step_m,
             "pose_topic_ai": infer_pose_topic,
             "pose_topic_scanmatch": "/pose_scanmatch",
             "pose_topic_bruteforce": "/pose_bruteforce",
             "pose_topic_robak": robak_pose_topic,
             "pose_topic_rywak": rywak_pose_topic,
+            "pose_topic_robak_no_slam": robak_pose_topic_no_slam,
+            "pose_topic_rywak_no_slam": rywak_pose_topic_no_slam,
             "robak_dataset_name": robak_dataset_name,
             "robak_model_name": robak_model_name,
             "robak_history_name": robak_history_name,
@@ -1582,7 +2205,7 @@ def launch_setup(context, *args, **kwargs):
     # AUTO SHUTDOWN (TRAIN) - czekaj aż WSZYSTKIE trenery zakończą
     # =========================
     train_targets = []
-    if do_train_phase:
+    if ai_train_enabled:
         train_targets.append(trainer)
     if robak_train_enabled:
         train_targets.append(trainer_robak)
@@ -1590,8 +2213,33 @@ def launch_setup(context, *args, **kwargs):
         train_targets.append(trainer_rywak)
 
     auto_shutdown_train_handlers = []
+    _shutdown_state = {"requested": False}
+
+    def _request_launch_shutdown(msg: str):
+        if _shutdown_state["requested"]:
+            return [LogInfo(msg=f"{msg} (shutdown already requested)")]
+        _shutdown_state["requested"] = True
+        return [
+            LogInfo(msg=msg),
+            # Avoid ROS adapter race by stopping Gazebo process first and letting launch
+            # complete shutdown from required process exit path.
+            ExecuteProcess(
+                cmd=[
+                    "/bin/bash",
+                    "-lc",
+                    (
+                        "pkill -TERM -x gz || true; "
+                        "pkill -TERM -f 'ruby .*/gz sim' || true; "
+                        "sleep 0.5; "
+                        "pkill -KILL -x gz || true; "
+                        "pkill -KILL -f 'ruby .*/gz sim' || true"
+                    ),
+                ],
+                output="screen",
+            ),
+        ]
     dataset_targets = []
-    if do_dataset_phase:
+    if ai_dataset_enabled:
         dataset_targets.append(dataset_rec)
     if robak_dataset_enabled:
         dataset_targets.append(dataset_rec_robak)
@@ -1614,16 +2262,11 @@ def launch_setup(context, *args, **kwargs):
             dataset_done = _train_phase_state["dataset_done"]
             dataset_total = _train_phase_state["dataset_total"]
             if train_done >= train_total and dataset_done >= dataset_total:
-                return [
-                    LogInfo(
-                        msg=(
-                            f"[AUTO] Training phase complete "
-                            f"(trainings {train_done}/{train_total}, datasets {dataset_done}/{dataset_total}). "
-                            "Shutting down simulation..."
-                        )
-                    ),
-                    EmitEvent(event=Shutdown()),
-                ]
+                return _request_launch_shutdown(
+                    f"[AUTO] Training phase complete "
+                    f"(trainings {train_done}/{train_total}, datasets {dataset_done}/{dataset_total}). "
+                    "Shutting down simulation..."
+                )
             return [
                 LogInfo(
                     msg=(
@@ -1662,7 +2305,7 @@ def launch_setup(context, *args, **kwargs):
                     condition=IfCondition(str(do_train_phase).lower()),
                 )
             )
-    elif len(train_targets) > 0:
+    elif len(train_targets) > 0 and not do_test_phase:
         _train_state = {"done": 0, "total": len(train_targets)}
 
         def _on_trainer_exit(context, *args, **kwargs):
@@ -1671,10 +2314,9 @@ def launch_setup(context, *args, **kwargs):
             total = _train_state["total"]
 
             if done >= total:
-                return [
-                    LogInfo(msg=f"[AUTO] All trainings finished ({done}/{total}). Shutting down simulation..."),
-                    EmitEvent(event=Shutdown())
-                ]
+                return _request_launch_shutdown(
+                    f"[AUTO] All trainings finished ({done}/{total}). Shutting down simulation..."
+                )
             return [
                 LogInfo(msg=f"[AUTO] Training process exited ({done}/{total}). Waiting for others...")
             ]
@@ -1696,10 +2338,9 @@ def launch_setup(context, *args, **kwargs):
         total = _dataset_state["total"]
 
         if done >= total:
-            return [
-                LogInfo(msg=f"[AUTO] Wszystkie datasety zapisane ({done}/{total}). Zamykanie symulacji..."),
-                EmitEvent(event=Shutdown())
-            ]
+            return _request_launch_shutdown(
+                f"[AUTO] Wszystkie datasety zapisane ({done}/{total}). Zamykanie symulacji..."
+            )
         return [
             LogInfo(msg=f"[AUTO] Dataset recorder zakończył pracę ({done}/{total}). Czekam na pozostałe...")
         ]
@@ -1716,14 +2357,30 @@ def launch_setup(context, *args, **kwargs):
                     condition=IfCondition(str(phase == "dataset").lower()),
                 )
             )
+    if phase == "dataset" and dataset_motion_watchdog_enabled:
+        def _on_dataset_watchdog_exit(context, *args, **kwargs):
+            return _request_launch_shutdown(
+                "[AUTO] Dataset motion watchdog przerwał przebieg (brak ruchu robota). "
+                "Zamykanie symulacji..."
+            )
+
+        auto_shutdown_dataset_handlers.append(
+            RegisterEventHandler(
+                event_handler=OnProcessExit(
+                    target_action=dataset_motion_watchdog,
+                    on_exit=[OpaqueFunction(function=_on_dataset_watchdog_exit)],
+                ),
+                condition=IfCondition(str(phase == "dataset").lower()),
+            )
+        )
+
+    def _on_eval_exit(context, *args, **kwargs):
+        return _request_launch_shutdown("[AUTO] Ewaluacja zakończona. Zamykanie symulacji...")
 
     auto_shutdown_eval = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=evaluator,
-            on_exit=[
-                LogInfo(msg='[AUTO] Ewaluacja zakończona. Zamykanie symulacji...'),
-                EmitEvent(event=Shutdown())
-            ]
+            on_exit=[OpaqueFunction(function=_on_eval_exit)]
         ),
         condition=IfCondition(str(do_eval_phase).lower())
     )
@@ -1742,13 +2399,14 @@ def launch_setup(context, *args, **kwargs):
         scan_fix_robak,
         scan_fix_rywak,
 
-        # scan-matcher tory 
+        # scan-matcher tory
         scan_matcher_local,
         scan_matcher_bruteforce,
 
         gt_pose,
         odom_corruptor,
-        driver,
+        driver_auto,
+        driver_planned,
 
         # SLAM toolbox 
         slam_baseline,
@@ -1770,6 +2428,7 @@ def launch_setup(context, *args, **kwargs):
         activate_rywak,
 
         # pipeline dataset/train/infer
+        dataset_motion_watchdog,
         dataset_rec,
         trainer,
         infer,
@@ -1777,10 +2436,12 @@ def launch_setup(context, *args, **kwargs):
         dataset_rec_robak,
         trainer_robak,
         infer_robak,
+        infer_robak_no_slam,
 
         dataset_rec_rywak,
         trainer_rywak,
         infer_rywak,
+        infer_rywak_no_slam,
 
         evaluator,
 
@@ -1810,5 +2471,10 @@ def generate_launch_description():
         DeclareLaunchArgument("gui", default_value="__USE_CONFIG__", description="Enable Gazebo GUI"),
         DeclareLaunchArgument("out_dir", default_value="__USE_CONFIG__", description="Output directory"),
         DeclareLaunchArgument("experiment_id", default_value="__USE_CONFIG__", description="Experiment ID"),
+        DeclareLaunchArgument(
+            "model_source_experiment_id",
+            default_value="__USE_CONFIG__",
+            description="Load *.pt from out/<this_id>/ (empty = same as experiment_id)",
+        ),
         OpaqueFunction(function=launch_setup),
     ])

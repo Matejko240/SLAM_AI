@@ -4,7 +4,7 @@ Generuje mapę referencyjną (PGM+YAML) na podstawie świata SDF.
 
 Obsługuje:
 - kolizje box/cylinder z samego świata,
-- modele przez <include>,
+- modele przez <include> (w tym URI model://nazwa → ai_slam_gazebo/models/nazwa/model.sdf),
 - collision mesh w lokalnych plikach Collada (.dae).
 
 Zapisuje do:
@@ -71,12 +71,39 @@ def transform_xyz(points: np.ndarray, pose) -> np.ndarray:
     return points @ rot.T + np.array([x, y, z], dtype=float)
 
 
+def _gazebo_models_root(base_dir: Path) -> Path:
+    """Katalog .../ai_slam_gazebo/models względem świata (worlds/) lub modelu (models/nazwa/)."""
+    b = base_dir.resolve()
+    if b.name == "worlds":
+        m = b.parent / "models"
+        if m.is_dir():
+            return m
+    if b.parent.name == "models":
+        return b.parent
+    cur = b
+    for _ in range(16):
+        m, w = cur / "models", cur / "worlds"
+        if m.is_dir() and w.is_dir():
+            return m
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    raise FileNotFoundError(f"Nie znaleziono ai_slam_gazebo/models (kontekst: {base_dir})")
+
+
 def resolve_model_sdf(uri: str, base_dir: Path) -> Path:
     uri = str(uri or "").strip()
     if not uri:
         raise FileNotFoundError("Pusty URI modelu")
     if uri.startswith("model://"):
-        raise FileNotFoundError(f"Nieobsługiwany model:// URI: {uri}")
+        name = uri.replace("model://", "", 1).strip().strip("/")
+        if not name:
+            raise FileNotFoundError("Pusty model:// URI")
+        root = _gazebo_models_root(base_dir)
+        model_sdf = root / name / "model.sdf"
+        if model_sdf.is_file():
+            return model_sdf.resolve()
+        raise FileNotFoundError(f"Brak model.sdf dla model://{name}: {model_sdf}")
 
     candidate = (base_dir / uri).resolve()
     if candidate.is_dir():
@@ -583,12 +610,16 @@ def main():
                 f.write(" ".join(str(int(v)) for v in row) + "\n")
 
         with open(yaml_path, "w", encoding="utf-8") as f:
+            f.write(
+                "# Map_server: occupied_thresh / free_thresh. Planowanie (occ_thresh): piksel < occ_thresh = przeszkoda.\n"
+            )
             f.write(f"image: {output_stem}.pgm\n")
             f.write(f"resolution: {res}\n")
             f.write(f"origin: [{origin_x}, {origin_y}, 0.0]\n")
             f.write("negate: 0\n")
             f.write("occupied_thresh: 0.65\n")
             f.write("free_thresh: 0.196\n")
+            f.write("occ_thresh: 128\n")
 
         print(f"[OK] reference map written to: {out_dir}")
         print(f"     PGM:  {pgm_path}")

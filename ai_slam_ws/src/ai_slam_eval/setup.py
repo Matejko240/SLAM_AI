@@ -13,6 +13,7 @@ setup(
         (f"share/{package_name}/maps", glob("maps/*.*")),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
     entry_points={"console_scripts": ["eval_node=ai_slam_eval.eval_node:main"]},
 )
