@@ -46,7 +46,7 @@ def _chain_densify_straight(anchors: list[tuple[float, float]], step_m: float) -
     return out
 
 
-def _imshow_pgm(ax, pgm: np.ndarray, meta: dict) -> None:
+def _imshow_pgm(ax, pgm: np.ndarray, meta: dict) -> tuple[float, float, float, float]:
     """Pokrycie z world_to_cell / cell_to_world (flip_y jak w planowaniu)."""
     ox, oy, _ = meta["origin"]
     res = float(meta["resolution"])
@@ -64,6 +64,7 @@ def _imshow_pgm(ax, pgm: np.ndarray, meta: dict) -> None:
         vmin=0,
         vmax=255,
     )
+    return extent
 
 
 def _path_heading_deltas(pts: list[tuple[float, float]]) -> tuple[float, list[float]]:
@@ -110,6 +111,18 @@ def main() -> int:
     )
     p.add_argument("--out", type=Path, default=Path("out/planned_path_preview.png"))
     p.add_argument("--dpi", type=int, default=150)
+    p.add_argument(
+        "--view",
+        choices=("trajectory", "full_map"),
+        default="trajectory",
+        help="trajectory: zoom na trasie; full_map: pełny zakres mapy referencyjnej.",
+    )
+    p.add_argument(
+        "--zoom-padding-m",
+        type=float,
+        default=0.8,
+        help="Margines [m] wokół trajektorii dla widoku trajectory.",
+    )
     p.add_argument(
         "--no-astar",
         action="store_true",
@@ -197,8 +210,9 @@ def main() -> int:
 
     fig, ax = plt.subplots(figsize=(11, 10))
 
+    map_extent: tuple[float, float, float, float] | None = None
     if pgm is not None and meta is not None:
-        _imshow_pgm(ax, pgm, meta)
+        map_extent = _imshow_pgm(ax, pgm, meta)
 
     cpx = np.array([p[0] for p in collision_poly], dtype=np.float64)
     cpy = np.array([p[1] for p in collision_poly], dtype=np.float64)
@@ -218,6 +232,22 @@ def main() -> int:
     ax.plot(xs, ys, "-", color="tab:blue", linewidth=1.35, alpha=0.9, zorder=4, label="ścieżka zagęszczona (pure pursuit)")
     ax.plot(axs, ays, "o", color="tab:red", markersize=6, zorder=5, label="kotwice")
     ax.plot(xs[0], ys[0], "s", color="tab:green", markersize=8, zorder=6, label="start")
+
+    if args.view == "full_map" and map_extent is not None:
+        ax.set_xlim(map_extent[0], map_extent[1])
+        ax.set_ylim(map_extent[2], map_extent[3])
+    else:
+        pad = max(0.05, float(args.zoom_padding_m))
+        xmin, xmax = float(xs.min()), float(xs.max())
+        ymin, ymax = float(ys.min()), float(ys.max())
+        if (xmax - xmin) < 1e-6:
+            xmin -= 0.5
+            xmax += 0.5
+        if (ymax - ymin) < 1e-6:
+            ymin -= 0.5
+            ymax += 0.5
+        ax.set_xlim(xmin - pad, xmax + pad)
+        ax.set_ylim(ymin - pad, ymax + pad)
 
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.25, zorder=2, color="white", linewidth=0.4)

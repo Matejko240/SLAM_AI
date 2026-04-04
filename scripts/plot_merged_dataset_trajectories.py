@@ -181,15 +181,33 @@ def _plot_group(
         if np.any(stuck):
             ax.scatter(gt_xy[stuck, 0], gt_xy[stuck, 1], s=14, c=[color], marker="x", alpha=0.9, zorder=5)
 
+        stuck_segments = int(len(segs))
+        stuck_points = int(np.sum(stuck))
+        status = "ok"
+        quality_gate_fail = False
+        if stuck_points >= 120:
+            status = "stuck_points"
+            quality_gate_fail = True
+        elif stuck_segments >= 3:
+            status = "stuck_segments"
+            quality_gate_fail = True
+        elif stuck_segments >= 2 and stuck_points >= 60:
+            status = "stuck_mixed"
+            quality_gate_fail = True
+        elif traj_len > 0.0 and traj_len < 100.0:
+            status = "low_progress"
+            quality_gate_fail = True
+
         summary_runs.append(
             {
                 "experiment_id": info.experiment_id,
                 "world_name": info.world_name,
                 "samples": int(gt_xy.shape[0]),
                 "trajectory_length_m": traj_len,
-                "stuck_segments": int(len(segs)),
-                "stuck_points": int(np.sum(stuck)),
-                "status": "ok",
+                "stuck_segments": stuck_segments,
+                "stuck_points": stuck_points,
+                "status": status,
+                "quality_gate_fail": bool(quality_gate_fail),
             }
         )
 

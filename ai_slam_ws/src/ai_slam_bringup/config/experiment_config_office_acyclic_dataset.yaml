@@ -3,15 +3,17 @@ experiment:
   phase: dataset
   seed: 123
   gui: true
-  adaptive_selected_path: /tmp/adapt_check_YJiQVO/adaptive_path_slalom_r99_office_trajectory_cyclic_2lap.yaml
-  adaptive_path_profile: slalom
+  adaptive_selected_path: /tmp/slam_u_test/adaptive_path_balanced_r1_office_trajectory_acyclic.yaml
+  adaptive_path_profile: balanced
   adaptive_path_status: generated
-  adaptive_path_anchor_count: 800
+  adaptive_path_anchor_count: 102
   adaptive_path_attempts:
   - attempt: 1
-    amplitude_m: 0.6
+    amplitude_m: 0.16
     serialized_ndigits: 3
+    u_turn_status: fallback_keep_original
     status: ok
+  adaptive_path_locked_regions_count: 1
 pipeline:
   dataset_collection_sec: 600
   evaluation_sec: 0
@@ -294,7 +296,7 @@ odometry:
 driver:
   use_planned_path: true
   planned_path:
-    spec_yaml: planned_paths/office_trajectory_acyclic.yaml
+    spec_yaml: /tmp/slam_u_test/adaptive_path_balanced_r1_office_trajectory_acyclic.yaml
     pose_topic: /ground_truth_pose
     cmd_topic: /cmd_vel
     reference_map_yaml: reference_map_office.yaml
@@ -313,6 +315,7 @@ driver:
     alignment_cos_power: 2.4
     nearest_backtrack_points: 10
     nearest_horizon_m: 5.0
+    ignore_passed_points: true
     publish_completion_topic: true
     completion_topic: /planned_path_done
     dataset_excitation_enabled: true

@@ -20,6 +20,7 @@ from ai_slam_bringup.planned_path_driver import (
 )
 from ai_slam_bringup.dataset_motion_watchdog import (
     DatasetMotionWatchdog,
+    _is_circling_stall,
     _is_low_progress_stall,
     _recent_motion_metrics,
 )
@@ -40,11 +41,12 @@ class BringupSmokeTests(unittest.TestCase):
             x = 1.0 + 0.01 * math.sin(float(i) * 0.3)
             y = -2.0 + 0.01 * math.cos(float(i) * 0.25)
             samples.append((t, x, y))
-        duration, net, span, count = _recent_motion_metrics(samples, now_sec=40.0, window_sec=35.0)
+        duration, net, span, path_len, count = _recent_motion_metrics(samples, now_sec=40.0, window_sec=35.0)
         self.assertGreaterEqual(duration, 34.0)
         self.assertGreaterEqual(count, 300)
         self.assertLess(net, 0.06)
         self.assertLess(span, 0.06)
+        self.assertGreater(path_len, 0.1)
 
     def test_motion_watchdog_low_progress_stall_detects_jitter(self) -> None:
         samples = []
@@ -78,6 +80,56 @@ class BringupSmokeTests(unittest.TestCase):
             span_ratio=1.8,
         )
         self.assertFalse(stalled, msg=f"net={net:.4f}, span={span:.4f}")
+
+    def test_motion_watchdog_circling_stall_detects_looping_in_room(self) -> None:
+        # Wielokrotne pętle w małym obszarze + niewielki drift netto.
+        samples = []
+        T = 40.0
+        for i in range(401):
+            t = float(i) * 0.1
+            a = 2.0 * math.pi * (t / T) * 3.2
+            x = 0.6 * math.cos(a) + 0.55 * (t / T)
+            y = 0.6 * math.sin(a)
+            samples.append((t, x, y))
+        stalled, duration, net, span, path_len, ratio, _ = _is_circling_stall(
+            samples,
+            now_sec=40.0,
+            window_sec=35.0,
+            min_progress_m=0.12,
+            min_path_m=1.6,
+            max_net_path_ratio=0.25,
+            max_net_m=1.2,
+            max_span_m=2.5,
+        )
+        self.assertTrue(
+            stalled,
+            msg=(
+                f"duration={duration:.2f}, net={net:.4f}, span={span:.4f}, "
+                f"path={path_len:.4f}, ratio={ratio:.4f}"
+            ),
+        )
+
+    def test_motion_watchdog_circling_stall_ignores_clear_progress(self) -> None:
+        samples = []
+        for i in range(401):
+            t = float(i) * 0.1
+            x = 0.18 * t
+            y = 0.03 * t
+            samples.append((t, x, y))
+        stalled, _, net, span, path_len, ratio, _ = _is_circling_stall(
+            samples,
+            now_sec=40.0,
+            window_sec=35.0,
+            min_progress_m=0.12,
+            min_path_m=1.6,
+            max_net_path_ratio=0.25,
+            max_net_m=1.2,
+            max_span_m=2.5,
+        )
+        self.assertFalse(
+            stalled,
+            msg=f"net={net:.4f}, span={span:.4f}, path={path_len:.4f}, ratio={ratio:.4f}",
+        )
 
     def test_astar_corridor(self) -> None:
         h, w = 7, 7
@@ -148,6 +200,58 @@ class BringupSmokeTests(unittest.TestCase):
             nearest_horizon_m=1.0,
         )
         self.assertGreaterEqual(idx, 3, msg=f"unexpected regression idx={idx}")
+
+    def test_lookahead_ignore_passed_points_prevents_index_regression(self) -> None:
+        path = [
+            (0.00, 0.00),
+            (1.00, 0.00),
+            (2.00, 0.00),
+            (3.00, 0.00),
+            (4.00, 0.00),
+            (5.00, 0.00),
+        ]
+        # Symulacja dużego błędu lokalizacji: po indeksie 3 robot "widzi" się blisko startu.
+        # Tryb ignore_passed_points ma zablokować cofnięcie indeksu.
+        _, _, idx_regress = _lookahead(
+            path,
+            px=0.05,
+            py=0.00,
+            start_idx=3,
+            lookahead_m=0.30,
+            nearest_backtrack_points=8,
+            nearest_horizon_m=6.0,
+            ignore_passed_points=False,
+        )
+        _, _, idx_forward = _lookahead(
+            path,
+            px=0.05,
+            py=0.00,
+            start_idx=3,
+            lookahead_m=0.30,
+            nearest_backtrack_points=8,
+            nearest_horizon_m=6.0,
+            ignore_passed_points=True,
+        )
+        self.assertLess(idx_regress, 3, msg=f"expected regression, got idx={idx_regress}")
+        self.assertGreaterEqual(idx_forward, 3, msg=f"unexpected regression idx={idx_forward}")
+
+    def test_lookahead_ignore_passed_points_does_not_drift_index_when_stationary(self) -> None:
+        path = [(float(i), 0.0) for i in range(30)]
+        px, py = 0.0, 0.0
+        idx = 0
+        for _ in range(20):
+            _, _, idx_next = _lookahead(
+                path,
+                px=px,
+                py=py,
+                start_idx=idx,
+                lookahead_m=0.35,
+                nearest_backtrack_points=8,
+                nearest_horizon_m=6.0,
+                ignore_passed_points=True,
+            )
+            idx = max(idx, idx_next)
+        self.assertEqual(idx, 0, msg=f"index drifted despite stationary pose: idx={idx}")
 
     def test_turn_direction_sign_stays_stable_near_pi_wrap(self) -> None:
         sign = 0.0

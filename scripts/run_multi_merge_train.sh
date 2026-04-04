@@ -11,9 +11,9 @@ CONFIG_SEQUENCE_CSV=""
 PATH_SEQUENCE_CSV=""
 MAX_DATASET_RUNS=3
 TARGET_BINS=24
-MIN_TARGET_PER_BIN=20
-MIN_TARGET_PER_BIN_RYWAK=20
-MIN_TARGET_PER_BIN_ROBAK=20
+MIN_TARGET_PER_BIN=1000
+MIN_TARGET_PER_BIN_RYWAK=1000
+MIN_TARGET_PER_BIN_ROBAK=10000
 DATASET_DURATION_CAP_SEC=600
 GUI=false
 TRAIN_SEEDS_CSV="123,321,777"
@@ -21,6 +21,7 @@ SKIP_BUILD=false
 ADAPTIVE_CONFIG=true
 ADAPTIVE_PATH=true
 DEDUP_USE_POSE_KEY=true
+WARMUP_BASE_RUNS=2
 FOCUS_SEQUENCE_CSV=""
 APPEND_FROM_MERGE_EXP_ID=""
 RUN_MODE="all" # all | dataset_only | train_only
@@ -46,15 +47,16 @@ Options:
   --max-dataset-runs <N>      Max liczba rund dataset+merge (default: 3)
   --target-bins <N>           Docelowa liczba niepustych bins na histogram (default: 24)
   --dataset-duration-cap-sec <N>  Twardy limit czasu pojedynczej rundy datasetu (default: 600)
-  --min-target-per-bin <N>    Ustawia wspólny próg minimalny dla Rywaka i Robaka (default: 20)
-  --min-target-per-bin-rywak <N>  Minimalna liczba próbek/bin dla Rywaka po strict rebalance (default: 20)
-  --min-target-per-bin-robak <N>  Minimalna liczba próbek/bin dla Robaka po strict rebalance (default: 20)
+  --min-target-per-bin <N>    Ustawia wspólny próg minimalny dla Rywaka i Robaka (default: ${MIN_TARGET_PER_BIN})
+  --min-target-per-bin-rywak <N>  Minimalna liczba próbek/bin dla Rywaka po strict rebalance (default: ${MIN_TARGET_PER_BIN_RYWAK})
+  --min-target-per-bin-robak <N>  Minimalna liczba próbek/bin dla Robaka po strict rebalance (default: ${MIN_TARGET_PER_BIN_ROBAK})
   --train-seeds <csv>         Seedy treningu, np. "123,321,777" (default: ${TRAIN_SEEDS_CSV})
   --focus-sequence <csv>      Sekwencja fokusów rund: balanced,rotation,translation,slalom (alias: linear=translation)
   --append-from-merge <exp_id>  Dołącza nowe rundy do istniejącego merge out/<exp_id> (bez zaczynania od zera)
   --adaptive-config <bool>    Adaptacyjne strojenie configu między rundami (default: true)
   --adaptive-path <bool>      Przy adaptive-config=true: czy adaptować geometrię planned_path (default: true)
   --dedup-use-pose-key <bool> Deduplikacja po X+Y+P (gdy P dostępne), zamiast tylko X+Y (default: true)
+  --warmup-base-runs <N>      Pierwsze N rund wymusza bazową trasę (safe warmup; adaptive_path=OFF, focus=balanced) (default: ${WARMUP_BASE_RUNS})
   --gui <true|false>          Czy odpalać Gazebo GUI (default: false)
   --dataset-only              Tylko zbieranie datasetów + merge + strict rebalance (bez treningu).
   --train-only <exp_id>       Tylko trening na istniejącym out/<exp_id> (musi mieć dataset_robak.npz i dataset_rywak.npz).
@@ -252,6 +254,83 @@ choose_round_robin() {
   fi
   local k=$(( (idx - 1) % n ))
   echo "${arr[$k]}"
+}
+
+analyze_run_trajectory_health() {
+  local summary_json="$1"
+  local experiment_id="$2"
+  python3 - "${summary_json}" "${experiment_id}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary_path = Path(sys.argv[1]).expanduser().resolve()
+exp_id = str(sys.argv[2]).strip()
+
+if not summary_path.is_file() or not exp_id:
+    print("0\tmissing_summary\t-1\t-1\t-1")
+    raise SystemExit(0)
+
+try:
+    data = json.loads(summary_path.read_text(encoding="utf-8"))
+except Exception:
+    print("0\tinvalid_summary\t-1\t-1\t-1")
+    raise SystemExit(0)
+
+run_obj = None
+for group in data.get("map_groups", []):
+    if not isinstance(group, dict):
+        continue
+    for run in group.get("runs", []):
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("experiment_id", "")).strip() == exp_id:
+            run_obj = run
+            break
+    if run_obj is not None:
+        break
+
+if run_obj is None:
+    print("0\tmissing_run\t-1\t-1\t-1")
+    raise SystemExit(0)
+
+status = str(run_obj.get("status", "unknown")).strip().lower() or "unknown"
+stuck_segments = int(run_obj.get("stuck_segments", 0) or 0)
+stuck_points = int(run_obj.get("stuck_points", 0) or 0)
+traj_len = float(run_obj.get("trajectory_length_m", 0.0) or 0.0)
+
+flag = 0
+if status != "ok":
+    flag = 1
+elif stuck_points >= 120:
+    flag = 1
+elif stuck_segments >= 3:
+    flag = 1
+elif stuck_segments >= 2 and stuck_points >= 60:
+    flag = 1
+elif traj_len > 0.0 and traj_len < 100.0:
+    flag = 1
+
+print(f"{flag}\t{status}\t{stuck_segments}\t{stuck_points}\t{traj_len:.3f}")
+PY
+}
+
+analyze_single_run_trajectory_health() {
+  local out_dir="$1"
+  local experiment_id="$2"
+  local run_cfg="$3"
+  local summary_name="run_traj_health_${experiment_id}.json"
+  local summary_path="${out_dir}/${summary_name}"
+
+  if ! python3 "${ROOT_DIR}/scripts/plot_merged_dataset_trajectories.py" \
+    --out-dir "${out_dir}" \
+    --experiment-ids "${experiment_id}" \
+    --run-configs "${run_cfg}" \
+    --summary-name "${summary_name}" >/dev/null 2>&1; then
+    echo "0\thealth_check_error\t-1\t-1\t-1"
+    return 0
+  fi
+  analyze_run_trajectory_health "${summary_path}" "${experiment_id}"
 }
 
 load_append_component_paths() {
@@ -659,6 +738,10 @@ while [[ $# -gt 0 ]]; do
       DEDUP_USE_POSE_KEY="${2:?missing value for --dedup-use-pose-key}"
       shift 2
       ;;
+    --warmup-base-runs)
+      WARMUP_BASE_RUNS="${2:?missing value for --warmup-base-runs}"
+      shift 2
+      ;;
     --gui)
       GUI="${2:?missing value for --gui}"
       shift 2
@@ -721,6 +804,10 @@ if [[ ! "${MIN_TARGET_PER_BIN_RYWAK}" =~ ^[0-9]+$ ]] || [[ "${MIN_TARGET_PER_BIN
 fi
 if [[ ! "${MIN_TARGET_PER_BIN_ROBAK}" =~ ^[0-9]+$ ]] || [[ "${MIN_TARGET_PER_BIN_ROBAK}" -lt 1 ]]; then
   echo "--min-target-per-bin-robak musi być >= 1" >&2
+  exit 1
+fi
+if [[ ! "${WARMUP_BASE_RUNS}" =~ ^[0-9]+$ ]] || [[ "${WARMUP_BASE_RUNS}" -lt 0 ]]; then
+  echo "--warmup-base-runs musi być >= 0" >&2
   exit 1
 fi
 
@@ -848,6 +935,11 @@ DEDUP_POSE_ARGS=()
 if [[ "${DEDUP_USE_POSE_KEY}" == "true" ]]; then
   DEDUP_POSE_ARGS+=(--dedup-use-pose-key)
 fi
+FORCE_BASE_PATH_NEXT=false
+FORCE_BASE_PATH_REASON=""
+SAFE_MODE_AFTER_BAD_RUNS=2
+SAFE_MODE_RUNS_LEFT=0
+SAFE_MODE_REASON=""
 
 if [[ "${RUN_MODE}" != "train_only" && -n "${APPEND_FROM_MERGE_EXP_ID}" ]]; then
   APPEND_MERGE_DIR="${OUT_DIR}/${APPEND_FROM_MERGE_EXP_ID}"
@@ -925,13 +1017,43 @@ for run_idx in $(seq 1 "${MAX_DATASET_RUNS}"); do
     fi
   fi
 
+  run_selected_path="${selected_path}"
+  run_adaptive_path="${ADAPTIVE_PATH}"
+  run_safe_mode=false
+  if [[ "${run_idx}" -le "${WARMUP_BASE_RUNS}" ]]; then
+    run_safe_mode=true
+    SAFE_MODE_REASON="warmup_base_runs"
+  fi
+  if [[ "${SAFE_MODE_RUNS_LEFT}" -gt 0 ]]; then
+    run_safe_mode=true
+    SAFE_MODE_RUNS_LEFT=$((SAFE_MODE_RUNS_LEFT - 1))
+  fi
+  if [[ "${FORCE_BASE_PATH_NEXT}" == "true" ]]; then
+    log "Fallback safety: run ${run_idx} wymusza bazową trasę (adaptive-path=OFF) | reason=${FORCE_BASE_PATH_REASON}"
+    run_selected_path=""
+    run_adaptive_path="false"
+    run_safe_mode=true
+    FORCE_BASE_PATH_NEXT=false
+    FORCE_BASE_PATH_REASON=""
+  fi
+  if [[ "${run_safe_mode}" == "true" ]]; then
+    if [[ -n "${SAFE_MODE_REASON}" ]]; then
+      log "Safe mode: run ${run_idx} -> baza + focus=balanced (remaining_safe_runs=${SAFE_MODE_RUNS_LEFT}) | reason=${SAFE_MODE_REASON}"
+    else
+      log "Safe mode: run ${run_idx} -> baza + focus=balanced (remaining_safe_runs=${SAFE_MODE_RUNS_LEFT})"
+    fi
+    run_selected_path=""
+    run_adaptive_path="false"
+    focus_mode="balanced"
+  fi
+
   ts="$(date +%Y%m%d_%H%M%S)"
   dataset_exp_id="exp_multi_dataset_${ts}_r${run_idx}"
 
   eval "$(extract_rywak_weak_bins "${PREV_HIST_REPORT_DIR}")"
 
   run_cfg="${TMP_CONFIG_DIR}/run_${run_idx}_${ts}.yaml"
-  python3 - "${base_cfg_run}" "${run_cfg}" "${focus_mode}" "${selected_path}" "${run_idx}" "${ADAPTIVE_CONFIG}" "${ADAPTIVE_PATH}" "${DATASET_DURATION_CAP_SEC}" \
+  python3 - "${base_cfg_run}" "${run_cfg}" "${focus_mode}" "${run_selected_path}" "${run_idx}" "${ADAPTIVE_CONFIG}" "${run_adaptive_path}" "${DATASET_DURATION_CAP_SEC}" \
     "${RYWAK_WEAK_LINEAR_BIN_CENTER}" "${RYWAK_WEAK_LINEAR_BIN_MIN}" "${RYWAK_WEAK_LINEAR_BIN_MAX}" "${RYWAK_WEAK_LINEAR_COUNT}" \
     "${RYWAK_WEAK_ANGULAR_BIN_CENTER}" "${RYWAK_WEAK_ANGULAR_BIN_MIN}" "${RYWAK_WEAK_ANGULAR_BIN_MAX}" "${RYWAK_WEAK_ANGULAR_COUNT}" \
     "${RYWAK_WEAK_LINEAR_BIN_INDEX}" "${RYWAK_WEAK_ANGULAR_BIN_INDEX}" \
@@ -1014,6 +1136,10 @@ pipeline = cfg.setdefault("pipeline", {})
 timing = cfg.setdefault("timing", {})
 base_seed = int(experiment.get("seed", 123))
 dataset_seed = int(base_seed + (run_idx * 1009))
+# Usuń stare pola adaptive_* z configu bazowego, żeby każda runda była liczona od zera.
+for k in list(experiment.keys()):
+    if str(k).startswith("adaptive_"):
+        experiment.pop(k, None)
 experiment["seed"] = dataset_seed
 experiment["adaptive_dataset_seed"] = dataset_seed
 experiment["adaptive_focus_enabled"] = bool(adaptive_cfg)
@@ -1068,6 +1194,11 @@ dataset.setdefault("motion_stall_check_hz", 4.0)
 dataset.setdefault("motion_stall_enable_window_guard", True)
 dataset.setdefault("motion_stall_min_window_progress_m", 0.12)
 dataset.setdefault("motion_stall_window_span_ratio", 1.8)
+dataset.setdefault("motion_stall_enable_circling_guard", True)
+dataset.setdefault("motion_stall_circling_min_window_path_m", 1.6)
+dataset.setdefault("motion_stall_circling_max_net_path_ratio", 0.25)
+dataset.setdefault("motion_stall_circling_max_net_m", 1.2)
+dataset.setdefault("motion_stall_circling_max_span_m", 2.5)
 # Twarde zakończenie rundy po ukończeniu planned path.
 dataset["stop_on_planned_path_done"] = True
 dataset.setdefault("planned_path_done_topic", "/planned_path_done")
@@ -1094,6 +1225,33 @@ if selected_path.strip():
         pp["reference_map_yaml"] = "reference_map_office.yaml"
 else:
     spec_raw = str(pp.get("spec_yaml", "")).strip()
+    # Ochrona przed "skażeniem" configu: jeśli bazowy config wskazuje tymczasowy
+    # adaptive_path z /tmp, resetujemy na stałą trasę dla danego świata.
+    if spec_raw and os.path.isabs(spec_raw):
+        spec_name = Path(spec_raw).name.lower()
+        is_tmp_adaptive = (
+            ("adaptive_path_" in spec_name)
+            and (spec_raw.startswith("/tmp/") or "/tmp/" in spec_raw)
+        )
+        if is_tmp_adaptive:
+            fallback_spec = _default_spec_for_world(str(simulation.get("train_world", "")))
+            pp["spec_yaml"] = fallback_spec
+            experiment["adaptive_tmp_spec_reset_from"] = spec_raw
+            experiment["adaptive_tmp_spec_reset_to"] = fallback_spec
+            spec_raw = fallback_spec
+    # Safe mode / fallback: jeżeli zostaje stary tymczasowy adaptive_path z /tmp,
+    # wracamy do bazowej trajektorii dla świata (office/hospital), żeby nie mielić
+    # tej samej problematycznej geometrii.
+    if (not adaptive_path) and spec_raw:
+        spec_name = Path(spec_raw).name.lower()
+        looks_tmp = os.path.isabs(spec_raw) and (spec_raw.startswith("/tmp/") or "/tmp/" in spec_raw)
+        looks_adaptive = ("adaptive_path_" in spec_name) or ("adaptive_path_" in spec_raw.lower())
+        if looks_tmp or looks_adaptive:
+            fallback_spec = _default_spec_for_world(str(simulation.get("train_world", "")))
+            pp["spec_yaml"] = fallback_spec
+            experiment["adaptive_safe_fallback_from"] = spec_raw
+            experiment["adaptive_safe_fallback_to"] = fallback_spec
+            spec_raw = fallback_spec
     # Częsty przypadek: stary tymczasowy spec z /tmp po poprzednim uruchomieniu.
     # Jeśli plik nie istnieje, wracamy do stałego specu zależnego od świata.
     if spec_raw and os.path.isabs(spec_raw) and (not Path(spec_raw).is_file()):
@@ -1154,11 +1312,20 @@ if mode == "rotation":
     # otherwise norm would be ~0.5 for every bin center.
     weak_ang_norm = unit_pos(weak_ang_center, rywak_w_min, rywak_w_max)
     if weak_ang_norm is not None and weak_ang_count >= 0:
-        pp["excitation_heading_bias_deg"] = clamp(24.0 + 58.0 * float(weak_ang_norm), 20.0, 82.0)
-        pp["angular_vel_max"] = clamp(1.35 + 1.55 * float(weak_ang_norm), 1.2, 3.0)
-        if weak_ang_norm >= 0.70:
-            pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 0.75)), 0.55, 0.82)
-            pp["excitation_period_sec"] = 1.85
+        # Dla najsłabszych wysokich binów angular (blisko max zakresu) wymuszamy
+        # wyraźnie mocniejszą rotację; inaczej angular_vel_max bywa tuż poniżej progu binu.
+        pp["excitation_heading_bias_deg"] = clamp(30.0 + 62.0 * float(weak_ang_norm), 24.0, 88.0)
+        pp["angular_vel_max"] = clamp(1.45 + 1.75 * float(weak_ang_norm), 1.3, 3.0)
+        if weak_ang_norm >= 0.90:
+            pp["angular_vel_max"] = 3.0
+            pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 0.70)), 0.45, 0.72)
+            pp["lookahead_m"] = clamp(float(pp.get("lookahead_m", 0.14)), 0.10, 0.15)
+            pp["excitation_period_sec"] = 1.55
+            pp["excitation_heading_bias_deg"] = clamp(float(pp.get("excitation_heading_bias_deg", 80.0)), 72.0, 88.0)
+        elif weak_ang_norm >= 0.70:
+            pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 0.75)), 0.50, 0.80)
+            pp["lookahead_m"] = clamp(float(pp.get("lookahead_m", 0.16)), 0.11, 0.16)
+            pp["excitation_period_sec"] = 1.75
         elif weak_ang_norm <= 0.25:
             pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 1.0)), 0.88, 1.18)
             pp["excitation_period_sec"] = 2.40
@@ -1283,18 +1450,18 @@ with open(out_cfg, "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=False)
 PY
 
-  if [[ "${ADAPTIVE_CONFIG}" == "true" && "${ADAPTIVE_PATH}" == "true" ]]; then
+  if [[ "${ADAPTIVE_CONFIG}" == "true" && "${run_adaptive_path}" == "true" ]]; then
     python3 "${ROOT_DIR}/scripts/adapt_planned_path_for_focus.py" \
       --config "${run_cfg}" \
       --focus-mode "${focus_mode}" \
       --run-idx "${run_idx}" \
       --work-dir "${TMP_CONFIG_DIR}"
-  elif [[ "${ADAPTIVE_CONFIG}" == "true" && "${ADAPTIVE_PATH}" == "false" ]]; then
+  elif [[ "${ADAPTIVE_CONFIG}" == "true" && "${run_adaptive_path}" == "false" ]]; then
     log "Adaptive focus: ON | adaptive path geometry: OFF (brak modyfikacji planned_path)"
   fi
 
   log "=== RUN ${run_idx}/${MAX_DATASET_RUNS}: dataset collection (${dataset_exp_id}) ==="
-  log "Config base=${base_cfg_run} | focus=${focus_mode} | path=${selected_path:-<from-config>} | run_cfg=${run_cfg}"
+  log "Config base=${base_cfg_run} | focus=${focus_mode} | path=${run_selected_path:-<from-config>} | adaptive_path=${run_adaptive_path} | run_cfg=${run_cfg}"
   run_wall_start="$(date +%s.%N)"
   set +e
   ros2 launch ai_slam_bringup demo.launch.py \
@@ -1317,6 +1484,12 @@ PY
       "${launch_rc}" \
       "${run_cfg}"
     log "WARN: dataset run ${dataset_exp_id} zakończony błędem rc=${launch_rc}; pomijam rundę i jadę dalej."
+    FORCE_BASE_PATH_NEXT=true
+    FORCE_BASE_PATH_REASON="launch_rc_${launch_rc}"
+    if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
+      SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
+    fi
+    SAFE_MODE_REASON="launch_rc_${launch_rc}"
     continue
   fi
 
@@ -1344,6 +1517,35 @@ PY
       "${launch_rc}" \
       "${run_cfg}"
     log "WARN: runda ${dataset_exp_id} przerwana lub niepełna (np. watchdog/no-motion). Pomijam i przechodzę dalej."
+    FORCE_BASE_PATH_NEXT=true
+    FORCE_BASE_PATH_REASON="incomplete_artifacts"
+    if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
+      SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
+    fi
+    SAFE_MODE_REASON="incomplete_artifacts"
+    continue
+  fi
+
+  run_health_line="$(
+    analyze_single_run_trajectory_health "${TMP_CONFIG_DIR}" "${dataset_exp_id}" "${run_cfg}"
+  )"
+  IFS=$'\t' read -r run_health_flag run_health_status run_health_segs run_health_pts run_health_len <<< "${run_health_line}"
+  if [[ "${run_health_flag}" == "1" ]]; then
+    append_dataset_timing_jsonl \
+      "${DATASET_TIMING_JSONL}" \
+      "${run_idx}" \
+      "${dataset_exp_id}" \
+      "${run_wall_sec}" \
+      "rejected_trajectory_health" \
+      "${launch_rc}" \
+      "${run_cfg}"
+    log "WARN: odrzucam rundę ${dataset_exp_id} (traj health: status=${run_health_status}, stuck_segs=${run_health_segs}, stuck_pts=${run_health_pts}, len=${run_health_len}m)."
+    FORCE_BASE_PATH_NEXT=true
+    FORCE_BASE_PATH_REASON="traj_health_${run_health_status}_segs${run_health_segs}_pts${run_health_pts}_len${run_health_len}"
+    if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
+      SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
+    fi
+    SAFE_MODE_REASON="${FORCE_BASE_PATH_REASON}"
     continue
   fi
 
@@ -1358,6 +1560,8 @@ PY
 
   dataset_experiment_ids+=("${dataset_exp_id}")
   dataset_run_cfg_paths+=("${run_cfg}")
+
+  SAFE_MODE_REASON=""
 
   python3 "${ROOT_DIR}/scripts/report_dataset_histogram_balance.py" --experiment-dir "${exp_dir}"
 
@@ -1386,6 +1590,22 @@ PY
     --experiment-ids "${dataset_experiment_ids[@]}" \
     --run-configs "${dataset_run_cfg_paths[@]}"; then
     log "WARN: trajectory overview generation failed for ${MERGE_DIR}"
+  fi
+  traj_summary_json="${MERGE_DIR}/merged_trajectory_overview_summary.json"
+  if [[ -f "${traj_summary_json}" ]]; then
+    health_line="$(
+      analyze_run_trajectory_health "${traj_summary_json}" "${dataset_exp_id}"
+    )"
+    IFS=$'\t' read -r run_stuck_flag run_traj_status run_stuck_segs run_stuck_pts run_traj_len <<< "${health_line}"
+    if [[ "${run_stuck_flag}" == "1" ]]; then
+      FORCE_BASE_PATH_NEXT=true
+      FORCE_BASE_PATH_REASON="traj_health_${run_traj_status}_segs${run_stuck_segs}_pts${run_stuck_pts}_len${run_traj_len}"
+      if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
+        SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
+      fi
+      SAFE_MODE_REASON="${FORCE_BASE_PATH_REASON}"
+      log "WARN: wykryto możliwe utknięcie/niski progres w ${dataset_exp_id} (status=${run_traj_status}, stuck_segs=${run_stuck_segs}, stuck_pts=${run_stuck_pts}, len=${run_traj_len}m). Następne runy: safe mode (baza + focus=balanced, adaptive_path=OFF)."
+    fi
   fi
 
   rebalance_summary="${MERGE_DIR}/rebalance_unique_summary.json"

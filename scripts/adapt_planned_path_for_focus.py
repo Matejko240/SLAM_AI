@@ -25,7 +25,6 @@ if str(_BRINGUP_SRC) not in sys.path:
     sys.path.insert(0, str(_BRINGUP_SRC))
 
 from ai_slam_bringup.occupancy_grid_plan import (  # type: ignore  # noqa: E402
-    densify_polyline,
     inflate_obstacles,
     load_reference_map,
     plan_polyline_through_anchors,
@@ -58,6 +57,22 @@ _PROFILES: dict[str, Profile] = {
         max_amplitude_m=0.26,
     ),
 }
+
+
+# Office: newralgiczny nawrót "U" w lewym górnym rogu.
+# W tej strefie NIE przesuwamy kotwic adaptacją, żeby nie prowokować blokad.
+_OFFICE_LOCKED_REGIONS_XY: tuple[tuple[float, float, float, float], ...] = (
+    (-28.2, -21.2, 15.9, 19.9),  # x_min, x_max, y_min, y_max
+)
+
+# Office: preferowane "duże U" w lewym górnym rogu.
+_OFFICE_UL_U_CANDIDATES: tuple[tuple[tuple[float, float], ...], ...] = (
+    ((-22.20, 17.30), (-27.00, 17.30), (-27.00, 18.95), (-22.40, 18.95)),
+    ((-22.20, 17.20), (-26.40, 17.20), (-26.40, 18.95), (-22.40, 18.95)),
+    ((-22.20, 17.40), (-27.00, 17.40), (-27.00, 18.95), (-22.40, 18.95)),
+)
+
+_OFFICE_UL_REPLACE_REGION: tuple[float, float, float, float] = (-28.2, -21.2, 16.0, 19.9)
 
 
 def _load_yaml(path: Path) -> dict:
@@ -139,6 +154,50 @@ def _dedup_points(points: list[tuple[float, float]], min_step: float = 0.10) -> 
     return out
 
 
+def _resample_polyline_by_distance(
+    points: list[tuple[float, float]],
+    *,
+    step_m: float,
+) -> list[tuple[float, float]]:
+    """
+    Równomierne próbkowanie po długości łamanej (działa jako downsample i upsample).
+    """
+    if len(points) < 2:
+        return points
+
+    step = max(0.20, float(step_m))
+    seg_len: list[float] = []
+    cum: list[float] = [0.0]
+    total = 0.0
+    for i in range(len(points) - 1):
+        x0, y0 = points[i]
+        x1, y1 = points[i + 1]
+        d = math.hypot(x1 - x0, y1 - y0)
+        seg_len.append(d)
+        total += d
+        cum.append(total)
+    if total < 1e-9:
+        return [points[0], points[-1]]
+
+    targets = np.arange(step, total, step, dtype=np.float64).tolist()
+    out: list[tuple[float, float]] = [points[0]]
+    j = 0
+    for dist in targets:
+        while j + 1 < len(cum) and cum[j + 1] < dist:
+            j += 1
+        if j >= len(points) - 1:
+            break
+        seg_d = seg_len[j]
+        if seg_d < 1e-9:
+            continue
+        t = max(0.0, min(1.0, (dist - cum[j]) / seg_d))
+        x0, y0 = points[j]
+        x1, y1 = points[j + 1]
+        out.append((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
+    out.append(points[-1])
+    return _dedup_points(out, min_step=min(0.10, step * 0.25))
+
+
 def _is_walkable(
     x: float,
     y: float,
@@ -152,6 +211,120 @@ def _is_walkable(
         return False
     r, c = cell
     return bool(walkable[r, c])
+
+
+def _point_in_regions(
+    x: float,
+    y: float,
+    regions_xy: list[tuple[float, float, float, float]],
+) -> bool:
+    for x_min, x_max, y_min, y_max in regions_xy:
+        if x_min <= x <= x_max and y_min <= y <= y_max:
+            return True
+    return False
+
+
+def _locked_regions_for_context(
+    *,
+    spec_path: Path,
+    ref_map_path: Path | None,
+) -> list[tuple[float, float, float, float]]:
+    sp = spec_path.name.lower()
+    rp = (ref_map_path.name.lower() if ref_map_path is not None else "")
+    if "office" in sp or "office" in rp:
+        return list(_OFFICE_LOCKED_REGIONS_XY)
+    return []
+
+
+def _has_office_upper_left_u_turn(anchors: list[tuple[float, float]]) -> bool:
+    if len(anchors) < 4:
+        return False
+    has_left_low = any((x <= -25.0 and 16.8 <= y <= 17.8) for x, y in anchors)
+    has_left_high = any((x <= -25.0 and 18.2 <= y <= 19.2) for x, y in anchors)
+    has_right_low = any((x >= -23.0 and 16.6 <= y <= 17.9) for x, y in anchors)
+    has_right_high = any((x >= -23.0 and 18.2 <= y <= 19.2) for x, y in anchors)
+    return bool(has_left_low and has_left_high and has_right_low and has_right_high)
+
+
+def _closest_anchor_index(
+    anchors: list[tuple[float, float]],
+    target: tuple[float, float],
+) -> int:
+    if not anchors:
+        return 0
+    tx, ty = target
+    best_i = 0
+    best_d = float("inf")
+    for i, (x, y) in enumerate(anchors):
+        d = math.hypot(x - tx, y - ty)
+        if d < best_d:
+            best_d = d
+            best_i = i
+    if best_i >= len(anchors) - 1:
+        return max(0, len(anchors) - 2)
+    return best_i
+
+
+def _enforce_office_upper_left_u_turn(
+    anchors: list[tuple[float, float]],
+    blocked: np.ndarray,
+    meta: dict,
+    *,
+    flip_y: bool,
+    inflate_cells: int,
+    walkable: np.ndarray,
+) -> tuple[list[tuple[float, float]], str]:
+    had_u_turn = _has_office_upper_left_u_turn(anchors)
+
+    x0, x1, y0, y1 = _OFFICE_UL_REPLACE_REGION
+    idxs = [i for i, (x, y) in enumerate(anchors) if (x0 <= x <= x1 and y0 <= y <= y1)]
+    if idxs:
+        left = idxs[0]
+        right = idxs[-1]
+        prefix = anchors[:left]
+        suffix = anchors[right + 1 :]
+    else:
+        insert_idx = _closest_anchor_index(anchors, _OFFICE_UL_U_CANDIDATES[0][0])
+        prefix = anchors[: insert_idx + 1]
+        suffix = anchors[insert_idx + 1 :]
+
+    # Wybieramy najkrótsze połączenie seq z sąsiedztwem, ale tylko z walidacją A*.
+    best_trial: list[tuple[float, float]] | None = None
+    best_score = float("inf")
+    for seq in _OFFICE_UL_U_CANDIDATES:
+        if not all(_is_walkable(px, py, walkable, meta, flip_y=flip_y) for px, py in seq):
+            continue
+        trial = prefix + list(seq) + suffix
+        trial = _dedup_points(trial, min_step=0.18)
+        if len(trial) < 3:
+            continue
+        try:
+            _ = plan_polyline_through_anchors(
+                trial,
+                blocked,
+                meta,
+                flip_y=flip_y,
+                inflate_cells=inflate_cells,
+            )
+        except ValueError:
+            continue
+        if not _has_office_upper_left_u_turn(trial):
+            continue
+
+        score = 0.0
+        if prefix:
+            score += math.hypot(prefix[-1][0] - seq[0][0], prefix[-1][1] - seq[0][1])
+        if suffix:
+            score += math.hypot(suffix[0][0] - seq[-1][0], suffix[0][1] - seq[-1][1])
+        if score < best_score:
+            best_score = score
+            best_trial = trial
+
+    if best_trial is not None:
+        return best_trial, ("normalized_existing_u" if had_u_turn else "enforced")
+    if had_u_turn:
+        return anchors, "keep_existing_u"
+    return anchors, "fallback_keep_original"
 
 
 def _snap_candidate(
@@ -184,8 +357,9 @@ def _generate_slalom_anchors(
     amplitude_m: float,
     run_idx: int,
     max_anchor_count: int,
+    locked_regions_xy: list[tuple[float, float, float, float]],
 ) -> list[tuple[float, float]]:
-    dense = densify_polyline(base_poly, spacing_m)
+    dense = _resample_polyline_by_distance(base_poly, step_m=spacing_m)
     if len(dense) < 3:
         return dense
 
@@ -202,6 +376,11 @@ def _generate_slalom_anchors(
             continue
         nx = -ty / norm
         ny = tx / norm
+
+        # Strefa zamrożona (np. lewy górny róg office): bez bocznego przesuwania.
+        if _point_in_regions(cur_p[0], cur_p[1], locked_regions_xy):
+            out.append(cur_p)
+            continue
 
         h1 = math.atan2(cur_p[1] - prev_p[1], cur_p[0] - prev_p[0])
         h2 = math.atan2(next_p[1] - cur_p[1], next_p[0] - cur_p[0])
@@ -242,8 +421,9 @@ def _generate_translation_anchors(
     amplitude_m: float,
     run_idx: int,
     max_anchor_count: int,
+    locked_regions_xy: list[tuple[float, float, float, float]],
 ) -> list[tuple[float, float]]:
-    dense = densify_polyline(base_poly, spacing_m)
+    dense = _resample_polyline_by_distance(base_poly, step_m=spacing_m)
     if len(dense) < 3:
         return dense
 
@@ -270,6 +450,11 @@ def _generate_translation_anchors(
         base_pt = (base_x, base_y)
         if not _is_walkable(base_pt[0], base_pt[1], walkable, meta, flip_y=flip_y):
             base_pt = cur_p
+
+        # Strefa zamrożona (np. lewy górny róg office): bez modyfikacji geometrii.
+        if _point_in_regions(base_pt[0], base_pt[1], locked_regions_xy):
+            out.append(base_pt)
+            continue
 
         h1 = math.atan2(cur_p[1] - prev_p[1], cur_p[0] - prev_p[0])
         h2 = math.atan2(next_p[1] - cur_p[1], next_p[0] - cur_p[0])
@@ -408,6 +593,8 @@ def main() -> int:
         flip_y=map_flip_y,
         inflate_cells=inflate_cells,
     )
+    locked_regions_xy = _locked_regions_for_context(spec_path=spec_path, ref_map_path=ref_map_path)
+    office_context = bool(locked_regions_xy)
 
     chosen: list[tuple[float, float]] | None = None
     chosen_serialized: list[tuple[float, float]] | None = None
@@ -427,6 +614,7 @@ def main() -> int:
                 amplitude_m=amp_try,
                 run_idx=run_idx,
                 max_anchor_count=profile.max_anchor_count,
+                locked_regions_xy=locked_regions_xy,
             )
         else:
             anchors_try = _generate_slalom_anchors(
@@ -438,6 +626,17 @@ def main() -> int:
                 amplitude_m=amp_try,
                 run_idx=run_idx,
                 max_anchor_count=profile.max_anchor_count,
+                locked_regions_xy=locked_regions_xy,
+            )
+        u_turn_status = "skipped"
+        if office_context:
+            anchors_try, u_turn_status = _enforce_office_upper_left_u_turn(
+                anchors_try,
+                blocked,
+                meta,
+                flip_y=map_flip_y,
+                inflate_cells=inflate_cells,
+                walkable=walkable,
             )
         anchors_serialized = _rounded_anchors(anchors_try, ndigits=serialize_ndigits)
         try:
@@ -456,6 +655,7 @@ def main() -> int:
                     "attempt": attempt_idx + 1,
                     "amplitude_m": amp_try,
                     "serialized_ndigits": serialize_ndigits,
+                    "u_turn_status": u_turn_status,
                     "status": "ok",
                 }
             )
@@ -466,6 +666,7 @@ def main() -> int:
                     "attempt": attempt_idx + 1,
                     "amplitude_m": amp_try,
                     "serialized_ndigits": serialize_ndigits,
+                    "u_turn_status": u_turn_status,
                     "status": f"fail:{exc}",
                 }
             )
@@ -495,6 +696,10 @@ def main() -> int:
     out_spec_data["adaptive_amplitude_m"] = float(chosen_amp)
     out_spec_data["adaptive_anchor_round_ndigits"] = int(serialize_ndigits)
     out_spec_data["adaptive_run_idx"] = int(run_idx)
+    out_spec_data["adaptive_locked_regions_xy"] = [
+        {"x_min": float(x0), "x_max": float(x1), "y_min": float(y0), "y_max": float(y1)}
+        for (x0, x1, y0, y1) in locked_regions_xy
+    ]
     _save_yaml(out_spec, out_spec_data)
 
     pp["spec_yaml"] = str(out_spec)
@@ -502,6 +707,7 @@ def main() -> int:
     experiment["adaptive_path_profile"] = mode
     experiment["adaptive_path_status"] = "generated"
     experiment["adaptive_path_anchor_count"] = int(len(chosen))
+    experiment["adaptive_path_locked_regions_count"] = int(len(locked_regions_xy))
     experiment["adaptive_path_attempts"] = attempts
     _save_yaml(cfg_path, cfg)
 

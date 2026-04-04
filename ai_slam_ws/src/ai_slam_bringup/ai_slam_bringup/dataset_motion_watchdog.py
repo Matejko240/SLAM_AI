@@ -16,21 +16,22 @@ def _recent_motion_metrics(
     *,
     now_sec: float,
     window_sec: float,
-) -> tuple[float, float, float, int]:
+) -> tuple[float, float, float, float, int]:
     """
     Returns metrics over recent samples in [now-window, now]:
     - duration covered by recent samples [s]
     - net displacement between first and last sample [m]
     - spatial span (diag of bbox) [m]
+    - total path length inside recent samples [m]
     - number of recent samples
     """
     if window_sec <= 0.0 or not math.isfinite(now_sec):
-        return 0.0, 0.0, 0.0, 0
+        return 0.0, 0.0, 0.0, 0.0, 0
 
     cutoff = now_sec - window_sec
     recent = [s for s in samples if s[0] >= cutoff]
     if len(recent) < 2:
-        return 0.0, 0.0, 0.0, len(recent)
+        return 0.0, 0.0, 0.0, 0.0, len(recent)
 
     first = recent[0]
     last = recent[-1]
@@ -39,7 +40,10 @@ def _recent_motion_metrics(
     xs = [p[1] for p in recent]
     ys = [p[2] for p in recent]
     span = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
-    return duration, net, span, len(recent)
+    path_len = 0.0
+    for i in range(1, len(recent)):
+        path_len += math.hypot(recent[i][1] - recent[i - 1][1], recent[i][2] - recent[i - 1][2])
+    return duration, net, span, path_len, len(recent)
 
 
 def _is_low_progress_stall(
@@ -50,10 +54,38 @@ def _is_low_progress_stall(
     min_progress_m: float,
     span_ratio: float,
 ) -> tuple[bool, float, float, float, int]:
-    duration, net, span, count = _recent_motion_metrics(samples, now_sec=now_sec, window_sec=window_sec)
+    duration, net, span, _path_len, count = _recent_motion_metrics(samples, now_sec=now_sec, window_sec=window_sec)
     has_full_window = duration >= max(1.0, window_sec - 1.0)
     low_progress = net < min_progress_m and span < (min_progress_m * span_ratio)
     return bool(has_full_window and low_progress), duration, net, span, count
+
+
+def _is_circling_stall(
+    samples: Sequence[PoseTXY],
+    *,
+    now_sec: float,
+    window_sec: float,
+    min_progress_m: float,
+    min_path_m: float,
+    max_net_path_ratio: float,
+    max_net_m: float,
+    max_span_m: float,
+) -> tuple[bool, float, float, float, float, float, int]:
+    duration, net, span, path_len, count = _recent_motion_metrics(samples, now_sec=now_sec, window_sec=window_sec)
+    if duration < max(1.0, window_sec - 1.0):
+        return False, duration, net, span, path_len, float("inf"), count
+    if path_len < max(0.1, min_path_m):
+        return False, duration, net, span, path_len, float("inf"), count
+    if span > max(0.2, max_span_m):
+        return False, duration, net, span, path_len, float("inf"), count
+    if net > max(0.05, max_net_m):
+        return False, duration, net, span, path_len, float("inf"), count
+    ratio = net / max(path_len, 1e-9)
+    # Circling/looping in-place: long traveled path but weak global displacement.
+    # We do not require net < min_progress_m (too strict), because pathological loops
+    # often drift by 0.2-1.0m while still staying in one room.
+    circling = ratio <= max_net_path_ratio
+    return bool(circling), duration, net, span, path_len, ratio, count
 
 
 class DatasetMotionWatchdog(Node):
@@ -74,6 +106,11 @@ class DatasetMotionWatchdog(Node):
         self.declare_parameter("enable_window_progress_guard", True)
         self.declare_parameter("stall_min_window_progress_m", 0.12)
         self.declare_parameter("stall_window_span_ratio", 1.8)
+        self.declare_parameter("enable_circling_guard", True)
+        self.declare_parameter("stall_circling_min_window_path_m", 1.6)
+        self.declare_parameter("stall_circling_max_net_path_ratio", 0.25)
+        self.declare_parameter("stall_circling_max_net_m", 1.2)
+        self.declare_parameter("stall_circling_max_span_m", 2.5)
         self.declare_parameter("log_alive_heartbeat", False)
 
         self._pose_topic = str(self.get_parameter("pose_topic").value).strip() or "/ground_truth_pose"
@@ -87,6 +124,16 @@ class DatasetMotionWatchdog(Node):
             0.02, float(self.get_parameter("stall_min_window_progress_m").value)
         )
         self._stall_window_span_ratio = max(1.0, float(self.get_parameter("stall_window_span_ratio").value))
+        self._enable_circling_guard = bool(self.get_parameter("enable_circling_guard").value)
+        self._stall_circling_min_window_path_m = max(
+            0.1, float(self.get_parameter("stall_circling_min_window_path_m").value)
+        )
+        self._stall_circling_max_net_path_ratio = min(
+            1.0,
+            max(0.01, float(self.get_parameter("stall_circling_max_net_path_ratio").value)),
+        )
+        self._stall_circling_max_net_m = max(0.05, float(self.get_parameter("stall_circling_max_net_m").value))
+        self._stall_circling_max_span_m = max(0.2, float(self.get_parameter("stall_circling_max_span_m").value))
         self._log_alive_heartbeat = bool(self.get_parameter("log_alive_heartbeat").value)
         self._pose_history_horizon_sec = max(
             self._stall_timeout_sec + self._startup_grace_sec + 5.0,
@@ -110,7 +157,12 @@ class DatasetMotionWatchdog(Node):
             f"topic={self._pose_topic}, min_delta={self._min_motion_delta_m:.3f}m, "
             f"stall_timeout={self._stall_timeout_sec:.1f}s, startup_grace={self._startup_grace_sec:.1f}s, "
             f"window_guard={self._enable_window_progress_guard}, "
-            f"window_min_progress={self._stall_min_window_progress_m:.3f}m/{self._stall_timeout_sec:.1f}s"
+            f"window_min_progress={self._stall_min_window_progress_m:.3f}m/{self._stall_timeout_sec:.1f}s, "
+            f"circling_guard={self._enable_circling_guard}, "
+            f"circling_min_path={self._stall_circling_min_window_path_m:.2f}m, "
+            f"circling_max_ratio={self._stall_circling_max_net_path_ratio:.3f}, "
+            f"circling_max_net={self._stall_circling_max_net_m:.2f}m, "
+            f"circling_max_span={self._stall_circling_max_span_m:.2f}m"
         )
 
     @property
@@ -200,6 +252,25 @@ class DatasetMotionWatchdog(Node):
                     "Robot low-progress stall detected: "
                     f"window={win_dur:.1f}s, net={win_net:.3f}m, span={win_span:.3f}m, "
                     f"samples={win_count}, threshold_net={self._stall_min_window_progress_m:.3f}m."
+                )
+                return
+
+        if self._enable_circling_guard:
+            circling, c_dur, c_net, c_span, c_path, c_ratio, c_count = _is_circling_stall(
+                self._pose_history,
+                now_sec=now,
+                window_sec=self._stall_timeout_sec,
+                min_progress_m=self._stall_min_window_progress_m,
+                min_path_m=self._stall_circling_min_window_path_m,
+                max_net_path_ratio=self._stall_circling_max_net_path_ratio,
+                max_net_m=self._stall_circling_max_net_m,
+                max_span_m=self._stall_circling_max_span_m,
+            )
+            if circling:
+                self._abort_reason = (
+                    "Robot circling/looping with low net progress: "
+                    f"window={c_dur:.1f}s, net={c_net:.3f}m, path={c_path:.3f}m, "
+                    f"net/path={c_ratio:.3f}, span={c_span:.3f}m, samples={c_count}."
                 )
                 return
 

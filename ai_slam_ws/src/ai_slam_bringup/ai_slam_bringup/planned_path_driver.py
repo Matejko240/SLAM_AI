@@ -48,6 +48,7 @@ def _lookahead(
     lookahead_m: float,
     nearest_backtrack_points: int,
     nearest_horizon_m: float,
+    ignore_passed_points: bool = False,
 ) -> tuple[float, float, int]:
     if not path:
         return px, py, 0
@@ -58,7 +59,7 @@ def _lookahead(
 
     # Szukaj najbliższego punktu lokalnie: niewielki krok wstecz + ograniczony horyzont do przodu.
     # Chroni to przed "teleportacją indeksu" na dalszą część trasy przy jej samozbliżeniach.
-    i0 = max(0, start - backtrack)
+    i0 = start if ignore_passed_points else max(0, start - backtrack)
     i1 = start
     acc_h = 0.0
     while i1 < n - 1 and acc_h < horizon_m:
@@ -75,7 +76,12 @@ def _lookahead(
         if d < best_d:
             best_d = d
             best_i = i
+    if ignore_passed_points and best_i < start:
+        best_i = start
 
+    # Uwaga: zwracany indeks to "best_i" (najbliższy punkt referencyjny),
+    # a nie indeks odcinka lookahead. Dzięki temu _path_idx nie "odpływa"
+    # do przodu, gdy robot stoi lub ma chwilowy poślizg.
     acc = 0.0
     L = float(lookahead_m)
     for i in range(best_i, len(path) - 1):
@@ -87,9 +93,9 @@ def _lookahead(
             continue
         if acc + seg >= L:
             t = (L - acc) / seg
-            return x0 + t * dx, y0 + t * dy, i
+            return x0 + t * dx, y0 + t * dy, best_i
         acc += seg
-    return path[-1][0], path[-1][1], len(path) - 1
+    return path[-1][0], path[-1][1], best_i
 
 
 def _update_turn_in_place_mode(
@@ -153,6 +159,7 @@ class PlannedPathDriver(Node):
         self.declare_parameter("turn_direction_preference", 1.0)
         self.declare_parameter("nearest_backtrack_points", 8)
         self.declare_parameter("nearest_horizon_m", 6.0)
+        self.declare_parameter("ignore_passed_points", True)
         self.declare_parameter("rate_hz", 20.0)
         self.declare_parameter("stop_on_path_error", False)
         # Optional dataset excitation: broaden v/omega histogram coverage on fixed trajectories.
@@ -245,6 +252,7 @@ class PlannedPathDriver(Node):
         self._alignment_cos_power = max(1.0, float(self.get_parameter("alignment_cos_power").value))
         self._nearest_backtrack_points = max(0, int(self.get_parameter("nearest_backtrack_points").value))
         self._nearest_horizon_m = max(0.5, float(self.get_parameter("nearest_horizon_m").value))
+        self._ignore_passed_points = bool(self.get_parameter("ignore_passed_points").value)
         self._excitation_enabled = bool(self.get_parameter("dataset_excitation_enabled").value)
         self._exc_period = max(1.0, float(self.get_parameter("excitation_period_sec").value))
         self._exc_v_min = float(self.get_parameter("excitation_v_min_scale").value)
@@ -269,7 +277,8 @@ class PlannedPathDriver(Node):
 
         self.get_logger().info(
             f"[planned_path] points={len(self._path)} astar={use_astar} loop={self._loop} "
-            f"spec={spec_path}"
+            f"spec={spec_path} ignore_passed_points={self._ignore_passed_points} "
+            f"backtrack={self._nearest_backtrack_points} horizon={self._nearest_horizon_m:.2f}m"
         )
 
         cmd_topic = str(self.get_parameter("cmd_topic").value)
@@ -358,7 +367,7 @@ class PlannedPathDriver(Node):
             self._pub.publish(twist)
             return
 
-        gx, gy, li = _lookahead(
+        gx, gy, nearest_i = _lookahead(
             self._path,
             self._px,
             self._py,
@@ -366,8 +375,9 @@ class PlannedPathDriver(Node):
             self._lookahead_m,
             self._nearest_backtrack_points,
             self._nearest_horizon_m,
+            self._ignore_passed_points,
         )
-        self._path_idx = li
+        self._path_idx = max(self._path_idx, nearest_i) if self._ignore_passed_points else nearest_i
 
         dx, dy = gx - self._px, gy - self._py
         target_h = math.atan2(dy, dx)

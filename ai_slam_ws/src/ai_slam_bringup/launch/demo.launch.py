@@ -499,6 +499,22 @@ def launch_setup(context, *args, **kwargs):
     dataset_motion_watchdog_window_span_ratio = float(
         get_config_value(cfg, "dataset", "motion_stall_window_span_ratio", default=1.8)
     )
+    dataset_motion_watchdog_enable_circling_guard = parse_bool(
+        get_config_value(cfg, "dataset", "motion_stall_enable_circling_guard", default=True),
+        default=True,
+    )
+    dataset_motion_watchdog_circling_min_window_path_m = float(
+        get_config_value(cfg, "dataset", "motion_stall_circling_min_window_path_m", default=1.6)
+    )
+    dataset_motion_watchdog_circling_max_net_path_ratio = float(
+        get_config_value(cfg, "dataset", "motion_stall_circling_max_net_path_ratio", default=0.25)
+    )
+    dataset_motion_watchdog_circling_max_net_m = float(
+        get_config_value(cfg, "dataset", "motion_stall_circling_max_net_m", default=1.2)
+    )
+    dataset_motion_watchdog_circling_max_span_m = float(
+        get_config_value(cfg, "dataset", "motion_stall_circling_max_span_m", default=2.5)
+    )
     gt_cfg = get_config_value(cfg, "ground_truth", default={})
     gt_use_tf_world = parse_bool(gt_cfg.get("use_tf_world", True), default=True)
     gt_tf_world_topic = str(gt_cfg.get("tf_world_topic", "/tf_world"))
@@ -1093,6 +1109,7 @@ def launch_setup(context, *args, **kwargs):
     planned_alignment_cos_power = float(pp_cfg.get("alignment_cos_power", 2.0))
     planned_nearest_backtrack_points = int(pp_cfg.get("nearest_backtrack_points", 8))
     planned_nearest_horizon_m = float(pp_cfg.get("nearest_horizon_m", 6.0))
+    planned_ignore_passed_points = parse_bool(pp_cfg.get("ignore_passed_points", True), default=True)
     planned_dataset_excitation_enabled = parse_bool(
         pp_cfg.get("dataset_excitation_enabled", False), default=False
     )
@@ -1176,7 +1193,12 @@ def launch_setup(context, *args, **kwargs):
             f"stall_timeout={dataset_motion_watchdog_timeout_sec:.1f}s, "
             f"startup_grace={dataset_motion_watchdog_startup_grace_sec:.1f}s, "
             f"window_guard={dataset_motion_watchdog_enable_window_guard}, "
-            f"window_min_progress={dataset_motion_watchdog_min_window_progress_m:.3f}m"
+            f"window_min_progress={dataset_motion_watchdog_min_window_progress_m:.3f}m, "
+            f"circling_guard={dataset_motion_watchdog_enable_circling_guard}, "
+            f"circling_min_path={dataset_motion_watchdog_circling_min_window_path_m:.2f}m, "
+            f"circling_max_ratio={dataset_motion_watchdog_circling_max_net_path_ratio:.3f}, "
+            f"circling_max_net={dataset_motion_watchdog_circling_max_net_m:.2f}m, "
+            f"circling_max_span={dataset_motion_watchdog_circling_max_span_m:.2f}m"
         )
     print(f"  Training: max_epochs={max_epochs}, patience={patience}, lr={learning_rate}")
     print(f"  Output: {out_dir}/{experiment_id}")
@@ -1563,6 +1585,7 @@ def launch_setup(context, *args, **kwargs):
             "alignment_cos_power": planned_alignment_cos_power,
             "nearest_backtrack_points": planned_nearest_backtrack_points,
             "nearest_horizon_m": planned_nearest_horizon_m,
+            "ignore_passed_points": planned_ignore_passed_points,
             "dataset_excitation_enabled": planned_dataset_excitation_enabled,
             "excitation_period_sec": planned_excitation_period_sec,
             "excitation_v_min_scale": planned_excitation_v_min_scale,
@@ -1752,6 +1775,11 @@ def launch_setup(context, *args, **kwargs):
             "enable_window_progress_guard": dataset_motion_watchdog_enable_window_guard,
             "stall_min_window_progress_m": dataset_motion_watchdog_min_window_progress_m,
             "stall_window_span_ratio": dataset_motion_watchdog_window_span_ratio,
+            "enable_circling_guard": dataset_motion_watchdog_enable_circling_guard,
+            "stall_circling_min_window_path_m": dataset_motion_watchdog_circling_min_window_path_m,
+            "stall_circling_max_net_path_ratio": dataset_motion_watchdog_circling_max_net_path_ratio,
+            "stall_circling_max_net_m": dataset_motion_watchdog_circling_max_net_m,
+            "stall_circling_max_span_m": dataset_motion_watchdog_circling_max_span_m,
             "log_alive_heartbeat": False,
         }],
         output="screen",
@@ -2359,10 +2387,48 @@ def launch_setup(context, *args, **kwargs):
             )
     if phase == "dataset" and dataset_motion_watchdog_enabled:
         def _on_dataset_watchdog_exit(context, *args, **kwargs):
-            return _request_launch_shutdown(
-                "[AUTO] Dataset motion watchdog przerwał przebieg (brak ruchu robota). "
-                "Zamykanie symulacji..."
-            )
+            event = kwargs.get("event", None)
+            if event is None and args:
+                event = args[0]
+
+            def _as_int_or_none(val):
+                if val is None:
+                    return None
+                try:
+                    return int(val)
+                except Exception:
+                    return None
+
+            rc = None
+            candidates = []
+            for k in ("returncode", "exit_code", "return_code", "rc"):
+                if k in kwargs:
+                    candidates.append(kwargs.get(k))
+            if event is not None:
+                for attr in ("returncode", "exit_code", "return_code"):
+                    if hasattr(event, attr):
+                        candidates.append(getattr(event, attr))
+
+            for cand in candidates:
+                rc_int = _as_int_or_none(cand)
+                if rc_int is not None:
+                    rc = rc_int
+                    break
+
+            # If shutdown is already in progress (e.g. normal end or global SIGINT),
+            # watchdog exit must not be treated as the trigger.
+            if _shutdown_state["requested"]:
+                return [LogInfo(msg=f"[AUTO] Dataset motion watchdog exited (rc={rc}); shutdown already in progress.")]
+
+            # Watchdog should stay alive during dataset run. Any non-zero code or unreadable
+            # code here is treated as fail-fast trigger for next round.
+            if rc in (42, None) or (isinstance(rc, int) and rc != 0):
+                reason = "brak ruchu robota" if rc == 42 else "watchdog exit"
+                return _request_launch_shutdown(
+                    f"[AUTO] Dataset motion watchdog przerwał przebieg ({reason}, rc={rc}). "
+                    "Zamykanie symulacji..."
+                )
+            return [LogInfo(msg=f"[AUTO] Dataset motion watchdog exited cleanly (rc={rc}); pomijam.")]
 
         auto_shutdown_dataset_handlers.append(
             RegisterEventHandler(

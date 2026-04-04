@@ -52,9 +52,10 @@ MAP_HOSPITAL = _REPO / "ai_slam_ws" / "src" / "ai_slam_eval" / "maps" / "referen
 # Uwaga: "U" ma być widoczne (dwie różne gałęzie y + łącznik pionowy po lewej),
 # a nie zawracanie po tej samej linii.
 _OFFICE_UL_U_CANDIDATES: list[tuple[tuple[float, float], ...]] = [
-    ((-22.45, 17.35), (-26.75, 17.35), (-26.75, 18.65), (-22.75, 18.65)),
-    ((-22.35, 17.25), (-26.55, 17.25), (-26.55, 18.55), (-22.65, 18.55)),
-    ((-22.55, 17.45), (-26.85, 17.45), (-26.85, 18.75), (-22.85, 18.75)),
+    # Dobrane tak, aby przechodziły walidację również przy inflate_m ~= 0.40
+    ((-22.30, 16.90), (-27.00, 17.30), (-27.00, 18.70), (-22.40, 18.60)),
+    ((-22.30, 16.90), (-27.00, 17.30), (-26.80, 18.70), (-22.20, 18.70)),
+    ((-22.30, 16.90), (-26.80, 17.30), (-26.60, 18.70), (-22.00, 18.80)),
 ]
 
 # Przecięcia polilinii (środki komórek → świat); eps ~1 mm przy współrzędnych w metrach.
@@ -499,6 +500,63 @@ def _dedup_anchor_seq(
     return out
 
 
+def _collapse_office_upper_left_ping_pong(
+    anchors: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """
+    Usuń lokalne "tam-i-z-powrotem" po tej samej półce korytarza
+    w lewym górnym rogu office (obszar U-turn).
+
+    Nie dotyka reszty trasy; aktywuje się tylko gdy wykryje wyraźny
+    odcinek z co najmniej jedną zmianą kierunku x na tej samej wysokości.
+    """
+    if len(anchors) < 6:
+        return anchors
+
+    def in_ul_top_band(p: tuple[float, float]) -> bool:
+        x, y = p
+        return (-27.4 <= x <= -21.6) and (18.10 <= y <= 18.95)
+
+    out: list[tuple[float, float]] = []
+    i = 0
+    n = len(anchors)
+    while i < n:
+        if not in_ul_top_band(anchors[i]):
+            out.append(anchors[i])
+            i += 1
+            continue
+
+        j = i
+        xs = [anchors[i][0]]
+        while (j + 1) < n and in_ul_top_band(anchors[j + 1]):
+            j += 1
+            xs.append(anchors[j][0])
+
+        if (j - i) >= 2:
+            dirs: list[int] = []
+            for k in range(len(xs) - 1):
+                dx = xs[k + 1] - xs[k]
+                if abs(dx) < 0.15:
+                    continue
+                dirs.append(1 if dx > 0.0 else -1)
+            dir_changes = 0
+            for k in range(1, len(dirs)):
+                if dirs[k] != dirs[k - 1]:
+                    dir_changes += 1
+            x_span = max(xs) - min(xs)
+            # Szeroki odcinek + zmiana kierunku => ping-pong; zostawiamy tylko końce.
+            if dir_changes >= 1 and x_span >= 0.6:
+                out.append(anchors[i])
+                out.append(anchors[j])
+                i = j + 1
+                continue
+
+        out.extend(anchors[i : j + 1])
+        i = j + 1
+
+    return _dedup_anchor_seq(out, min_step_m=0.20)
+
+
 def inject_office_upper_left_u_turn(
     anchors: list[tuple[float, float]],
     blocked: np.ndarray,
@@ -523,7 +581,8 @@ def inject_office_upper_left_u_turn(
 
         idx = _closest_anchor_index(anchors, entry)
         trial = anchors[: idx + 1] + list(seq) + anchors[idx + 1 :]
-        trial = _dedup_anchor_seq(trial, min_step_m=0.14)
+        trial = _dedup_anchor_seq(trial, min_step_m=0.20)
+        trial = _collapse_office_upper_left_ping_pong(trial)
         if len(trial) < 3:
             continue
 

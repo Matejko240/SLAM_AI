@@ -114,6 +114,8 @@ def main() -> int:
             str(out_path),
             "--dpi",
             str(args.dpi),
+            "--view",
+            "full_map",
             "--no-stats",
         ]
         r = subprocess.run(cmd, cwd=str(_REPO))

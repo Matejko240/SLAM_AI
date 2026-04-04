@@ -326,6 +326,8 @@ driver:
     # Lokalny nearest-search po trasie (bez skoków indeksu na odległe samozbliżenia trasy).
     nearest_backtrack_points: 8
     nearest_horizon_m: 6.0
+    # Po minięciu punktu nie cofaj indeksu trasy (eliminuje wybór "starych" punktów przy nawrotach U).
+    ignore_passed_points: true
     # Opcjonalna modulacja prędkości i bias nagłówka pod lepsze pokrycie histogramów datasetu.
     dataset_excitation_enabled: false
     excitation_period_sec: 12.0
