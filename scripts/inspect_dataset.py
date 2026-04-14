@@ -1812,24 +1812,81 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
     artifacts: dict[str, Path] = {}
     results = load_history(results_path)
     world_name = str(results.get("world_name", "")).strip() if isinstance(results, dict) else ""
+    def _load_ts(data: np.lib.npyio.NpzFile, key: str, fallback_key: str = "time_s") -> np.ndarray:
+        if key in data:
+            return np.asarray(data[key], dtype=np.float32).reshape(-1)
+        if fallback_key in data:
+            return np.asarray(data[fallback_key], dtype=np.float32).reshape(-1)
+        return np.zeros((0,), dtype=np.float32)
+
     with np.load(trajectory_npz, allow_pickle=True) as data:
-        gt_xy = _traj_series_xy(data, "gt_xytheta")
-        baseline_xy = _traj_series_xy(data, "baseline_xytheta")
-        ai_xy = _traj_series_xy(data, "ai_xytheta")
-        robak_xy = _traj_series_xy(data, "robak_xytheta")
-        rywak_xy = _traj_series_xy(data, "rywak_xytheta")
-        t = np.asarray(data["time_s"], dtype=np.float32).reshape(-1) if "time_s" in data else np.zeros((0,), dtype=np.float32)
-        e_baseline = _traj_err_mag(data, "baseline_err_xy")
-        eth_baseline = _traj_abs_theta(data, "baseline_err_theta")
-        t_robak = np.asarray(data["robak_time_s"], dtype=np.float32).reshape(-1) if "robak_time_s" in data else np.zeros((0,), dtype=np.float32)
-        e_robak = _traj_err_mag(data, "robak_err_xy")
-        eth_robak = _traj_abs_theta(data, "robak_err_theta")
-        t_rywak = np.asarray(data["rywak_time_s"], dtype=np.float32).reshape(-1) if "rywak_time_s" in data else np.zeros((0,), dtype=np.float32)
-        e_rywak = _traj_err_mag(data, "rywak_err_xy")
-        eth_rywak = _traj_abs_theta(data, "rywak_err_theta")
-        t_ai = np.asarray(data["ai_time_s"], dtype=np.float32).reshape(-1) if "ai_time_s" in data else np.zeros((0,), dtype=np.float32)
-        e_ai = _traj_err_mag(data, "ai_err_xy")
-        eth_ai = _traj_abs_theta(data, "ai_err_theta")
+        tracks: dict[str, dict[str, Any]] = {
+            "gt": {
+                "label": "GT",
+                "color": "#2563eb",
+                "xy": _traj_series_xy(data, "gt_xytheta"),
+                "time": _load_ts(data, "time_s"),
+            },
+            "odometry": {
+                "label": "odometria (/odom)",
+                "color": "#c2410c",
+                "xy": _traj_series_xy(data, "odom_xytheta"),
+                "time": _load_ts(data, "time_s"),
+                "err_xy": _traj_err_mag(data, "odom_err_xy"),
+                "err_th": _traj_abs_theta(data, "odom_err_theta"),
+            },
+            "classic_slam": {
+                "label": "klasyczny SLAM (/map)",
+                "color": "#111827",
+                "xy": _traj_series_xy(data, "slam_baseline_xytheta"),
+                "time": _load_ts(data, "slam_baseline_time_s"),
+                "err_xy": _traj_err_mag(data, "slam_baseline_err_xy"),
+                "err_th": _traj_abs_theta(data, "slam_baseline_err_theta"),
+            },
+            "robak_slam": {
+                "label": "robak + SLAM",
+                "color": "#dc2626",
+                "xy": _traj_series_xy(data, "robak_slam_xytheta"),
+                "time": _load_ts(data, "robak_slam_time_s"),
+                "err_xy": _traj_err_mag(data, "robak_slam_err_xy"),
+                "err_th": _traj_abs_theta(data, "robak_slam_err_theta"),
+            },
+            "rywak_slam": {
+                "label": "rywak + SLAM",
+                "color": "#65a30d",
+                "xy": _traj_series_xy(data, "rywak_slam_xytheta"),
+                "time": _load_ts(data, "rywak_slam_time_s"),
+                "err_xy": _traj_err_mag(data, "rywak_slam_err_xy"),
+                "err_th": _traj_abs_theta(data, "rywak_slam_err_theta"),
+            },
+            "robak_no_slam": {
+                "label": "robak bez SLAM",
+                "color": "#ef4444",
+                "xy": _traj_series_xy(data, "robak_no_slam_xytheta"),
+                "time": _load_ts(data, "robak_no_slam_time_s"),
+                "err_xy": _traj_err_mag(data, "robak_no_slam_err_xy"),
+                "err_th": _traj_abs_theta(data, "robak_no_slam_err_theta"),
+            },
+            "rywak_no_slam": {
+                "label": "rywak bez SLAM",
+                "color": "#84cc16",
+                "xy": _traj_series_xy(data, "rywak_no_slam_xytheta"),
+                "time": _load_ts(data, "rywak_no_slam_time_s"),
+                "err_xy": _traj_err_mag(data, "rywak_no_slam_err_xy"),
+                "err_th": _traj_abs_theta(data, "rywak_no_slam_err_theta"),
+            },
+        }
+        if include_ai:
+            tracks["ai"] = {
+                "label": "AI",
+                "color": "#0f766e",
+                "xy": _traj_series_xy(data, "ai_xytheta"),
+                "time": _load_ts(data, "ai_time_s"),
+                "err_xy": _traj_err_mag(data, "ai_err_xy"),
+                "err_th": _traj_abs_theta(data, "ai_err_theta"),
+            }
+
+    gt_xy = tracks["gt"]["xy"]
 
     ref_grid, ref_resolution, ref_origin = choose_reference_display_alignment(
         dataset_dir,
@@ -1842,9 +1899,9 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
     ref_y_max = ref_y_min + ref_grid.shape[0] * ref_resolution
     ref_display = make_reference_display_grid(ref_grid)
 
-    # Trajectory plot without AI (for readability)
+    # Trajectory plot (pełne tory dla porównania tor1/tor5/tor6/tor7/tor8 + klasyczny SLAM).
     traj_path = dataset_dir / "eval_trajectory.png"
-    if gt_xy.shape[0] > 0 and baseline_xy.shape[0] > 0:
+    if gt_xy.shape[0] > 0:
         fig, ax_full = plt.subplots(1, 1, figsize=(9.0, 7.2))
         ax_full.imshow(
             ref_display,
@@ -1873,19 +1930,28 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
         )
         ax_full.add_patch(map_rect)
 
-        series = [
-            (gt_xy, "tab:blue", "GT"),
-            (baseline_xy, "tab:orange", "baseline"),
-            (robak_xy, "tab:red", "robak"),
-            (rywak_xy, "tab:purple", "rywak"),
-        ]
-        if include_ai:
-            series.append((ai_xy, "tab:green", "ai"))
-        for arr, color, label in series:
+        track_order = [
+            "gt",
+            "odometry",
+            "classic_slam",
+            "robak_slam",
+            "rywak_slam",
+            "robak_no_slam",
+            "rywak_no_slam",
+        ] + (["ai"] if include_ai else [])
+        series = []
+        for track_key in track_order:
+            tr = tracks.get(track_key, {})
+            arr = np.asarray(tr.get("xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32).reshape((-1, 2))
+            if arr.shape[0] == 0:
+                continue
+            series.append((track_key, arr, str(tr.get("color", "#334155")), str(tr.get("label", track_key))))
+
+        for _track_key, arr, color, label in series:
             if arr.shape[0] > 0:
                 ax_full.plot(arr[:, 0], arr[:, 1], color=color, linewidth=1.4, alpha=0.9, label=label)
 
-        all_xy = np.concatenate([arr for arr, _, _ in series if arr.shape[0] > 0], axis=0)
+        all_xy = np.concatenate([arr for _track_key, arr, _color, _label in series if arr.shape[0] > 0], axis=0)
         x_min = min(float(np.min(all_xy[:, 0])), ref_x_min)
         x_max = max(float(np.max(all_xy[:, 0])), ref_x_max)
         y_min = min(float(np.min(all_xy[:, 1])), ref_y_min)
@@ -1894,7 +1960,7 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
         y_pad = max(2.0, 0.12 * max(y_max - y_min, 1.0))
         ax_full.set_xlim(x_min - x_pad, x_max + x_pad)
         ax_full.set_ylim(y_min - y_pad, y_max + y_pad)
-        ax_full.set_title("Trajektorie wzgledem mapy referencyjnej")
+        ax_full.set_title("Trajektorie względem mapy referencyjnej (odometria / klasyczny SLAM / Robak / Rywak)")
         ax_full.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0)
         fig.tight_layout(rect=[0.0, 0.0, 0.84, 1.0])
         fig.savefig(traj_path, dpi=150)
@@ -1911,7 +1977,7 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
             },
             "series": {},
         }
-        for arr, _color, label in series:
+        for _track_key, arr, _color, label in series:
             if arr.shape[0] == 0:
                 continue
             outside_ratio, occ_hit_ratio = _trajectory_alignment_metrics(arr, ref_grid, ref_resolution, ref_origin)
@@ -1928,51 +1994,43 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
         write_json(coords_path, coord_payload)
         artifacts["trajectory_coordinates_json"] = coords_path
 
-    # Error plot without AI
+    # Error plot with all available tracks (z i bez SLAM).
     err_path = dataset_dir / "eval_errors.png"
-    if t.size > 0 and e_baseline.size > 0 and eth_baseline.size > 0:
+    err_tracks_order = [
+        "odometry",
+        "classic_slam",
+        "robak_slam",
+        "rywak_slam",
+        "robak_no_slam",
+        "rywak_no_slam",
+    ] + (["ai"] if include_ai else [])
+    err_plot_data: list[tuple[str, np.ndarray, np.ndarray, np.ndarray, str]] = []
+    for track_key in err_tracks_order:
+        tr = tracks.get(track_key, {})
+        tt = np.asarray(tr.get("time", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        e_xy = np.asarray(tr.get("err_xy", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        e_th = np.asarray(tr.get("err_th", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        if tt.size == 0 or e_xy.size == 0 or e_th.size == 0:
+            continue
+        err_plot_data.append((track_key, tt, e_xy, e_th, str(tr.get("label", track_key))))
+
+    if err_plot_data:
         fig, (ax_pos, ax_theta) = plt.subplots(2, 1, figsize=(12.0, 7.2), sharex=True)
-        ax_pos.plot(t[: e_baseline.shape[0]], e_baseline, label="baseline", linewidth=1.5)
-        ax_theta.plot(t[: eth_baseline.shape[0]], eth_baseline, label="baseline", linewidth=1.5)
-        if t_robak.size > 0 and e_robak.size > 0 and eth_robak.size > 0:
-            n = min(t_robak.shape[0], e_robak.shape[0], eth_robak.shape[0])
-            ax_pos.plot(t_robak[:n], e_robak[:n], label="robak", alpha=0.85)
-            ax_theta.plot(t_robak[:n], eth_robak[:n], label="robak", alpha=0.85)
-        if t_rywak.size > 0 and e_rywak.size > 0 and eth_rywak.size > 0:
-            n = min(t_rywak.shape[0], e_rywak.shape[0], eth_rywak.shape[0])
-            ax_pos.plot(t_rywak[:n], e_rywak[:n], label="rywak", alpha=0.85)
-            ax_theta.plot(t_rywak[:n], eth_rywak[:n], label="rywak", alpha=0.85)
-        if include_ai and t_ai.size > 0 and e_ai.size > 0 and eth_ai.size > 0:
-            n = min(t_ai.shape[0], e_ai.shape[0], eth_ai.shape[0])
-            ax_pos.plot(t_ai[:n], e_ai[:n], label="ai", alpha=0.85)
-            ax_theta.plot(t_ai[:n], eth_ai[:n], label="ai", alpha=0.85)
-        t_max = float(
-            np.max(
-                np.asarray(
-                    [
-                        np.max(t[: e_baseline.shape[0]]) if e_baseline.size > 0 else 0.0,
-                        np.max(t_robak[: min(t_robak.shape[0], e_robak.shape[0])]) if e_robak.size > 0 else 0.0,
-                        np.max(t_rywak[: min(t_rywak.shape[0], e_rywak.shape[0])]) if e_rywak.size > 0 else 0.0,
-                        np.max(t_ai[: min(t_ai.shape[0], e_ai.shape[0])]) if (include_ai and e_ai.size > 0) else 0.0,
-                    ],
-                    dtype=np.float32,
-                )
-            )
-        )
+        for track_key, tt, e_xy, e_th, label in err_plot_data:
+            n = int(min(tt.shape[0], e_xy.shape[0], e_th.shape[0]))
+            if n <= 0:
+                continue
+            lw = 1.8 if track_key in ("odometry", "classic_slam") else 1.4
+            ls = "--" if track_key.endswith("_no_slam") else "-"
+            ax_pos.plot(tt[:n], e_xy[:n], label=label, linewidth=lw, linestyle=ls, alpha=0.90)
+            ax_theta.plot(tt[:n], e_th[:n], label=label, linewidth=lw, linestyle=ls, alpha=0.90)
+
+        t_max = float(max(float(np.max(tt)) for _k, tt, _exy, _eth, _label in err_plot_data if tt.size > 0))
         if t_max > 0.0:
             x_pad = max(0.5, 0.01 * t_max)
             ax_theta.set_xlim(0.0, t_max + x_pad)
-        pos_series = [e_baseline]
-        th_series = [eth_baseline]
-        if e_robak.size > 0:
-            pos_series.append(e_robak[: min(t_robak.shape[0], e_robak.shape[0])])
-            th_series.append(eth_robak[: min(t_robak.shape[0], eth_robak.shape[0])])
-        if e_rywak.size > 0:
-            pos_series.append(e_rywak[: min(t_rywak.shape[0], e_rywak.shape[0])])
-            th_series.append(eth_rywak[: min(t_rywak.shape[0], eth_rywak.shape[0])])
-        if include_ai and e_ai.size > 0:
-            pos_series.append(e_ai[: min(t_ai.shape[0], e_ai.shape[0])])
-            th_series.append(eth_ai[: min(t_ai.shape[0], eth_ai.shape[0])])
+        pos_series = [np.asarray(e_xy, dtype=np.float32) for _k, _tt, e_xy, _eth, _label in err_plot_data]
+        th_series = [np.asarray(e_th, dtype=np.float32) for _k, _tt, _e_xy, e_th, _label in err_plot_data]
         pos_all = np.concatenate([np.asarray(s, dtype=np.float32).reshape(-1) for s in pos_series if np.asarray(s).size > 0])
         th_all = np.concatenate([np.asarray(s, dtype=np.float32).reshape(-1) for s in th_series if np.asarray(s).size > 0])
         if pos_all.size > 0:
@@ -1985,11 +2043,11 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
             th_max = float(np.max(th_all))
             th_pad = max(0.03, 0.07 * max(th_max - th_min, 1e-3))
             ax_theta.set_ylim(th_min - th_pad, th_max + th_pad)
-        ax_pos.set_title("Błąd pozycji")
+        ax_pos.set_title("Błąd pozycji (pełne tory)")
         ax_pos.set_ylabel("error [m]")
         ax_pos.grid(True, alpha=0.3)
         ax_pos.legend(loc="best")
-        ax_theta.set_title("Błąd orientacji")
+        ax_theta.set_title("Błąd orientacji (pełne tory)")
         ax_theta.set_xlabel("t [s]")
         ax_theta.set_ylabel("|error| [rad]")
         ax_theta.grid(True, alpha=0.3)
@@ -1999,16 +2057,34 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
         plt.close(fig)
         artifacts["errors_png"] = err_path
 
-    # Map layers plot without AI
+    # Map layers plot: wszystkie warstwy dostępne w eval_map_layers.npz.
     maps_path = dataset_dir / "eval_maps.png"
     if map_layers_npz.exists():
         with np.load(map_layers_npz) as m:
-            key_order = ["ref", "baseline", "robak", "rywak"] + (["ai"] if include_ai else [])
-            keys = [k for k in key_order if k in m.files]
+            canonical_candidates = [
+                ("ref", ["ref"], "mapa referencyjna", None),
+                ("gt", ["gt"], "GT points", "iou_map_gt_points"),
+                ("odom", ["odom"], "odometria points", "iou_map_odom_points"),
+                ("classic_slam", ["classic_slam", "baseline_slam", "baseline"], "klasyczny SLAM", "iou_map_classic_slam"),
+                ("robak_slam", ["robak_slam", "robak"], "robak + SLAM", "iou_map_robak"),
+                ("rywak_slam", ["rywak_slam", "rywak"], "rywak + SLAM", "iou_map_rywak"),
+                ("robak_no_slam", ["robak_no_slam"], "robak bez SLAM", "iou_map_robak_no_slam"),
+                ("rywak_no_slam", ["rywak_no_slam"], "rywak bez SLAM", "iou_map_rywak_no_slam"),
+            ]
+            if include_ai:
+                canonical_candidates.append(("ai_slam", ["ai_slam", "ai"], "AI SLAM", "iou_map_ai"))
+
+            resolved: list[tuple[str, str, str, str | None]] = []
+            for canonical_key, candidates, label, metric_key in canonical_candidates:
+                chosen = next((cand for cand in candidates if cand in m.files), None)
+                if chosen is None:
+                    continue
+                resolved.append((canonical_key, chosen, label, metric_key))
+
             rotate_180 = bool(int(np.asarray(m["rotate_180"]).reshape(-1)[0])) if "rotate_180" in m.files else False
-            if keys:
-                n = len(keys)
-                ncols = min(2, n)
+            if resolved:
+                n = len(resolved)
+                ncols = min(3, n)
                 nrows = int(np.ceil(n / ncols))
                 fig, axes = plt.subplots(nrows, ncols, figsize=(5.6 * ncols, 5.4 * nrows), squeeze=False)
                 configure_figure(fig)
@@ -2016,14 +2092,14 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
                 ref_occ = np.asarray(m["ref"], dtype=np.float32) if "ref" in m.files else None
                 if ref_occ is not None and rotate_180:
                     ref_occ = np.rot90(ref_occ, 2)
-                for i, key in enumerate(keys):
+                for i, (canonical_key, src_key, label, metric_key) in enumerate(resolved):
                     ax = axes_flat[i]
                     configure_axes(ax)
-                    disp = np.asarray(m[key], dtype=np.float32)
+                    disp = np.asarray(m[src_key], dtype=np.float32)
                     if rotate_180:
                         disp = np.rot90(disp, 2)
                     # Keep IoU values from raw maps, but render as match-overlay for readability.
-                    if key == "ref" or ref_occ is None or ref_occ.shape != disp.shape:
+                    if canonical_key == "ref" or ref_occ is None or ref_occ.shape != disp.shape:
                         ax.imshow(disp, origin="lower", cmap="gray", vmin=0.0, vmax=1.0, interpolation="nearest")
                     else:
                         overlay = render_map_match_overlay(ref_occ, disp)
@@ -2031,21 +2107,23 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
                             ax.imshow(disp, origin="lower", cmap="gray", vmin=0.0, vmax=1.0, interpolation="nearest")
                         else:
                             ax.imshow(overlay, origin="lower", interpolation="nearest")
-                    metric_key = f"iou_map_{key}" if key != "baseline" else "iou_map_baseline"
                     iou = None
                     if isinstance(results, dict):
                         metrics = results.get("metrics", {})
                         if isinstance(metrics, dict):
-                            iou = metrics.get(metric_key)
-                    title = key
+                            if metric_key is not None:
+                                iou = metrics.get(metric_key)
+                                if iou is None and metric_key == "iou_map_classic_slam":
+                                    iou = metrics.get("iou_map_baseline")
+                    title = label
                     if isinstance(iou, (int, float)):
-                        title = f"{key} (IoU={float(iou):.3f})"
+                        title = f"{label} (IoU={float(iou):.3f})"
                     ax.set_title(title)
                     ax.set_xticks([])
                     ax.set_yticks([])
                 for j in range(n, len(axes_flat)):
                     axes_flat[j].axis("off")
-                fig.suptitle("Porównanie map", fontsize=12, color="#f8fafc")
+                fig.suptitle("Porównanie map (odometria / klasyczny SLAM / Robak / Rywak, z i bez SLAM)", fontsize=12, color="#f8fafc")
                 fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
                 fig.savefig(maps_path, dpi=160, facecolor=fig.get_facecolor())
                 plt.close(fig)

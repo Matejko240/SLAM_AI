@@ -1,5 +1,4 @@
 import math
-import json
 import os
 import time
 from collections import deque
@@ -25,29 +24,8 @@ from .common import (
     synchronize_torch_device,
     wrap,
     xytheta_from_odom,
-    xytheta_from_pose_stamped,
 )
 from .experiment_logger import ExperimentLogger
-
-DEBUG_LOG_PATH = "/home/matejko/SLAM_AI/.cursor/debug-a69755.log"
-DEBUG_SESSION_ID = "a69755"
-
-
-def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    payload = {
-        "sessionId": DEBUG_SESSION_ID,
-        "runId": str(run_id),
-        "hypothesisId": str(hypothesis_id),
-        "location": str(location),
-        "message": str(message),
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
 
 
 def _stamp_to_sec(stamp) -> float:
@@ -82,6 +60,19 @@ def _sanitize_scan(msg: LaserScan) -> np.ndarray:
 def _interp_angle(th0: float, th1: float, alpha: float) -> float:
     d = wrap(float(th1) - float(th0))
     return wrap(float(th0) + float(alpha) * d)
+
+
+def _rebase_pose(abs_xyth, origin_xyth):
+    x, y, th = abs_xyth
+    ox, oy, oth = origin_xyth
+    dx_w = float(x) - float(ox)
+    dy_w = float(y) - float(oy)
+    c0 = math.cos(float(oth))
+    s0 = math.sin(float(oth))
+    x_l = c0 * dx_w + s0 * dy_w
+    y_l = -s0 * dx_w + c0 * dy_w
+    th_l = wrap(float(th) - float(oth))
+    return float(x_l), float(y_l), float(th_l)
 
 
 def _parse_hidden_dims(value) -> List[int]:
@@ -129,6 +120,7 @@ class InferRywakNode(Node):
         self.declare_parameter("write_experiment_metadata", False)
 
         self.declare_parameter("scan_topic", "/scan_slam_rywak")
+        self.declare_parameter("relay_scan_topic", "")
         self.declare_parameter("pose_topic", "/pose_rywak")
         self.declare_parameter("tf_parent", "odom_rywak")
         self.declare_parameter("tf_child", "base_link_rywak")
@@ -148,12 +140,32 @@ class InferRywakNode(Node):
         self.declare_parameter("fuse_odom_w_gain", 0.35)
         self.declare_parameter("vel_ema_alpha", 0.60)
         self.declare_parameter("anchor_yaw_to_odom", 0.35)
+        self.declare_parameter("anchor_yaw_to_odom_gain", 0.75)
         self.declare_parameter("anchor_xy_to_odom", 0.0)
         self.declare_parameter("anchor_xy_to_odom_gain", 0.0)
         self.declare_parameter("heading_for_xy_odom_weight", 0.60)
         self.declare_parameter("xy_step_odom_weight", 0.35)
         self.declare_parameter("xy_step_odom_gain", 0.45)
         self.declare_parameter("max_integration_dt", 0.20)
+        self.declare_parameter("max_step_trans", 0.0)
+        self.declare_parameter("max_step_yaw", 0.0)
+        self.declare_parameter("odom_rebase_to_local_origin", False)
+        self.declare_parameter("use_odom_corrections", True)
+        self.declare_parameter("force_odom_pose", False)
+        self.declare_parameter("odom_fallback_before_model_ready", True)
+        self.declare_parameter("odom_guard_enabled", True)
+        self.declare_parameter("odom_guard_fuse_weight", 0.95)
+        self.declare_parameter("odom_guard_v_abs_diff", 0.35)
+        self.declare_parameter("odom_guard_v_rel_diff", 0.60)
+        self.declare_parameter("odom_guard_w_abs_diff", 0.80)
+        self.declare_parameter("odom_guard_w_rel_diff", 0.80)
+        self.declare_parameter("odom_guard_sign_conflict_speed", 0.08)
+        self.declare_parameter("odom_guard_xy_error_m", 0.45)
+        self.declare_parameter("odom_guard_xy_anchor_base", 0.80)
+        self.declare_parameter("odom_guard_xy_anchor_gain", 0.70)
+        self.declare_parameter("odom_guard_yaw_error_rad", 0.35)
+        self.declare_parameter("odom_guard_yaw_anchor_base", 0.75)
+        self.declare_parameter("odom_guard_yaw_anchor_gain", 0.50)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -185,6 +197,7 @@ class InferRywakNode(Node):
         self.torch_device_info = select_torch_device(self.torch_device_request)
         self.device = torch.device(self.torch_device_info.resolved)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
+        self.relay_scan_topic = str(self.get_parameter("relay_scan_topic").value).strip()
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
@@ -218,12 +231,36 @@ class InferRywakNode(Node):
         self.fuse_odom_w_gain = float(self.get_parameter("fuse_odom_w_gain").value)
         self.vel_ema_alpha = float(self.get_parameter("vel_ema_alpha").value)
         self.anchor_yaw_to_odom = float(self.get_parameter("anchor_yaw_to_odom").value)
+        self.anchor_yaw_to_odom_gain = float(self.get_parameter("anchor_yaw_to_odom_gain").value)
         self.anchor_xy_to_odom = float(self.get_parameter("anchor_xy_to_odom").value)
         self.anchor_xy_to_odom_gain = float(self.get_parameter("anchor_xy_to_odom_gain").value)
         self.heading_for_xy_odom_weight = float(self.get_parameter("heading_for_xy_odom_weight").value)
         self.xy_step_odom_weight = float(self.get_parameter("xy_step_odom_weight").value)
         self.xy_step_odom_gain = float(self.get_parameter("xy_step_odom_gain").value)
         self.max_integration_dt = float(self.get_parameter("max_integration_dt").value)
+        self.max_step_trans = float(self.get_parameter("max_step_trans").value)
+        self.max_step_yaw = float(self.get_parameter("max_step_yaw").value)
+        self.odom_rebase_to_local_origin = bool(self.get_parameter("odom_rebase_to_local_origin").value)
+        self.use_odom_corrections = bool(self.get_parameter("use_odom_corrections").value)
+        self.force_odom_pose = bool(self.get_parameter("force_odom_pose").value)
+        self.odom_fallback_before_model_ready = bool(
+            self.get_parameter("odom_fallback_before_model_ready").value
+        )
+        self.odom_guard_enabled = bool(self.get_parameter("odom_guard_enabled").value)
+        self.odom_guard_fuse_weight = float(self.get_parameter("odom_guard_fuse_weight").value)
+        self.odom_guard_v_abs_diff = float(self.get_parameter("odom_guard_v_abs_diff").value)
+        self.odom_guard_v_rel_diff = float(self.get_parameter("odom_guard_v_rel_diff").value)
+        self.odom_guard_w_abs_diff = float(self.get_parameter("odom_guard_w_abs_diff").value)
+        self.odom_guard_w_rel_diff = float(self.get_parameter("odom_guard_w_rel_diff").value)
+        self.odom_guard_sign_conflict_speed = float(
+            self.get_parameter("odom_guard_sign_conflict_speed").value
+        )
+        self.odom_guard_xy_error_m = float(self.get_parameter("odom_guard_xy_error_m").value)
+        self.odom_guard_xy_anchor_base = float(self.get_parameter("odom_guard_xy_anchor_base").value)
+        self.odom_guard_xy_anchor_gain = float(self.get_parameter("odom_guard_xy_anchor_gain").value)
+        self.odom_guard_yaw_error_rad = float(self.get_parameter("odom_guard_yaw_error_rad").value)
+        self.odom_guard_yaw_anchor_base = float(self.get_parameter("odom_guard_yaw_anchor_base").value)
+        self.odom_guard_yaw_anchor_gain = float(self.get_parameter("odom_guard_yaw_anchor_gain").value)
 
         self.model = None
         self.x_mean_t = None
@@ -231,6 +268,7 @@ class InferRywakNode(Node):
         self.y_mean_t = None
         self.y_std_t = None
         self.in_dim = None
+        self.out_dim = 2
         self._in_dim_warned = False
 
         self.prev_scan = None
@@ -238,13 +276,20 @@ class InferRywakNode(Node):
         self.theta_hist = deque(maxlen=3)
         # (stamp_sec, theta, v, w)
         self.odom_buf = deque(maxlen=2000)
+        self.odom_origin_xyth = None
         self.odom_miss_count = 0
         self.odom_interp_count = 0
         self.odom_nearest_count = 0
+        self.latest_odom_msg = None
+        self.latest_init_odom_msg = None
         self.v_filt = None
         self.w_filt = None
+        self.dx_filt = None
+        self.dy_filt = None
+        self.dth_filt = None
 
         self.pose_inited = False
+        self._bootstrap_pose_done = False
         self.x = 0.0
         self.y = 0.0
         self.th = 0.0
@@ -252,9 +297,11 @@ class InferRywakNode(Node):
         self.infer_start = None
         self.inference_count = 0
         self.inference_times_ms = []
-        self._debug_step = 0
 
         self.pub_pose = self.create_publisher(PoseStamped, self.pose_topic, 10)
+        self.pub_scan_relay = None
+        if self.relay_scan_topic:
+            self.pub_scan_relay = self.create_publisher(LaserScan, self.relay_scan_topic, qos_profile_sensor_data)
         self.tf_br = TransformBroadcaster(self) if self.publish_tf else None
 
         self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
@@ -272,28 +319,101 @@ class InferRywakNode(Node):
             f"delta_clip={self.delta_scan_clip}, v_clip={self.v_clip_abs}, w_clip={self.w_clip_abs}, "
             f"fuse(v={self.fuse_odom_v_weight}+{self.fuse_odom_v_gain}*err, "
             f"w={self.fuse_odom_w_weight}+{self.fuse_odom_w_gain}*err), "
-            f"ema={self.vel_ema_alpha}, yaw_anchor={self.anchor_yaw_to_odom}, "
+            f"ema={self.vel_ema_alpha}, yaw_anchor={self.anchor_yaw_to_odom}+{self.anchor_yaw_to_odom_gain}*err, "
             f"xy_anchor={self.anchor_xy_to_odom}+{self.anchor_xy_to_odom_gain}*err, "
             f"xy_heading_odom_w={self.heading_for_xy_odom_weight}, "
             f"xy_step_odom_w={self.xy_step_odom_weight}+{self.xy_step_odom_gain}*err, "
-            f"max_dt={self.max_integration_dt}"
+            f"max_dt={self.max_integration_dt}, "
+            f"max_step_trans={self.max_step_trans}, "
+            f"max_step_yaw={self.max_step_yaw}, "
+            f"odom_rebase_to_local_origin={self.odom_rebase_to_local_origin}, "
+            f"use_odom_corrections={self.use_odom_corrections}, "
+            f"force_odom_pose={self.force_odom_pose}, "
+            f"odom_fallback_before_model_ready={self.odom_fallback_before_model_ready}, "
+            f"odom_guard(enabled={self.odom_guard_enabled}, "
+            f"fuse={self.odom_guard_fuse_weight}, "
+            f"xy_err={self.odom_guard_xy_error_m}, "
+            f"yaw_err={self.odom_guard_yaw_error_rad}), "
+            f"relay_scan_topic={self.relay_scan_topic or '(disabled)'}"
         )
 
+    def _rebase_odom_pose(self, x: float, y: float, th: float):
+        if not self.odom_rebase_to_local_origin:
+            return float(x), float(y), float(th)
+        if self.odom_origin_xyth is None:
+            self.odom_origin_xyth = (float(x), float(y), float(th))
+        return _rebase_pose((x, y, th), self.odom_origin_xyth)
+
     def on_init_odom(self, msg: Odometry):
+        self.latest_init_odom_msg = msg
         if self.pose_inited:
+            self._try_publish_bootstrap_pose()
             return
-        self.x, self.y, self.th = xytheta_from_odom(msg)
+        x, y, th = xytheta_from_odom(msg)
+        self.x, self.y, self.th = self._rebase_odom_pose(x, y, th)
         self.pose_inited = True
+        self._try_publish_bootstrap_pose()
 
     def on_odom(self, msg: Odometry):
+        self.latest_odom_msg = msg
         t = _stamp_to_sec(msg.header.stamp)
         x, y, th = xytheta_from_odom(msg)
+        x, y, th = self._rebase_odom_pose(x, y, th)
         v = float(msg.twist.twist.linear.x)
         w = float(msg.twist.twist.angular.z)
         self.odom_buf.append((t, x, y, th, v, w))
         if self.init_odom_topic == self.odom_topic and not self.pose_inited:
             self.x, self.y, self.th = x, y, th
             self.pose_inited = True
+        self._try_publish_bootstrap_pose()
+        if self.model is None and self.odom_fallback_before_model_ready and self.pose_inited:
+            self.x, self.y, self.th = x, y, th
+            self._publish_pose_stamped(msg.header.stamp)
+
+    def _publish_pose_stamped(self, stamp) -> None:
+        qx, qy, qz, qw = quat_from_yaw(self.th)
+        ps = PoseStamped()
+        ps.header.stamp = stamp
+        ps.header.frame_id = self.tf_parent
+        ps.pose.position.x = float(self.x)
+        ps.pose.position.y = float(self.y)
+        ps.pose.position.z = 0.0
+        ps.pose.orientation.x = qx
+        ps.pose.orientation.y = qy
+        ps.pose.orientation.z = qz
+        ps.pose.orientation.w = qw
+        self.pub_pose.publish(ps)
+
+        if self.publish_tf and self.tf_br is not None:
+            tfm = TransformStamped()
+            tfm.header.stamp = stamp
+            tfm.header.frame_id = self.tf_parent
+            tfm.child_frame_id = self.tf_child
+            tfm.transform.translation.x = float(self.x)
+            tfm.transform.translation.y = float(self.y)
+            tfm.transform.translation.z = 0.0
+            tfm.transform.rotation.x = qx
+            tfm.transform.rotation.y = qy
+            tfm.transform.rotation.z = qz
+            tfm.transform.rotation.w = qw
+            self.tf_br.sendTransform(tfm)
+
+    def _relay_scan(self, scan_msg: LaserScan) -> None:
+        if self.pub_scan_relay is not None:
+            self.pub_scan_relay.publish(scan_msg)
+
+    def _try_publish_bootstrap_pose(self) -> None:
+        if self._bootstrap_pose_done or (
+            self.model is None
+            and not self.force_odom_pose
+            and not self.odom_fallback_before_model_ready
+        ) or not self.pose_inited:
+            return
+        stamp_msg = self.latest_init_odom_msg or self.latest_odom_msg
+        if stamp_msg is None:
+            return
+        self._publish_pose_stamped(stamp_msg.header.stamp)
+        self._bootstrap_pose_done = True
 
     def _nearest_odom(self, t_scan: float):
         if not self.odom_buf:
@@ -363,10 +483,11 @@ class InferRywakNode(Node):
             return
 
         payload = torch.load(self.model_path, map_location="cpu")
-        self.in_dim = int(payload.get("in_dim", 362))
+        self.in_dim = int(payload.get("in_dim", 720))
+        self.out_dim = int(payload.get("out_dim", 2))
         hidden_dims = _parse_hidden_dims(payload.get("hidden_dims", [256, 128, 64]))
         dropout = float(payload.get("dropout", 0.0))
-        self.model = MLP2(self.in_dim, 2, hidden_dims=hidden_dims, dropout=dropout)
+        self.model = MLP2(self.in_dim, self.out_dim, hidden_dims=hidden_dims, dropout=dropout)
         self.model.load_state_dict(payload["state_dict"])
         self.model.to(self.device)
         self.model.eval()
@@ -391,7 +512,10 @@ class InferRywakNode(Node):
                 torch_device_used=self.torch_device_info.resolved,
             )
 
-        self.get_logger().info(f"[Rywak] Model loaded: {self.model_path}")
+        self.get_logger().info(
+            f"[Rywak] Model loaded: {self.model_path} (in_dim={self.in_dim}, out_dim={self.out_dim})"
+        )
+        self._try_publish_bootstrap_pose()
 
     def periodic_save_stats(self):
         if self.infer_start is None or self.inference_count == 0:
@@ -406,7 +530,11 @@ class InferRywakNode(Node):
             )
 
     def on_scan(self, msg: LaserScan):
-        if self.model is None or not self.pose_inited:
+        if (
+            self.model is None
+            and not self.force_odom_pose
+            and not self.odom_fallback_before_model_ready
+        ) or not self.pose_inited:
             return
 
         scan = _sanitize_scan(msg)
@@ -414,27 +542,133 @@ class InferRywakNode(Node):
             return
 
         t_cur = _stamp_to_sec(msg.header.stamp)
-        odom_match = self._odom_at(t_cur)
-        if odom_match is None:
-            self.odom_miss_count += 1
-            return
-        x_odom, y_odom, th_cur, v_odom, w_odom = odom_match
+        need_odom = bool(self.force_odom_pose or self.model is None or self.out_dim == 2)
+        odom_match = None
+        if need_odom:
+            odom_match = self._odom_at(t_cur)
+            if odom_match is None:
+                self.odom_miss_count += 1
+                return
+            x_odom, y_odom, th_cur, v_odom, w_odom = odom_match
 
-        if self.prev_scan is None:
+        if self.force_odom_pose:
+            self.x = float(x_odom)
+            self.y = float(y_odom)
+            self.th = float(th_cur)
+            self._publish_pose_stamped(msg.header.stamp)
+            self._relay_scan(msg)
             self.prev_scan = scan
             self.prev_stamp_sec = t_cur
             self.theta_hist.append(th_cur)
+            return
+
+        if self.model is None and self.odom_fallback_before_model_ready:
+            self.x = float(x_odom)
+            self.y = float(y_odom)
+            self.th = float(th_cur)
+            self._publish_pose_stamped(msg.header.stamp)
+            self._relay_scan(msg)
+            self.prev_scan = scan
+            self.prev_stamp_sec = t_cur
+            self.theta_hist.append(th_cur)
+            return
+
+        if self.prev_scan is None:
+            if odom_match is not None:
+                self.x = float(x_odom)
+                self.y = float(y_odom)
+                self.th = float(th_cur)
+            self._publish_pose_stamped(msg.header.stamp)
+            self._relay_scan(msg)
+            self.prev_scan = scan
+            self.prev_stamp_sec = t_cur
+            if odom_match is not None:
+                self.theta_hist.append(th_cur)
             return
 
         dt = max(1e-3, t_cur - float(self.prev_stamp_sec))
         if self.max_integration_dt > 0.0:
             dt = min(dt, self.max_integration_dt)
 
+        if self.out_dim == 3:
+            features = np.concatenate([self.prev_scan, scan], axis=0).astype(np.float32)
+            if features.size != self.in_dim:
+                if not self._in_dim_warned:
+                    self.get_logger().warn(
+                        f"[Rywak] Feature dim mismatch: got {features.size}, model expects {self.in_dim}. "
+                        "Likely model/dataset mismatch for scan-pair mode."
+                    )
+                    self._in_dim_warned = True
+                return
+            xt = torch.from_numpy(features[None, :]).to(self.device, dtype=torch.float32)
+
+            t0 = time.perf_counter()
+            synchronize_torch_device(self.device)
+            with torch.inference_mode():
+                xn = (xt - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
+                yn = self.model(xn).reshape(-1)
+                y = (yn * self.y_std_t + self.y_mean_t).detach().cpu().numpy().astype(np.float32)
+            synchronize_torch_device(self.device)
+            t1 = time.perf_counter()
+
+            self.inference_times_ms.append((t1 - t0) * 1000.0)
+            self.inference_count += 1
+
+            dx = float(y[0])
+            dy = float(y[1])
+            dth = float(y[2])
+
+            if self.max_step_trans > 0.0:
+                trans = math.hypot(dx, dy)
+                if trans > self.max_step_trans and trans > 1e-9:
+                    scale = self.max_step_trans / trans
+                    dx *= scale
+                    dy *= scale
+            if self.max_step_yaw > 0.0:
+                dth = float(np.clip(dth, -self.max_step_yaw, self.max_step_yaw))
+
+            alpha = min(max(self.vel_ema_alpha, 0.0), 0.999)
+            if self.dx_filt is None:
+                self.dx_filt = dx
+                self.dy_filt = dy
+                self.dth_filt = dth
+            else:
+                self.dx_filt = alpha * self.dx_filt + (1.0 - alpha) * dx
+                self.dy_filt = alpha * self.dy_filt + (1.0 - alpha) * dy
+                self.dth_filt = alpha * self.dth_filt + (1.0 - alpha) * dth
+            dx = float(self.dx_filt)
+            dy = float(self.dy_filt)
+            dth = float(self.dth_filt)
+
+            c = math.cos(self.th)
+            s = math.sin(self.th)
+            self.x += c * dx - s * dy
+            self.y += s * dx + c * dy
+            self.th = wrap(self.th + dth)
+
+            self._publish_pose_stamped(msg.header.stamp)
+            self._relay_scan(msg)
+            self.prev_scan = scan
+            self.prev_stamp_sec = t_cur
+            return
+        if self.out_dim != 2:
+            if not self._in_dim_warned:
+                self.get_logger().warn(
+                    f"[Rywak] Unsupported model out_dim={self.out_dim}. Expected 2 (v,w) or 3 (dx,dy,dtheta)."
+                )
+                self._in_dim_warned = True
+            return
+
         delta_scan = (scan - self.prev_scan).astype(np.float32)
         if self.delta_scan_clip > 0.0:
             delta_scan = np.clip(delta_scan, -self.delta_scan_clip, self.delta_scan_clip).astype(np.float32)
         self.theta_hist.append(th_cur)
         if len(self.theta_hist) < 3:
+            self.x = float(x_odom)
+            self.y = float(y_odom)
+            self.th = float(th_cur)
+            self._publish_pose_stamped(msg.header.stamp)
+            self._relay_scan(msg)
             self.prev_scan = scan
             self.prev_stamp_sec = t_cur
             return
@@ -471,18 +705,45 @@ class InferRywakNode(Node):
         v_pred = float(y[0])
         w_pred = float(y[1])
 
-        v_base = min(max(self.fuse_odom_v_weight, 0.0), 1.0)
-        w_base = min(max(self.fuse_odom_w_weight, 0.0), 1.0)
-        v_gain = max(0.0, self.fuse_odom_v_gain)
-        w_gain = max(0.0, self.fuse_odom_w_gain)
         v_scale = self.v_clip_abs if self.v_clip_abs > 0.0 else 0.5
         w_scale = self.w_clip_abs if self.w_clip_abs > 0.0 else 1.0
-        v_err = abs(v_pred - float(v_odom)) / max(v_scale, 1e-3)
-        w_err = abs(w_pred - float(w_odom)) / max(w_scale, 1e-3)
-        wv = min(max(v_base + v_gain * v_err, 0.0), 1.0)
-        ww = min(max(w_base + w_gain * w_err, 0.0), 1.0)
-        v = (1.0 - wv) * v_pred + wv * float(v_odom)
-        w = (1.0 - ww) * w_pred + ww * float(w_odom)
+        if self.use_odom_corrections:
+            v_base = min(max(self.fuse_odom_v_weight, 0.0), 1.0)
+            w_base = min(max(self.fuse_odom_w_weight, 0.0), 1.0)
+            v_gain = max(0.0, self.fuse_odom_v_gain)
+            w_gain = max(0.0, self.fuse_odom_w_gain)
+            v_err = abs(v_pred - float(v_odom)) / max(v_scale, 1e-3)
+            w_err = abs(w_pred - float(w_odom)) / max(w_scale, 1e-3)
+            wv = min(max(v_base + v_gain * v_err, 0.0), 1.0)
+            ww = min(max(w_base + w_gain * w_err, 0.0), 1.0)
+            if self.odom_guard_enabled:
+                odom_guard_fuse_w = min(max(self.odom_guard_fuse_weight, 0.0), 1.0)
+                odom_guard_sign_v = max(0.01, self.odom_guard_sign_conflict_speed)
+                v_sign_conflict = (
+                    float(v_odom) * float(v_pred) < 0.0
+                    and (abs(float(v_odom)) > odom_guard_sign_v or abs(float(v_pred)) > odom_guard_sign_v)
+                )
+                w_sign_conflict = (
+                    float(w_odom) * float(w_pred) < 0.0
+                    and (abs(float(w_odom)) > odom_guard_sign_v or abs(float(w_pred)) > odom_guard_sign_v)
+                )
+                v_guard_limit = max(0.0, self.odom_guard_v_abs_diff) + max(0.0, self.odom_guard_v_rel_diff) * max(
+                    abs(float(v_odom)),
+                    odom_guard_sign_v,
+                )
+                w_guard_limit = max(0.0, self.odom_guard_w_abs_diff) + max(0.0, self.odom_guard_w_rel_diff) * max(
+                    abs(float(w_odom)),
+                    odom_guard_sign_v,
+                )
+                if v_sign_conflict or abs(v_pred - float(v_odom)) > v_guard_limit:
+                    wv = max(wv, odom_guard_fuse_w)
+                if w_sign_conflict or abs(w_pred - float(w_odom)) > w_guard_limit:
+                    ww = max(ww, odom_guard_fuse_w)
+            v = (1.0 - wv) * v_pred + wv * float(v_odom)
+            w = (1.0 - ww) * w_pred + ww * float(w_odom)
+        else:
+            v = v_pred
+            w = w_pred
 
         if self.v_clip_abs > 0.0:
             v = float(np.clip(v, -self.v_clip_abs, self.v_clip_abs))
@@ -490,37 +751,37 @@ class InferRywakNode(Node):
             w = float(np.clip(w, -self.w_clip_abs, self.w_clip_abs))
 
         alpha_ema = min(max(self.vel_ema_alpha, 0.0), 0.999)
-        alpha_ema_default = float(alpha_ema)
-        ema_trigger = "none"
         # Keep EMA adaptive thresholds independent from configured clip range.
         # Large clip values (e.g. 5 m/s) were masking meaningful sign/delta changes.
         v_flip_mag_th = 0.08
         w_flip_mag_th = 0.20
         v_jump_th = 0.35
         w_jump_th = 0.75
-        v_filt_prev = float(self.v_filt) if self.v_filt is not None else None
-        w_filt_prev = float(self.w_filt) if self.w_filt is not None else None
         if self.v_filt is not None:
             v_sign_flip = (self.v_filt * v < 0.0) and (abs(self.v_filt) > v_flip_mag_th or abs(v) > v_flip_mag_th)
             v_jump = abs(self.v_filt - v) > v_jump_th
-            v_odom_conflict = (float(v_odom) * v < 0.0) and (abs(float(v_odom)) > v_flip_mag_th) and (abs(v) > 0.04)
-            if v_sign_flip or v_jump or v_odom_conflict:
+            v_odom_conflict = self.use_odom_corrections and (float(v_odom) * v < 0.0) and (abs(float(v_odom)) > v_flip_mag_th) and (abs(v) > 0.04)
+            v_odom_delta_conflict = False
+            if self.use_odom_corrections and self.odom_guard_enabled:
+                v_guard_limit = max(0.0, self.odom_guard_v_abs_diff) + max(0.0, self.odom_guard_v_rel_diff) * max(
+                    abs(float(v_odom)),
+                    max(0.01, self.odom_guard_sign_conflict_speed),
+                )
+                v_odom_delta_conflict = abs(v - float(v_odom)) > v_guard_limit
+            if v_sign_flip or v_jump or v_odom_conflict or v_odom_delta_conflict:
                 alpha_ema = min(alpha_ema, 0.2)
-                if v_sign_flip:
-                    ema_trigger = "v_sign_flip"
-                elif v_odom_conflict:
-                    ema_trigger = "v_odom_conflict"
-                else:
-                    ema_trigger = "v_jump"
         if self.w_filt is not None:
             w_sign_flip = (self.w_filt * w < 0.0) and (abs(self.w_filt) > w_flip_mag_th or abs(w) > w_flip_mag_th)
             w_jump = abs(self.w_filt - w) > w_jump_th
-            if w_sign_flip or w_jump:
+            w_odom_delta_conflict = False
+            if self.use_odom_corrections and self.odom_guard_enabled:
+                w_guard_limit = max(0.0, self.odom_guard_w_abs_diff) + max(0.0, self.odom_guard_w_rel_diff) * max(
+                    abs(float(w_odom)),
+                    max(0.01, self.odom_guard_sign_conflict_speed),
+                )
+                w_odom_delta_conflict = abs(w - float(w_odom)) > w_guard_limit
+            if w_sign_flip or w_jump or w_odom_delta_conflict:
                 alpha_ema = min(alpha_ema, 0.2)
-                if ema_trigger == "none":
-                    ema_trigger = "w_sign_flip" if w_sign_flip else "w_jump"
-        v_before_ema = float(v)
-        w_before_ema = float(w)
         if self.v_filt is None:
             self.v_filt = v
             self.w_filt = w
@@ -531,90 +792,76 @@ class InferRywakNode(Node):
         w = float(self.w_filt)
 
         # unicycle integration
+        prev_x = float(self.x)
+        prev_y = float(self.y)
+        prev_th = float(self.th)
         th_pred = wrap(self.th + w * dt)
-        yaw_anchor = min(max(self.anchor_yaw_to_odom, 0.0), 1.0)
-        self.th = _interp_angle(th_pred, float(th_cur), yaw_anchor)
+        if self.use_odom_corrections:
+            yaw_anchor_base = min(max(self.anchor_yaw_to_odom, 0.0), 1.0)
+            yaw_anchor_gain = max(0.0, self.anchor_yaw_to_odom_gain)
+            yaw_err = abs(wrap(float(th_pred) - float(th_cur)))
+            yaw_scale = max(0.10, abs(float(w_odom)) * dt)
+            yaw_anchor = min(max(yaw_anchor_base + yaw_anchor_gain * (yaw_err / yaw_scale), 0.0), 1.0)
+            self.th = _interp_angle(th_pred, float(th_cur), yaw_anchor)
+        else:
+            self.th = th_pred
+        if self.max_step_yaw > 0.0:
+            dth = wrap(self.th - prev_th)
+            dth = float(np.clip(dth, -self.max_step_yaw, self.max_step_yaw))
+            self.th = wrap(prev_th + dth)
+        if self.use_odom_corrections and self.odom_guard_enabled and self.odom_guard_yaw_error_rad > 0.0:
+            yaw_err_after = abs(wrap(float(self.th) - float(th_cur)))
+            if yaw_err_after > self.odom_guard_yaw_error_rad:
+                yaw_guard_base = min(max(self.odom_guard_yaw_anchor_base, 0.0), 1.0)
+                yaw_guard_gain = max(0.0, self.odom_guard_yaw_anchor_gain)
+                yaw_guard_scale = max(1e-6, self.odom_guard_yaw_error_rad)
+                yaw_guard_w = min(max(yaw_guard_base + yaw_guard_gain * (yaw_err_after / yaw_guard_scale), 0.0), 1.0)
+                self.th = _interp_angle(self.th, float(th_cur), yaw_guard_w)
 
-        heading_w = min(max(self.heading_for_xy_odom_weight, 0.0), 1.0)
+        heading_w = min(max(self.heading_for_xy_odom_weight, 0.0), 1.0) if self.use_odom_corrections else 0.0
         th_xy = _interp_angle(self.th, float(th_cur), heading_w)
         step_pred_x = v * dt * math.cos(th_xy)
         step_pred_y = v * dt * math.sin(th_xy)
         step_odom_x = float(v_odom) * dt * math.cos(float(th_cur))
         step_odom_y = float(v_odom) * dt * math.sin(float(th_cur))
-        step_base = min(max(self.xy_step_odom_weight, 0.0), 1.0)
-        step_gain = max(0.0, self.xy_step_odom_gain)
-        step_err = abs(v - float(v_odom)) / max(v_scale, 1e-3)
-        step_w = min(max(step_base + step_gain * step_err, 0.0), 1.0)
+        if self.use_odom_corrections:
+            step_base = min(max(self.xy_step_odom_weight, 0.0), 1.0)
+            step_gain = max(0.0, self.xy_step_odom_gain)
+            step_err = abs(v - float(v_odom)) / max(v_scale, 1e-3)
+            step_w = min(max(step_base + step_gain * step_err, 0.0), 1.0)
+        else:
+            step_w = 0.0
         self.x += (1.0 - step_w) * step_pred_x + step_w * step_odom_x
         self.y += (1.0 - step_w) * step_pred_y + step_w * step_odom_y
 
         xy_anchor_base = min(max(self.anchor_xy_to_odom, 0.0), 1.0)
         xy_anchor_gain = max(0.0, self.anchor_xy_to_odom_gain)
-        if xy_anchor_base > 0.0 or xy_anchor_gain > 0.0:
+        if self.use_odom_corrections and (xy_anchor_base > 0.0 or xy_anchor_gain > 0.0):
             err_xy = math.hypot(self.x - float(x_odom), self.y - float(y_odom))
             step_scale = max(abs(float(v_odom)) * dt, 0.05)
             anchor_w = min(max(xy_anchor_base + xy_anchor_gain * (err_xy / step_scale), 0.0), 1.0)
             self.x = (1.0 - anchor_w) * self.x + anchor_w * float(x_odom)
             self.y = (1.0 - anchor_w) * self.y + anchor_w * float(y_odom)
+        if self.use_odom_corrections and self.odom_guard_enabled and self.odom_guard_xy_error_m > 0.0:
+            err_xy_guard = math.hypot(self.x - float(x_odom), self.y - float(y_odom))
+            if err_xy_guard > self.odom_guard_xy_error_m:
+                guard_xy_base = min(max(self.odom_guard_xy_anchor_base, 0.0), 1.0)
+                guard_xy_gain = max(0.0, self.odom_guard_xy_anchor_gain)
+                guard_xy_scale = max(1e-6, self.odom_guard_xy_error_m)
+                guard_xy_w = min(max(guard_xy_base + guard_xy_gain * (err_xy_guard / guard_xy_scale), 0.0), 1.0)
+                self.x = (1.0 - guard_xy_w) * self.x + guard_xy_w * float(x_odom)
+                self.y = (1.0 - guard_xy_w) * self.y + guard_xy_w * float(y_odom)
+        if self.max_step_trans > 0.0:
+            dx = self.x - prev_x
+            dy = self.y - prev_y
+            step = math.hypot(dx, dy)
+            if step > self.max_step_trans and step > 1e-9:
+                scale = self.max_step_trans / step
+                self.x = prev_x + dx * scale
+                self.y = prev_y + dy * scale
 
-        ps = PoseStamped()
-        ps.header.stamp = msg.header.stamp
-        ps.header.frame_id = self.tf_parent
-        qx, qy, qz, qw = quat_from_yaw(self.th)
-        ps.pose.position.x = float(self.x)
-        ps.pose.position.y = float(self.y)
-        ps.pose.position.z = 0.0
-        ps.pose.orientation.x = qx
-        ps.pose.orientation.y = qy
-        ps.pose.orientation.z = qz
-        ps.pose.orientation.w = qw
-        self.pub_pose.publish(ps)
-
-        if self.publish_tf and self.tf_br is not None:
-            tfm = TransformStamped()
-            tfm.header.stamp = msg.header.stamp
-            tfm.header.frame_id = self.tf_parent
-            tfm.child_frame_id = self.tf_child
-            tfm.transform.translation.x = float(self.x)
-            tfm.transform.translation.y = float(self.y)
-            tfm.transform.translation.z = 0.0
-            tfm.transform.rotation.x = qx
-            tfm.transform.rotation.y = qy
-            tfm.transform.rotation.z = qz
-            tfm.transform.rotation.w = qw
-            self.tf_br.sendTransform(tfm)
-
-        self._debug_step += 1
-        if self._debug_step % 400 == 0:
-            # region agent log
-            _debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H2",
-                location="infer_rywak_node.py:on_scan",
-                message="rywak fusion snapshot",
-                data={
-                    "step": int(self._debug_step),
-                    "v_pred": float(v_pred),
-                    "w_pred": float(w_pred),
-                    "v_odom": float(v_odom),
-                    "w_odom": float(w_odom),
-                    "v_before_ema": float(v_before_ema),
-                    "w_before_ema": float(w_before_ema),
-                    "v_fused": float(v),
-                    "w_fused": float(w),
-                    "alpha_ema_used": float(alpha_ema),
-                    "alpha_ema_default": float(alpha_ema_default),
-                    "ema_trigger": str(ema_trigger),
-                    "v_filt_prev": v_filt_prev,
-                    "w_filt_prev": w_filt_prev,
-                    "fuse_weight_v": float(wv),
-                    "fuse_weight_w": float(ww),
-                    "xy_step_weight": float(step_w),
-                    "anchor_yaw_to_odom": float(self.anchor_yaw_to_odom),
-                    "anchor_xy_to_odom": float(self.anchor_xy_to_odom),
-                },
-            )
-            # endregion
+        self._publish_pose_stamped(msg.header.stamp)
+        self._relay_scan(msg)
 
         self.prev_scan = scan
         self.prev_stamp_sec = t_cur

@@ -154,6 +154,12 @@ class PlannedPathDriver(Node):
         self.declare_parameter("heading_gain", 2.2)
         self.declare_parameter("heading_stop_deg", 55.0)
         self.declare_parameter("heading_resume_deg", 35.0)
+        self.declare_parameter("turn_in_place_max_duration_sec", 0.0)
+        self.declare_parameter("turn_in_place_escape_v_ratio", 0.0)
+        self.declare_parameter("turn_in_place_escape_v_min_mps", 0.0)
+        self.declare_parameter("post_turn_forward_boost_sec", 0.0)
+        self.declare_parameter("post_turn_forward_min_v_ratio", 0.0)
+        self.declare_parameter("post_turn_forward_min_v_mps", 0.0)
         self.declare_parameter("alignment_cos_power", 2.0)
         self.declare_parameter("turn_direction_guard_deg", 18.0)
         self.declare_parameter("turn_direction_preference", 1.0)
@@ -249,6 +255,30 @@ class PlannedPathDriver(Node):
         self._turn_direction_preference = (
             1.0 if float(self.get_parameter("turn_direction_preference").value) >= 0.0 else -1.0
         )
+        self._turn_in_place_max_duration_sec = max(
+            0.0,
+            float(self.get_parameter("turn_in_place_max_duration_sec").value),
+        )
+        self._turn_in_place_escape_v_ratio = max(
+            0.0,
+            min(1.0, float(self.get_parameter("turn_in_place_escape_v_ratio").value)),
+        )
+        self._turn_in_place_escape_v_min_mps = max(
+            0.0,
+            float(self.get_parameter("turn_in_place_escape_v_min_mps").value),
+        )
+        self._post_turn_forward_boost_sec = max(
+            0.0,
+            float(self.get_parameter("post_turn_forward_boost_sec").value),
+        )
+        self._post_turn_forward_min_v_ratio = max(
+            0.0,
+            min(1.0, float(self.get_parameter("post_turn_forward_min_v_ratio").value)),
+        )
+        self._post_turn_forward_min_v_mps = max(
+            0.0,
+            float(self.get_parameter("post_turn_forward_min_v_mps").value),
+        )
         self._alignment_cos_power = max(1.0, float(self.get_parameter("alignment_cos_power").value))
         self._nearest_backtrack_points = max(0, int(self.get_parameter("nearest_backtrack_points").value))
         self._nearest_horizon_m = max(0.5, float(self.get_parameter("nearest_horizon_m").value))
@@ -270,6 +300,8 @@ class PlannedPathDriver(Node):
         self._completion_sent = False
         self._path_idx = 0
         self._turn_in_place = False
+        self._turn_in_place_since_sec: float | None = None
+        self._post_turn_boost_until_sec = -1.0
         self._turn_direction_sign = 0.0
         self._px = self._py = 0.0
         self._yaw = 0.0
@@ -383,9 +415,9 @@ class PlannedPathDriver(Node):
         target_h = math.atan2(dy, dx)
         err = _wrap_pi(target_h - self._yaw)
         v_max_eff = self._v_max
+        now_s = float(self.get_clock().now().nanoseconds) * 1e-9
         if self._excitation_enabled:
             # Triangle waveform in [0,1], then sinusoidal heading bias.
-            now_s = float(self.get_clock().now().nanoseconds) * 1e-9
             phase = ((now_s - self._t0) / self._exc_period) % 1.0
             tri = 1.0 - abs(2.0 * phase - 1.0)
             v_scale_cmd = self._exc_v_min + (self._exc_v_max - self._exc_v_min) * tri
@@ -393,12 +425,20 @@ class PlannedPathDriver(Node):
             err = _wrap_pi(err + self._exc_heading_bias_rad * math.sin(2.0 * math.pi * phase))
 
         err_abs = abs(err)
+        prev_turn_in_place = self._turn_in_place
         self._turn_in_place = _update_turn_in_place_mode(
             self._turn_in_place,
             err_abs,
             self._heading_stop_rad,
             self._heading_resume_rad,
         )
+        if self._turn_in_place and not prev_turn_in_place:
+            self._turn_in_place_since_sec = now_s
+        elif not self._turn_in_place:
+            self._turn_in_place_since_sec = None
+        if prev_turn_in_place and not self._turn_in_place and self._post_turn_forward_boost_sec > 0.0:
+            self._post_turn_boost_until_sec = now_s + self._post_turn_forward_boost_sec
+
         if self._turn_in_place:
             # Na ostrym skręcie najpierw dokończ obrót (stabilny kierunek), dopiero potem jedź do przodu.
             self._turn_direction_sign = _resolve_turn_direction_sign(
@@ -415,11 +455,27 @@ class PlannedPathDriver(Node):
                 )
             )
             v = 0.0
+            if (
+                self._turn_in_place_max_duration_sec > 0.0
+                and self._turn_in_place_since_sec is not None
+                and (now_s - self._turn_in_place_since_sec) >= self._turn_in_place_max_duration_sec
+            ):
+                escape_v = max(
+                    self._turn_in_place_escape_v_min_mps,
+                    v_max_eff * self._turn_in_place_escape_v_ratio,
+                )
+                v = float(max(0.0, min(v_max_eff, escape_v)))
         else:
             self._turn_direction_sign = 0.0
             w = float(max(-self._w_max, min(self._w_max, self._kh * err)))
             v_scale = max(0.0, math.cos(err))
             v = float(max(0.0, min(v_max_eff, v_max_eff * (v_scale ** self._alignment_cos_power))))
+            if now_s < self._post_turn_boost_until_sec:
+                boost_v = max(
+                    self._post_turn_forward_min_v_mps,
+                    v_max_eff * self._post_turn_forward_min_v_ratio,
+                )
+                v = float(max(v, min(v_max_eff, boost_v)))
 
         lx, ly = self._path[-1]
         dist_end = math.hypot(lx - self._px, ly - self._py)

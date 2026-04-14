@@ -120,6 +120,48 @@ def _concat_metrics_from_npz_sources(
     return np.concatenate(vals, axis=0).astype(np.float32)
 
 
+def _rywak_metrics_from_y(y: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
+    arr = np.asarray(y, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return (
+            np.zeros((0,), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+            "unknown",
+        )
+    if arr.shape[1] >= 3:
+        # New format: local GT deltas (dx, dy, dtheta)
+        return (
+            np.linalg.norm(arr[:, :2], axis=1).astype(np.float32),
+            np.abs(arr[:, 2]).astype(np.float32),
+            "translation_rotation",
+        )
+    # Legacy format: (v, w)
+    return arr[:, 0].astype(np.float32), arr[:, 1].astype(np.float32), "velocity"
+
+
+def _load_rywak_metrics(npz_path: Path) -> tuple[np.ndarray, np.ndarray, str]:
+    y = _load_y(npz_path)
+    return _rywak_metrics_from_y(y)
+
+
+def _concat_rywak_metric_from_npz_sources(source_paths: list[Path], which: str) -> np.ndarray:
+    vals: list[np.ndarray] = []
+    for p in source_paths:
+        if not p.exists():
+            continue
+        try:
+            lin, ang, _mode = _load_rywak_metrics(p)
+        except Exception:
+            continue
+        v = lin if which == "linear" else ang
+        v = np.asarray(v, dtype=np.float32).reshape(-1)
+        if v.size > 0:
+            vals.append(v)
+    if not vals:
+        return np.zeros((0,), dtype=np.float32)
+    return np.concatenate(vals, axis=0).astype(np.float32)
+
+
 def _resolve_hist_range(
     *,
     use_abs: bool,
@@ -418,35 +460,61 @@ def main() -> int:
         raw_ang = _counts(m, "balance_angular_counts_per_bin", bins)
         cut_lin = _counts(m, "balance_linear_selected_counts_per_bin", bins)
         cut_ang = _counts(m, "balance_angular_selected_counts_per_bin", bins)
-        lin_min = _scalar(m.get("balance_linear_hist_min_mps", m.get("row_hist_min", np.nan)), np.nan, float)
-        lin_max = _scalar(m.get("balance_linear_hist_max_mps", m.get("row_hist_max", np.nan)), np.nan, float)
-        ang_min = _scalar(m.get("balance_angular_hist_min_radps", m.get("col_hist_min", np.nan)), np.nan, float)
-        ang_max = _scalar(m.get("balance_angular_hist_max_radps", m.get("col_hist_max", np.nan)), np.nan, float)
+        lin_min = _scalar(
+            m.get(
+                "balance_linear_hist_min_mps",
+                m.get("balance_translation_hist_min_m", m.get("row_hist_min", np.nan)),
+            ),
+            np.nan,
+            float,
+        )
+        lin_max = _scalar(
+            m.get(
+                "balance_linear_hist_max_mps",
+                m.get("balance_translation_hist_max_m", m.get("row_hist_max", np.nan)),
+            ),
+            np.nan,
+            float,
+        )
+        ang_min = _scalar(
+            m.get(
+                "balance_angular_hist_min_radps",
+                m.get("balance_rotation_hist_min_rad", m.get("col_hist_min", np.nan)),
+            ),
+            np.nan,
+            float,
+        )
+        ang_max = _scalar(
+            m.get(
+                "balance_angular_hist_max_radps",
+                m.get("balance_rotation_hist_max_rad", m.get("col_hist_max", np.nan)),
+            ),
+            np.nan,
+            float,
+        )
 
         lin_cut = exp / "dataset_rywak_linear_balanced.npz"
         ang_cut = exp / "dataset_rywak_angular_balanced.npz"
-        lin_cut_vals = _load_y_component(lin_cut, 0) if lin_cut.exists() else np.zeros((0,), dtype=np.float32)
-        ang_cut_vals = _load_y_component(ang_cut, 1) if ang_cut.exists() else np.zeros((0,), dtype=np.float32)
-        final_lin_vals = _load_y_component(rywak, 0)
-        final_ang_vals = _load_y_component(rywak, 1)
+        final_lin_vals, final_ang_vals, rywak_metric_mode = _load_rywak_metrics(rywak)
+        if lin_cut.exists():
+            lin_cut_vals, _ang_unused, _mode_unused = _load_rywak_metrics(lin_cut)
+        else:
+            lin_cut_vals = np.zeros((0,), dtype=np.float32)
+        if ang_cut.exists():
+            _lin_unused, ang_cut_vals, _mode_unused = _load_rywak_metrics(ang_cut)
+        else:
+            ang_cut_vals = np.zeros((0,), dtype=np.float32)
         source_lin_vals = np.zeros((0,), dtype=np.float32)  # unique before balance
         source_ang_vals = np.zeros((0,), dtype=np.float32)  # unique before balance
         raw_source_lin_vals = np.zeros((0,), dtype=np.float32)  # raw before unique
         raw_source_ang_vals = np.zeros((0,), dtype=np.float32)  # raw before unique
         source_path = _meta_path(m, "source_path")
         if strict_mode and source_path is not None and source_path.exists():
-            source_lin_vals = _load_y_component(source_path, 0)
-            source_ang_vals = _load_y_component(source_path, 1)
+            source_lin_vals, source_ang_vals, _mode_unused = _load_rywak_metrics(source_path)
             source_meta = _meta_obj(source_path)
             source_paths = _meta_paths(source_meta, "source_paths")
-            raw_source_lin_vals = _concat_metrics_from_npz_sources(
-                source_paths,
-                lambda y: y[:, 0] if y.ndim == 2 else np.zeros((0,), dtype=np.float32),
-            )
-            raw_source_ang_vals = _concat_metrics_from_npz_sources(
-                source_paths,
-                lambda y: y[:, 1] if y.ndim == 2 else np.zeros((0,), dtype=np.float32),
-            )
+            raw_source_lin_vals = _concat_rywak_metric_from_npz_sources(source_paths, "linear")
+            raw_source_ang_vals = _concat_rywak_metric_from_npz_sources(source_paths, "angular")
 
         lin_lo, lin_hi = _resolve_hist_range(
             use_abs=use_abs_lin,
@@ -574,20 +642,35 @@ def main() -> int:
         else:
             cut_ang_mean = np.full((bins,), np.nan, dtype=np.float64)
 
+        if rywak_metric_mode == "translation_rotation":
+            lin_title = "Rywak: translacja miedzy skanami (dane surowe)"
+            lin_title_pair = "Rywak: translacja miedzy skanami (unikalne: przed/po balansie)"
+            lin_x_label = "|delta_trans| [m]"
+            ang_title = "Rywak: rotacja miedzy skanami (dane surowe)"
+            ang_title_pair = "Rywak: rotacja miedzy skanami (unikalne: przed/po balansie)"
+            ang_x_label = "|delta_yaw| [rad]"
+        else:
+            lin_title = "Rywak: predkosc liniowa (dane surowe)"
+            lin_title_pair = "Rywak: predkosc liniowa (unikalne: przed/po balansie)"
+            lin_x_label = "v [m/s]"
+            ang_title = "Rywak: predkosc katowa (dane surowe)"
+            ang_title_pair = "Rywak: predkosc katowa (unikalne: przed/po balansie)"
+            ang_x_label = "omega [rad/s]"
+
         _plot_single(
             raw_lin,
-            title="Rywak: predkosc liniowa (dane surowe)",
+            title=lin_title,
             out_png=out_dir / "rywak_linear_hist_raw.png",
-            x_label="v [m/s]",
+            x_label=lin_x_label,
             hist_min=lin_lo,
             hist_max=lin_hi,
         )
         _plot_pair(
             cut_lin,
             merged_lin,
-            title="Rywak: predkosc liniowa (unikalne: przed/po balansie)",
+            title=lin_title_pair,
             out_png=out_dir / "rywak_linear_hist_unique_before_after.png",
-            x_label="v [m/s]",
+            x_label=lin_x_label,
             left_label="unikalne przed balansem",
             right_label="po balansie",
             hist_min=lin_lo,
@@ -595,18 +678,18 @@ def main() -> int:
         )
         _plot_single(
             raw_ang,
-            title="Rywak: predkosc katowa (dane surowe)",
+            title=ang_title,
             out_png=out_dir / "rywak_angular_hist_raw.png",
-            x_label="omega [rad/s]",
+            x_label=ang_x_label,
             hist_min=ang_lo,
             hist_max=ang_hi,
         )
         _plot_pair(
             cut_ang,
             merged_ang,
-            title="Rywak: predkosc katowa (unikalne: przed/po balansie)",
+            title=ang_title_pair,
             out_png=out_dir / "rywak_angular_hist_unique_before_after.png",
-            x_label="omega [rad/s]",
+            x_label=ang_x_label,
             left_label="unikalne przed balansem",
             right_label="po balansie",
             hist_min=ang_lo,
@@ -616,9 +699,9 @@ def main() -> int:
         _plot_pair(
             cut_lin,
             merged_lin,
-            title="Rywak: predkosc liniowa (unikalne: przed/po balansie)",
+            title=lin_title_pair,
             out_png=out_dir / "rywak_linear_hist_compare.png",
-            x_label="v [m/s]",
+            x_label=lin_x_label,
             left_label="unikalne przed balansem",
             right_label="po balansie",
             hist_min=lin_lo,
@@ -627,9 +710,9 @@ def main() -> int:
         _plot_pair(
             cut_ang,
             merged_ang,
-            title="Rywak: predkosc katowa (unikalne: przed/po balansie)",
+            title=ang_title_pair,
             out_png=out_dir / "rywak_angular_hist_compare.png",
-            x_label="omega [rad/s]",
+            x_label=ang_x_label,
             left_label="unikalne przed balansem",
             right_label="po balansie",
             hist_min=ang_lo,
@@ -677,8 +760,11 @@ def main() -> int:
                 int,
             )
             - _scalar(m.get("balance_merged_selected_count", m.get("n_output", 0)), 0, int),
+            "metric_mode": rywak_metric_mode,
             "linear_hist_range_mps": [_finite_or_none(lin_lo), _finite_or_none(lin_hi)],
             "angular_hist_range_radps": [_finite_or_none(ang_lo), _finite_or_none(ang_hi)],
+            "linear_metric_unit": "m" if rywak_metric_mode == "translation_rotation" else "m/s",
+            "angular_metric_unit": "rad" if rywak_metric_mode == "translation_rotation" else "rad/s",
             "linear_non_empty_bins": _scalar(m.get("balance_linear_bins_non_empty", np.count_nonzero(raw_lin)), 0, int),
             "angular_non_empty_bins": _scalar(m.get("balance_angular_bins_non_empty", np.count_nonzero(raw_ang)), 0, int),
             "merge_strategy": (

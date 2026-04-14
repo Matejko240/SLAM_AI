@@ -37,7 +37,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument, TimerAction, SetEnvironmentVariable, 
     IncludeLaunchDescription, EmitEvent, LogInfo, RegisterEventHandler, ExecuteProcess,
-    OpaqueFunction
+    OpaqueFunction, GroupAction
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.events import matches_action
@@ -55,18 +55,73 @@ def generate_experiment_id() -> str:
     return "exp_" + datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def _deep_merge_dicts(base: dict, override: dict) -> dict:
+    merged = copy.deepcopy(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _resolve_config_reference(ref: str, bringup_share: str, current_dir: str) -> str:
+    if os.path.isabs(ref):
+        return os.path.abspath(ref)
+    local_candidate = os.path.abspath(os.path.join(current_dir, ref))
+    if os.path.exists(local_candidate):
+        return local_candidate
+    return os.path.abspath(os.path.join(bringup_share, "config", ref))
+
+
+def _load_config_recursive(config_path: str, bringup_share: str, stack: tuple[str, ...]) -> dict:
+    abs_path = os.path.abspath(config_path)
+    if abs_path in stack:
+        cycle_chain = " -> ".join([*stack, abs_path])
+        raise RuntimeError(f"Config extends cycle detected: {cycle_chain}")
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"Config file not found: {abs_path}")
+
+    with open(abs_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config must be a YAML mapping/object: {abs_path}")
+
+    extends = data.pop("extends", None)
+    if not extends:
+        return data
+
+    if isinstance(extends, str):
+        parents = [extends]
+    elif isinstance(extends, list):
+        parents = [str(item) for item in extends if str(item).strip()]
+    else:
+        raise ValueError(f"Invalid 'extends' type in {abs_path}: expected string or list")
+
+    merged_parent = {}
+    for parent_ref in parents:
+        parent_path = _resolve_config_reference(parent_ref, bringup_share, os.path.dirname(abs_path))
+        parent_cfg = _load_config_recursive(parent_path, bringup_share, (*stack, abs_path))
+        merged_parent = _deep_merge_dicts(merged_parent, parent_cfg)
+
+    return _deep_merge_dicts(merged_parent, data)
+
+
 def load_config(config_file: str) -> dict:
-    """Wczytuje konfigurację z pliku YAML."""
+    """Wczytuje konfigurację z pliku YAML (obsługuje optional 'extends')."""
     bringup_share = get_package_share_directory("ai_slam_bringup")
-    
+
+    if not config_file:
+        return {}
+
     # Jeśli podano tylko nazwę pliku, szukaj w config/
     if not os.path.isabs(config_file):
         config_file = os.path.join(bringup_share, "config", config_file)
-    
-    if os.path.exists(config_file):
-        with open(config_file, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f) or {}
-    return {}
+
+    if not os.path.exists(config_file):
+        return {}
+
+    return _load_config_recursive(config_file, bringup_share, ())
 
 
 def resolve_config_path(config_file: str) -> str:
@@ -428,7 +483,23 @@ def launch_setup(context, *args, **kwargs):
     dataset_wait_timeout = float(get_config_value(cfg, "timing", "dataset_wait_timeout", default=0.0))
     bridge_delay = float(get_config_value(cfg, "timing", "bridge_delay", default=3.0))
     spawn_delay = float(get_config_value(cfg, "timing", "spawn_delay", default=5.0))
-    slam_configure_delay = float(get_config_value(cfg, "timing", "slam_configure_delay", default=2.0))
+    slam_configure_delay_cfg = float(get_config_value(cfg, "timing", "slam_configure_delay", default=2.0))
+    # SLAM configure przed startem bridge powoduje niestabilny punkt startu mapy.
+    slam_configure_delay = max(slam_configure_delay_cfg, bridge_delay + 0.5)
+    if slam_configure_delay > slam_configure_delay_cfg + 1e-9:
+        print(
+            "[INFO] timing.slam_configure_delay podbite do "
+            f"{slam_configure_delay:.2f}s (z {slam_configure_delay_cfg:.2f}s), "
+            f"bo bridge_delay={bridge_delay:.2f}s."
+        )
+
+    driver_start_delay_cfg = get_config_value(cfg, "timing", "driver_start_delay", default=None)
+    if driver_start_delay_cfg is None or float(driver_start_delay_cfg) <= 0.0:
+        # Domyślnie uruchom driver po bridge i po aktywacji lifecycle SLAM.
+        driver_start_delay = max(bridge_delay + 1.0, slam_configure_delay + 0.5)
+    else:
+        driver_start_delay = float(driver_start_delay_cfg)
+    driver_start_delay = max(0.0, driver_start_delay)
     
     # === TRENING ===
     max_epochs = int(get_config_value(cfg, "training", "max_epochs", default=200))
@@ -439,8 +510,8 @@ def launch_setup(context, *args, **kwargs):
     validation_ratio = float(get_config_value(cfg, "training", "validation_ratio", default=0.2))
     split_strategy = str(get_config_value(cfg, "training", "split_strategy", default="tail_holdout_no_shuffle"))
     torch_deterministic = parse_bool(
-        get_config_value(cfg, "training", "torch_deterministic", default=True),
-        default=True,
+        get_config_value(cfg, "training", "torch_deterministic", default=False),
+        default=False,
     )
     skip_if_model_exists = parse_bool(
         get_config_value(cfg, "training", "skip_if_model_exists", default=True),
@@ -759,7 +830,7 @@ def launch_setup(context, *args, **kwargs):
     robak_balanced_rotation_dataset_name = str(
         robak_cfg.get("balanced_rotation_dataset_name", "dataset_robak_rotation_balanced.npz")
     )
-    robak_label_frame = str(robak_cfg.get("label_frame", "local"))
+    robak_label_frame = str(robak_cfg.get("label_frame", "world"))
     robak_sync_tolerance = float(robak_cfg.get("sync_tolerance_sec", 0.08))
     robak_sync_pair_gap = float(robak_cfg.get("sync_pair_gap_sec", dataset_sync_pair_gap_sec))
     robak_interpolate_gt = parse_bool(robak_cfg.get("interpolate_gt", True), default=True)
@@ -770,12 +841,30 @@ def launch_setup(context, *args, **kwargs):
     robak_infer_max_step_yaw = float(robak_cfg.get("infer_max_step_yaw", 0.30))
     robak_infer_delta_ema_alpha = float(robak_cfg.get("infer_delta_ema_alpha", 0.65))
     robak_infer_odom_heading_alpha = float(robak_cfg.get("infer_odom_heading_alpha", 0.30))
+    robak_infer_odom_heading_gain = float(robak_cfg.get("infer_odom_heading_gain", 0.75))
     robak_infer_odom_sync_tolerance = float(robak_cfg.get("infer_odom_sync_tolerance_sec", 0.08))
     robak_infer_odom_delta_xy_alpha = float(robak_cfg.get("infer_odom_delta_xy_alpha", 0.55))
+    robak_infer_odom_delta_xy_gain = float(robak_cfg.get("infer_odom_delta_xy_gain", 0.55))
     robak_infer_odom_delta_yaw_alpha = float(robak_cfg.get("infer_odom_delta_yaw_alpha", 0.65))
+    robak_infer_odom_delta_yaw_gain = float(robak_cfg.get("infer_odom_delta_yaw_gain", 0.45))
     robak_infer_odom_pose_xy_alpha = float(robak_cfg.get("infer_odom_pose_xy_alpha", 0.12))
     robak_infer_odom_pose_xy_gain = float(robak_cfg.get("infer_odom_pose_xy_gain", 0.30))
     robak_infer_odom_pose_xy_alpha_max = float(robak_cfg.get("infer_odom_pose_xy_alpha_max", 1.0))
+    robak_odom_guard_enabled = parse_bool(robak_cfg.get("odom_guard_enabled", False), default=False)
+    robak_odom_guard_xy_error_m = float(robak_cfg.get("odom_guard_xy_error_m", 0.0))
+    robak_odom_guard_xy_anchor_base = float(robak_cfg.get("odom_guard_xy_anchor_base", 0.75))
+    robak_odom_guard_xy_anchor_gain = float(robak_cfg.get("odom_guard_xy_anchor_gain", 0.50))
+    robak_odom_guard_yaw_error_rad = float(robak_cfg.get("odom_guard_yaw_error_rad", 0.0))
+    robak_odom_guard_yaw_anchor_base = float(robak_cfg.get("odom_guard_yaw_anchor_base", 0.70))
+    robak_odom_guard_yaw_anchor_gain = float(robak_cfg.get("odom_guard_yaw_anchor_gain", 0.55))
+    robak_infer_odom_topic = str(robak_cfg.get("infer_odom_topic", odom_in_topic))
+    robak_infer_init_from = str(robak_cfg.get("infer_init_from", "gt")).strip().lower()
+    if robak_infer_init_from not in ("gt", "odom", "none"):
+        print(
+            f"[WARN] Invalid robak.infer_init_from='{robak_infer_init_from}', "
+            "falling back to 'gt' (allowed: gt|odom|none)."
+        )
+        robak_infer_init_from = "gt"
     robak_lr = float(robak_cfg.get("lr", learning_rate))
     robak_epochs = int(robak_cfg.get("max_epochs", max_epochs))
     robak_patience = int(robak_cfg.get("patience", patience))
@@ -787,9 +876,120 @@ def launch_setup(context, *args, **kwargs):
         default=torch_deterministic,
     )
     robak_pose_topic = str(robak_cfg.get("pose_topic", "/pose_robak"))
+    robak_relay_scan_topic = str(robak_cfg.get("relay_scan_topic", ""))
+    robak_force_odom_pose = parse_bool(
+        robak_cfg.get("force_odom_pose", False),
+        default=False,
+    )
+    robak_odom_rebase_to_local_origin = parse_bool(
+        robak_cfg.get("odom_rebase_to_local_origin", False),
+        default=False,
+    )
+    robak_use_odom_corrections = parse_bool(
+        robak_cfg.get("use_odom_corrections", True),
+        default=True,
+    )
+    robak_odom_fallback_before_model_ready = parse_bool(
+        robak_cfg.get("odom_fallback_before_model_ready", True),
+        default=True,
+    )
     robak_pose_topic_no_slam = str(robak_cfg.get("pose_topic_no_slam", "/pose_robak_no_slam"))
     robak_tf_parent_no_slam = str(robak_cfg.get("tf_parent_no_slam", "odom_robak_no_slam"))
     robak_tf_child_no_slam = str(robak_cfg.get("tf_child_no_slam", "base_link_robak_no_slam"))
+    # Optional per-track overrides for Robak no-SLAM infer node.
+    robak_no_slam_cfg = get_config_value(cfg, "robak_no_slam", default={})
+    robak_no_slam_infer_max_step_trans = float(
+        robak_no_slam_cfg.get("infer_max_step_trans", robak_infer_max_step_trans)
+    )
+    robak_no_slam_infer_max_step_yaw = float(
+        robak_no_slam_cfg.get("infer_max_step_yaw", robak_infer_max_step_yaw)
+    )
+    robak_no_slam_infer_delta_ema_alpha = float(
+        robak_no_slam_cfg.get("infer_delta_ema_alpha", robak_infer_delta_ema_alpha)
+    )
+    robak_no_slam_infer_odom_heading_alpha = float(
+        robak_no_slam_cfg.get("infer_odom_heading_alpha", robak_infer_odom_heading_alpha)
+    )
+    robak_no_slam_infer_odom_heading_gain = float(
+        robak_no_slam_cfg.get("infer_odom_heading_gain", robak_infer_odom_heading_gain)
+    )
+    robak_no_slam_infer_odom_sync_tolerance = float(
+        robak_no_slam_cfg.get("infer_odom_sync_tolerance_sec", robak_infer_odom_sync_tolerance)
+    )
+    robak_no_slam_infer_odom_delta_xy_alpha = float(
+        robak_no_slam_cfg.get("infer_odom_delta_xy_alpha", robak_infer_odom_delta_xy_alpha)
+    )
+    robak_no_slam_infer_odom_delta_xy_gain = float(
+        robak_no_slam_cfg.get("infer_odom_delta_xy_gain", robak_infer_odom_delta_xy_gain)
+    )
+    robak_no_slam_infer_odom_delta_yaw_alpha = float(
+        robak_no_slam_cfg.get("infer_odom_delta_yaw_alpha", robak_infer_odom_delta_yaw_alpha)
+    )
+    robak_no_slam_infer_odom_delta_yaw_gain = float(
+        robak_no_slam_cfg.get("infer_odom_delta_yaw_gain", robak_infer_odom_delta_yaw_gain)
+    )
+    robak_no_slam_infer_odom_pose_xy_alpha = float(
+        robak_no_slam_cfg.get("infer_odom_pose_xy_alpha", robak_infer_odom_pose_xy_alpha)
+    )
+    robak_no_slam_infer_odom_pose_xy_gain = float(
+        robak_no_slam_cfg.get("infer_odom_pose_xy_gain", robak_infer_odom_pose_xy_gain)
+    )
+    robak_no_slam_infer_odom_pose_xy_alpha_max = float(
+        robak_no_slam_cfg.get("infer_odom_pose_xy_alpha_max", robak_infer_odom_pose_xy_alpha_max)
+    )
+    robak_no_slam_odom_guard_enabled = parse_bool(
+        robak_no_slam_cfg.get("odom_guard_enabled", robak_odom_guard_enabled),
+        default=robak_odom_guard_enabled,
+    )
+    robak_no_slam_odom_guard_xy_error_m = float(
+        robak_no_slam_cfg.get("odom_guard_xy_error_m", robak_odom_guard_xy_error_m)
+    )
+    robak_no_slam_odom_guard_xy_anchor_base = float(
+        robak_no_slam_cfg.get("odom_guard_xy_anchor_base", robak_odom_guard_xy_anchor_base)
+    )
+    robak_no_slam_odom_guard_xy_anchor_gain = float(
+        robak_no_slam_cfg.get("odom_guard_xy_anchor_gain", robak_odom_guard_xy_anchor_gain)
+    )
+    robak_no_slam_odom_guard_yaw_error_rad = float(
+        robak_no_slam_cfg.get("odom_guard_yaw_error_rad", robak_odom_guard_yaw_error_rad)
+    )
+    robak_no_slam_odom_guard_yaw_anchor_base = float(
+        robak_no_slam_cfg.get("odom_guard_yaw_anchor_base", robak_odom_guard_yaw_anchor_base)
+    )
+    robak_no_slam_odom_guard_yaw_anchor_gain = float(
+        robak_no_slam_cfg.get("odom_guard_yaw_anchor_gain", robak_odom_guard_yaw_anchor_gain)
+    )
+    robak_no_slam_infer_odom_topic = str(
+        robak_no_slam_cfg.get("infer_odom_topic", robak_infer_odom_topic)
+    )
+    robak_no_slam_force_odom_pose = parse_bool(
+        robak_no_slam_cfg.get("force_odom_pose", robak_force_odom_pose),
+        default=robak_force_odom_pose,
+    )
+    robak_no_slam_odom_rebase_to_local_origin = parse_bool(
+        robak_no_slam_cfg.get("odom_rebase_to_local_origin", robak_odom_rebase_to_local_origin),
+        default=robak_odom_rebase_to_local_origin,
+    )
+    robak_no_slam_use_odom_corrections = parse_bool(
+        robak_no_slam_cfg.get("use_odom_corrections", robak_use_odom_corrections),
+        default=robak_use_odom_corrections,
+    )
+    robak_no_slam_odom_fallback_before_model_ready = parse_bool(
+        robak_no_slam_cfg.get(
+            "odom_fallback_before_model_ready",
+            robak_odom_fallback_before_model_ready,
+        ),
+        default=robak_odom_fallback_before_model_ready,
+    )
+    robak_no_slam_infer_init_from = str(
+        robak_no_slam_cfg.get("infer_init_from", robak_infer_init_from)
+    ).strip().lower()
+    if robak_no_slam_infer_init_from not in ("gt", "odom", "none"):
+        print(
+            f"[WARN] Invalid robak_no_slam.infer_init_from='{robak_no_slam_infer_init_from}', "
+            "falling back to Robak infer_init_from."
+        )
+        robak_no_slam_infer_init_from = robak_infer_init_from
 
     # === RYWAK ===
     rywak_cfg = get_config_value(cfg, "rywak", default={})
@@ -799,8 +999,10 @@ def launch_setup(context, *args, **kwargs):
     rywak_dataset_duration = float(rywak_cfg.get("dataset_duration", dataset_duration_sec))
     rywak_max_samples = int(rywak_cfg.get("max_samples", dataset_max_samples))
     rywak_odom_label_topic = str(rywak_cfg.get("odom_label_topic", "/odom_raw"))
+    rywak_gt_topic = str(rywak_cfg.get("gt_topic", dataset_gt_topic))
     rywak_sync_tolerance = float(rywak_cfg.get("sync_tolerance_sec", 0.08))
     rywak_interpolate_odom = parse_bool(rywak_cfg.get("interpolate_odom", False), default=False)
+    rywak_interpolate_gt = parse_bool(rywak_cfg.get("interpolate_gt", True), default=True)
     rywak_sync_pair_gap = float(rywak_cfg.get("sync_pair_gap_sec", 0.2))
     rywak_delta_scan_clip = float(rywak_cfg.get("delta_scan_clip", 2.0))
     rywak_min_sample_dist = float(rywak_cfg.get("min_sample_dist", 0.0))
@@ -855,6 +1057,9 @@ def launch_setup(context, *args, **kwargs):
     rywak_huber_delta = float(rywak_cfg.get("huber_delta", 1.0))
     rywak_input_noise_std = float(rywak_cfg.get("input_noise_std", 0.02))
     rywak_clip_grad_norm = float(rywak_cfg.get("clip_grad_norm", 1.0))
+    rywak_loss_dx_weight = float(rywak_cfg.get("loss_dx_weight", 1.0))
+    rywak_loss_dy_weight = float(rywak_cfg.get("loss_dy_weight", 1.0))
+    rywak_loss_dtheta_weight = float(rywak_cfg.get("loss_dtheta_weight", 1.5))
     rywak_loss_v_weight = float(rywak_cfg.get("loss_v_weight", 1.0))
     rywak_loss_w_weight = float(rywak_cfg.get("loss_w_weight", 1.5))
     rywak_v_clip_abs = float(rywak_cfg.get("v_clip_abs", 0.45))
@@ -865,12 +1070,19 @@ def launch_setup(context, *args, **kwargs):
     rywak_fuse_odom_w_gain = float(rywak_cfg.get("fuse_odom_w_gain", 0.35))
     rywak_vel_ema_alpha = float(rywak_cfg.get("vel_ema_alpha", 0.60))
     rywak_anchor_yaw_to_odom = float(rywak_cfg.get("anchor_yaw_to_odom", 0.35))
+    rywak_anchor_yaw_to_odom_gain = float(rywak_cfg.get("anchor_yaw_to_odom_gain", 0.75))
     rywak_anchor_xy_to_odom = float(rywak_cfg.get("anchor_xy_to_odom", 0.0))
     rywak_anchor_xy_to_odom_gain = float(rywak_cfg.get("anchor_xy_to_odom_gain", 0.0))
     rywak_heading_for_xy_odom_weight = float(rywak_cfg.get("heading_for_xy_odom_weight", 0.60))
     rywak_xy_step_odom_weight = float(rywak_cfg.get("xy_step_odom_weight", 0.35))
     rywak_xy_step_odom_gain = float(rywak_cfg.get("xy_step_odom_gain", 0.45))
     rywak_max_integration_dt = float(rywak_cfg.get("max_integration_dt", 0.20))
+    rywak_max_step_trans = float(rywak_cfg.get("max_step_trans", 0.0))
+    rywak_max_step_yaw = float(rywak_cfg.get("max_step_yaw", 0.0))
+    rywak_infer_odom_topic = str(rywak_cfg.get("infer_odom_topic", rywak_odom_label_topic))
+    rywak_infer_init_from_odom_topic = str(
+        rywak_cfg.get("infer_init_from_odom_topic", odom_in_topic)
+    )
     rywak_lr = float(rywak_cfg.get("lr", learning_rate))
     rywak_epochs = int(rywak_cfg.get("max_epochs", max_epochs))
     rywak_patience = int(rywak_cfg.get("patience", patience))
@@ -882,9 +1094,178 @@ def launch_setup(context, *args, **kwargs):
         default=torch_deterministic,
     )
     rywak_pose_topic = str(rywak_cfg.get("pose_topic", "/pose_rywak"))
+    rywak_relay_scan_topic = str(rywak_cfg.get("relay_scan_topic", ""))
+    rywak_force_odom_pose = parse_bool(
+        rywak_cfg.get("force_odom_pose", False),
+        default=False,
+    )
+    rywak_odom_rebase_to_local_origin = parse_bool(
+        rywak_cfg.get("odom_rebase_to_local_origin", False),
+        default=False,
+    )
+    rywak_use_odom_corrections = parse_bool(
+        rywak_cfg.get("use_odom_corrections", True),
+        default=True,
+    )
+    rywak_odom_fallback_before_model_ready = parse_bool(
+        rywak_cfg.get("odom_fallback_before_model_ready", True),
+        default=True,
+    )
+    rywak_odom_guard_enabled = parse_bool(
+        rywak_cfg.get("odom_guard_enabled", True),
+        default=True,
+    )
+    rywak_odom_guard_fuse_weight = float(rywak_cfg.get("odom_guard_fuse_weight", 0.95))
+    rywak_odom_guard_v_abs_diff = float(rywak_cfg.get("odom_guard_v_abs_diff", 0.35))
+    rywak_odom_guard_v_rel_diff = float(rywak_cfg.get("odom_guard_v_rel_diff", 0.60))
+    rywak_odom_guard_w_abs_diff = float(rywak_cfg.get("odom_guard_w_abs_diff", 0.80))
+    rywak_odom_guard_w_rel_diff = float(rywak_cfg.get("odom_guard_w_rel_diff", 0.80))
+    rywak_odom_guard_sign_conflict_speed = float(
+        rywak_cfg.get("odom_guard_sign_conflict_speed", 0.08)
+    )
+    rywak_odom_guard_xy_error_m = float(rywak_cfg.get("odom_guard_xy_error_m", 0.45))
+    rywak_odom_guard_xy_anchor_base = float(rywak_cfg.get("odom_guard_xy_anchor_base", 0.80))
+    rywak_odom_guard_xy_anchor_gain = float(rywak_cfg.get("odom_guard_xy_anchor_gain", 0.70))
+    rywak_odom_guard_yaw_error_rad = float(rywak_cfg.get("odom_guard_yaw_error_rad", 0.35))
+    rywak_odom_guard_yaw_anchor_base = float(rywak_cfg.get("odom_guard_yaw_anchor_base", 0.75))
+    rywak_odom_guard_yaw_anchor_gain = float(rywak_cfg.get("odom_guard_yaw_anchor_gain", 0.50))
     rywak_pose_topic_no_slam = str(rywak_cfg.get("pose_topic_no_slam", "/pose_rywak_no_slam"))
     rywak_tf_parent_no_slam = str(rywak_cfg.get("tf_parent_no_slam", "odom_rywak_no_slam"))
     rywak_tf_child_no_slam = str(rywak_cfg.get("tf_child_no_slam", "base_link_rywak_no_slam"))
+    # Optional per-track overrides for Rywak no-SLAM infer node.
+    rywak_no_slam_cfg = get_config_value(cfg, "rywak_no_slam", default={})
+    rywak_no_slam_fuse_odom_v_weight = float(
+        rywak_no_slam_cfg.get("fuse_odom_v_weight", rywak_fuse_odom_v_weight)
+    )
+    rywak_no_slam_fuse_odom_w_weight = float(
+        rywak_no_slam_cfg.get("fuse_odom_w_weight", rywak_fuse_odom_w_weight)
+    )
+    rywak_no_slam_fuse_odom_v_gain = float(
+        rywak_no_slam_cfg.get("fuse_odom_v_gain", rywak_fuse_odom_v_gain)
+    )
+    rywak_no_slam_fuse_odom_w_gain = float(
+        rywak_no_slam_cfg.get("fuse_odom_w_gain", rywak_fuse_odom_w_gain)
+    )
+    rywak_no_slam_anchor_yaw_to_odom = float(
+        rywak_no_slam_cfg.get("anchor_yaw_to_odom", rywak_anchor_yaw_to_odom)
+    )
+    rywak_no_slam_anchor_yaw_to_odom_gain = float(
+        rywak_no_slam_cfg.get("anchor_yaw_to_odom_gain", rywak_anchor_yaw_to_odom_gain)
+    )
+    rywak_no_slam_anchor_xy_to_odom = float(
+        rywak_no_slam_cfg.get("anchor_xy_to_odom", rywak_anchor_xy_to_odom)
+    )
+    rywak_no_slam_anchor_xy_to_odom_gain = float(
+        rywak_no_slam_cfg.get("anchor_xy_to_odom_gain", rywak_anchor_xy_to_odom_gain)
+    )
+    rywak_no_slam_heading_for_xy_odom_weight = float(
+        rywak_no_slam_cfg.get("heading_for_xy_odom_weight", rywak_heading_for_xy_odom_weight)
+    )
+    rywak_no_slam_xy_step_odom_weight = float(
+        rywak_no_slam_cfg.get("xy_step_odom_weight", rywak_xy_step_odom_weight)
+    )
+    rywak_no_slam_xy_step_odom_gain = float(
+        rywak_no_slam_cfg.get("xy_step_odom_gain", rywak_xy_step_odom_gain)
+    )
+    rywak_no_slam_sync_tolerance = float(
+        rywak_no_slam_cfg.get("sync_tolerance_sec", rywak_sync_tolerance)
+    )
+    rywak_no_slam_interpolate_odom = parse_bool(
+        rywak_no_slam_cfg.get("interpolate_odom", rywak_interpolate_odom),
+        default=rywak_interpolate_odom,
+    )
+    rywak_no_slam_sync_pair_gap = float(
+        rywak_no_slam_cfg.get("sync_pair_gap_sec", rywak_sync_pair_gap)
+    )
+    rywak_no_slam_delta_scan_clip = float(
+        rywak_no_slam_cfg.get("delta_scan_clip", rywak_delta_scan_clip)
+    )
+    rywak_no_slam_v_clip_abs = float(
+        rywak_no_slam_cfg.get("v_clip_abs", rywak_v_clip_abs)
+    )
+    rywak_no_slam_w_clip_abs = float(
+        rywak_no_slam_cfg.get("w_clip_abs", rywak_w_clip_abs)
+    )
+    rywak_no_slam_vel_ema_alpha = float(
+        rywak_no_slam_cfg.get("vel_ema_alpha", rywak_vel_ema_alpha)
+    )
+    rywak_no_slam_max_integration_dt = float(
+        rywak_no_slam_cfg.get("max_integration_dt", rywak_max_integration_dt)
+    )
+    rywak_no_slam_max_step_trans = float(
+        rywak_no_slam_cfg.get("max_step_trans", rywak_max_step_trans)
+    )
+    rywak_no_slam_max_step_yaw = float(
+        rywak_no_slam_cfg.get("max_step_yaw", rywak_max_step_yaw)
+    )
+    rywak_no_slam_infer_odom_topic = str(
+        rywak_no_slam_cfg.get("infer_odom_topic", rywak_infer_odom_topic)
+    )
+    rywak_no_slam_force_odom_pose = parse_bool(
+        rywak_no_slam_cfg.get("force_odom_pose", rywak_force_odom_pose),
+        default=rywak_force_odom_pose,
+    )
+    rywak_no_slam_odom_rebase_to_local_origin = parse_bool(
+        rywak_no_slam_cfg.get("odom_rebase_to_local_origin", rywak_odom_rebase_to_local_origin),
+        default=rywak_odom_rebase_to_local_origin,
+    )
+    rywak_no_slam_use_odom_corrections = parse_bool(
+        rywak_no_slam_cfg.get("use_odom_corrections", rywak_use_odom_corrections),
+        default=rywak_use_odom_corrections,
+    )
+    rywak_no_slam_odom_fallback_before_model_ready = parse_bool(
+        rywak_no_slam_cfg.get(
+            "odom_fallback_before_model_ready",
+            rywak_odom_fallback_before_model_ready,
+        ),
+        default=rywak_odom_fallback_before_model_ready,
+    )
+    rywak_no_slam_odom_guard_enabled = parse_bool(
+        rywak_no_slam_cfg.get("odom_guard_enabled", rywak_odom_guard_enabled),
+        default=rywak_odom_guard_enabled,
+    )
+    rywak_no_slam_odom_guard_fuse_weight = float(
+        rywak_no_slam_cfg.get("odom_guard_fuse_weight", rywak_odom_guard_fuse_weight)
+    )
+    rywak_no_slam_odom_guard_v_abs_diff = float(
+        rywak_no_slam_cfg.get("odom_guard_v_abs_diff", rywak_odom_guard_v_abs_diff)
+    )
+    rywak_no_slam_odom_guard_v_rel_diff = float(
+        rywak_no_slam_cfg.get("odom_guard_v_rel_diff", rywak_odom_guard_v_rel_diff)
+    )
+    rywak_no_slam_odom_guard_w_abs_diff = float(
+        rywak_no_slam_cfg.get("odom_guard_w_abs_diff", rywak_odom_guard_w_abs_diff)
+    )
+    rywak_no_slam_odom_guard_w_rel_diff = float(
+        rywak_no_slam_cfg.get("odom_guard_w_rel_diff", rywak_odom_guard_w_rel_diff)
+    )
+    rywak_no_slam_odom_guard_sign_conflict_speed = float(
+        rywak_no_slam_cfg.get(
+            "odom_guard_sign_conflict_speed",
+            rywak_odom_guard_sign_conflict_speed,
+        )
+    )
+    rywak_no_slam_odom_guard_xy_error_m = float(
+        rywak_no_slam_cfg.get("odom_guard_xy_error_m", rywak_odom_guard_xy_error_m)
+    )
+    rywak_no_slam_odom_guard_xy_anchor_base = float(
+        rywak_no_slam_cfg.get("odom_guard_xy_anchor_base", rywak_odom_guard_xy_anchor_base)
+    )
+    rywak_no_slam_odom_guard_xy_anchor_gain = float(
+        rywak_no_slam_cfg.get("odom_guard_xy_anchor_gain", rywak_odom_guard_xy_anchor_gain)
+    )
+    rywak_no_slam_odom_guard_yaw_error_rad = float(
+        rywak_no_slam_cfg.get("odom_guard_yaw_error_rad", rywak_odom_guard_yaw_error_rad)
+    )
+    rywak_no_slam_odom_guard_yaw_anchor_base = float(
+        rywak_no_slam_cfg.get("odom_guard_yaw_anchor_base", rywak_odom_guard_yaw_anchor_base)
+    )
+    rywak_no_slam_odom_guard_yaw_anchor_gain = float(
+        rywak_no_slam_cfg.get("odom_guard_yaw_anchor_gain", rywak_odom_guard_yaw_anchor_gain)
+    )
+    rywak_no_slam_infer_init_from_odom_topic = str(
+        rywak_no_slam_cfg.get("infer_init_from_odom_topic", rywak_infer_init_from_odom_topic)
+    )
     # === SLAM TOOLBOX ===
     slam_cfg_root = get_config_value(cfg, "slam", default={})
     slam_common_cfg = get_config_value(cfg, "slam", "common", default={})
@@ -916,6 +1297,12 @@ def launch_setup(context, *args, **kwargs):
     slam_rywak_params = coerce_slam_param_types(
         merge_params(slam_global_cfg, slam_common_cfg, slam_rywak_cfg)
     )
+    slam_baseline_map_frame = str(slam_baseline_params.get("map_frame", "map"))
+    slam_baseline_odom_frame = str(slam_baseline_params.get("odom_frame", "odom"))
+    slam_robak_map_frame = str(slam_robak_params.get("map_frame", "map_robak"))
+    slam_robak_odom_frame = str(slam_robak_params.get("odom_frame", "odom_robak"))
+    slam_rywak_map_frame = str(slam_rywak_params.get("map_frame", "map_rywak"))
+    slam_rywak_odom_frame = str(slam_rywak_params.get("odom_frame", "odom_rywak"))
         
     # === OUTPUT ===
     out_dir = str(get_param("out_dir", ["output", "base_dir"], "out"))
@@ -934,6 +1321,44 @@ def launch_setup(context, *args, **kwargs):
         ).strip()
     else:
         model_source_experiment_id = str(_msrc_launch).strip()
+    # Opcjonalnie: trenuj na datasetach *.npz z innego podfolderu out/<id>/.
+    _dsrc_launch = LaunchConfiguration("dataset_source_experiment_id").perform(context)
+    if _dsrc_launch == "__USE_CONFIG__":
+        dataset_source_experiment_id = str(
+            get_config_value(cfg, "experiment", "dataset_source_experiment_id", default="")
+        ).strip()
+    else:
+        dataset_source_experiment_id = str(_dsrc_launch).strip()
+
+    if not model_source_experiment_id and dataset_source_experiment_id and phase in ("full", "test"):
+        # Priorytet: jeśli dla bieżącego experiment_id istnieją już wytrenowane modele,
+        # test ma używać ich (typowy przepływ phase=full: train -> test).
+        current_exp_dir = os.path.join(out_dir, experiment_id)
+        current_exp_models = [
+            os.path.join(current_exp_dir, "model.pt"),
+            os.path.join(current_exp_dir, robak_model_name),
+            os.path.join(current_exp_dir, rywak_model_name),
+        ]
+        if any(os.path.isfile(path) for path in current_exp_models):
+            print(
+                "[INFO] model_source_experiment_id not set; "
+                f"using models from current experiment_id='{experiment_id}'."
+            )
+        else:
+            # Fallback dla phase=test bez lokalnego treningu: modele z dataset_source_experiment_id.
+            candidate_dir = os.path.join(out_dir, dataset_source_experiment_id)
+            candidate_models = [
+                os.path.join(candidate_dir, "model.pt"),
+                os.path.join(candidate_dir, robak_model_name),
+                os.path.join(candidate_dir, rywak_model_name),
+            ]
+            if any(os.path.isfile(path) for path in candidate_models):
+                model_source_experiment_id = dataset_source_experiment_id
+                print(
+                    "[INFO] model_source_experiment_id not set; "
+                    f"using dataset_source_experiment_id='{dataset_source_experiment_id}' "
+                    "for test-time model loading."
+                )
     
     # === ŚCIEŻKI ===
     gazebo_share = get_package_share_directory("ai_slam_gazebo")
@@ -1104,6 +1529,24 @@ def launch_setup(context, *args, **kwargs):
     planned_heading_gain = float(pp_cfg.get("heading_gain", 2.2))
     planned_heading_stop_deg = float(pp_cfg.get("heading_stop_deg", 55.0))
     planned_heading_resume_deg = float(pp_cfg.get("heading_resume_deg", 35.0))
+    planned_turn_in_place_max_duration_sec = float(
+        pp_cfg.get("turn_in_place_max_duration_sec", 0.0)
+    )
+    planned_turn_in_place_escape_v_ratio = float(
+        pp_cfg.get("turn_in_place_escape_v_ratio", 0.0)
+    )
+    planned_turn_in_place_escape_v_min_mps = float(
+        pp_cfg.get("turn_in_place_escape_v_min_mps", 0.0)
+    )
+    planned_post_turn_forward_boost_sec = float(
+        pp_cfg.get("post_turn_forward_boost_sec", 0.0)
+    )
+    planned_post_turn_forward_min_v_ratio = float(
+        pp_cfg.get("post_turn_forward_min_v_ratio", 0.0)
+    )
+    planned_post_turn_forward_min_v_mps = float(
+        pp_cfg.get("post_turn_forward_min_v_mps", 0.0)
+    )
     planned_turn_direction_guard_deg = float(pp_cfg.get("turn_direction_guard_deg", 18.0))
     planned_turn_direction_preference = float(pp_cfg.get("turn_direction_preference", 1.0))
     planned_alignment_cos_power = float(pp_cfg.get("alignment_cos_power", 2.0))
@@ -1132,6 +1575,7 @@ def launch_setup(context, *args, **kwargs):
     eval_sync_tolerance = float(get_config_value(cfg, "evaluation", "sync_tolerance_sec", default=0.15))
     eval_maps_rotate_180 = parse_bool(get_config_value(cfg, "evaluation", "maps_rotate_180", default=True), default=True)
     eval_maps_max_cols = int(get_config_value(cfg, "evaluation", "maps_max_cols", default=3))
+    eval_warmup_sec = float(get_config_value(cfg, "evaluation", "warmup_sec", default=0.0))
     eval_points_min_translation = float(get_config_value(cfg, "evaluation", "points_min_translation", default=0.0))
     eval_points_min_rotation = float(get_config_value(cfg, "evaluation", "points_min_rotation", default=0.0))
     eval_points_min_time_gap_sec = float(get_config_value(cfg, "evaluation", "points_min_time_gap_sec", default=0.0))
@@ -1179,6 +1623,12 @@ def launch_setup(context, *args, **kwargs):
     print(f"  Eval duration: {eval_duration_sec}s")
     print(f"  Dataset duration: {dataset_duration_sec}s")
     print(
+        "  Startup delays: "
+        f"bridge={bridge_delay:.2f}s, "
+        f"slam_configure={slam_configure_delay:.2f}s, "
+        f"driver_start={driver_start_delay:.2f}s"
+    )
+    print(
         f"  Driver: {'planned_path (' + planned_spec_path + ')' if driver_use_planned_path else 'auto_driver'}"
     )
     if driver_use_planned_path:
@@ -1204,6 +1654,11 @@ def launch_setup(context, *args, **kwargs):
     print(f"  Output: {out_dir}/{experiment_id}")
     if model_source_experiment_id:
         print(f"  Model source (load *.pt from): {out_dir}/{model_source_experiment_id}")
+    if dataset_source_experiment_id and phase in ("full", "train"):
+        print(
+            "  Dataset source (train *.npz from): "
+            f"{out_dir}/{dataset_source_experiment_id}"
+        )
     print("="*70 + "\n")
 
     # === URDF ===
@@ -1250,6 +1705,49 @@ def launch_setup(context, *args, **kwargs):
     rywak_train_enabled = tor6_rywak_enabled and do_train_phase
     rywak_test_enabled  = tor6_rywak_enabled and do_test_phase
     rywak_no_slam_test_enabled = tor8_rywak_no_slam_enabled and do_test_phase
+    ai_train_dataset_name = "dataset.npz"
+    robak_train_dataset_name = robak_dataset_name
+    rywak_train_dataset_name = rywak_dataset_name
+    if dataset_source_experiment_id and do_train_phase:
+        source_dir = os.path.join(out_dir, dataset_source_experiment_id)
+        source_ai_dataset = os.path.join(source_dir, "dataset.npz")
+        source_robak_dataset = os.path.join(source_dir, os.path.basename(robak_dataset_name))
+        source_rywak_dataset = os.path.join(source_dir, os.path.basename(rywak_dataset_name))
+        missing = []
+        if ai_train_enabled and not os.path.isfile(source_ai_dataset):
+            missing.append(source_ai_dataset)
+        if robak_train_enabled and not os.path.isfile(source_robak_dataset):
+            missing.append(source_robak_dataset)
+        if rywak_train_enabled and not os.path.isfile(source_rywak_dataset):
+            missing.append(source_rywak_dataset)
+        if missing:
+            print(
+                "[WARN] dataset_source_experiment_id ustawione, ale brakuje plików datasetu; "
+                "fallback do lokalnego zbierania:\n  - "
+                + "\n  - ".join(missing)
+            )
+        else:
+            ai_train_dataset_name = source_ai_dataset
+            robak_train_dataset_name = source_robak_dataset
+            rywak_train_dataset_name = source_rywak_dataset
+            ai_dataset_enabled = False
+            robak_dataset_enabled = False
+            rywak_dataset_enabled = False
+            print(
+                f"[INFO] Training dataset source: out/{dataset_source_experiment_id} "
+                "(dataset recorders disabled for this run)."
+            )
+    skip_simulation_for_external_train = bool(
+        phase == "train"
+        and dataset_source_experiment_id
+        and ai_dataset_enabled is False
+        and robak_dataset_enabled is False
+        and rywak_dataset_enabled is False
+    )
+    if skip_simulation_for_external_train:
+        print("[INFO] Phase=train + external dataset source: simulator stack disabled (trainers only).")
+    # In trainers-only mode there is no /clock, so training nodes must use wall-time.
+    train_nodes_use_sim_time = not skip_simulation_for_external_train
     # Izolacja: osobny scan_fix → /scan_slam_robak|rywak (ten sam łańcuch co SLAM danej metody).
     robak_scan_chain_enabled = robak_dataset_enabled or robak_test_enabled or robak_no_slam_test_enabled
     rywak_scan_chain_enabled = rywak_dataset_enabled or rywak_test_enabled or rywak_no_slam_test_enabled
@@ -1580,6 +2078,12 @@ def launch_setup(context, *args, **kwargs):
             "heading_gain": planned_heading_gain,
             "heading_stop_deg": planned_heading_stop_deg,
             "heading_resume_deg": planned_heading_resume_deg,
+            "turn_in_place_max_duration_sec": planned_turn_in_place_max_duration_sec,
+            "turn_in_place_escape_v_ratio": planned_turn_in_place_escape_v_ratio,
+            "turn_in_place_escape_v_min_mps": planned_turn_in_place_escape_v_min_mps,
+            "post_turn_forward_boost_sec": planned_post_turn_forward_boost_sec,
+            "post_turn_forward_min_v_ratio": planned_post_turn_forward_min_v_ratio,
+            "post_turn_forward_min_v_mps": planned_post_turn_forward_min_v_mps,
             "turn_direction_guard_deg": planned_turn_direction_guard_deg,
             "turn_direction_preference": planned_turn_direction_preference,
             "alignment_cos_power": planned_alignment_cos_power,
@@ -1815,10 +2319,11 @@ def launch_setup(context, *args, **kwargs):
         package="ai_slam_ai",
         executable="train_model",
         parameters=[{
-            "use_sim_time": True, 
+            "use_sim_time": train_nodes_use_sim_time,
             "seed": seed, 
             "out_dir": out_dir, 
             "experiment_id": experiment_id,
+            "dataset_name": ai_train_dataset_name,
             "skip_if_model_exists": skip_if_model_exists,
             "dataset_wait_timeout": effective_dataset_wait_timeout,
             "max_epochs": max_epochs,
@@ -1916,11 +2421,11 @@ def launch_setup(context, *args, **kwargs):
         package="ai_slam_ai",
         executable="train_model_robak",
         parameters=[{
-            "use_sim_time": True,
+            "use_sim_time": train_nodes_use_sim_time,
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "dataset_name": robak_dataset_name,
+            "dataset_name": robak_train_dataset_name,
             "model_name": robak_model_name,
             "history_name": robak_history_name,
             "skip_if_model_exists": skip_if_model_exists,
@@ -1950,20 +2455,35 @@ def launch_setup(context, *args, **kwargs):
             "model_source_experiment_id": model_source_experiment_id,
             "model_name": robak_model_name,
             "scan_topic": "/scan_slam_robak",
+            "relay_scan_topic": robak_relay_scan_topic,
             "pose_topic": robak_pose_topic,
-            "init_from": "gt",
+            "init_from": robak_infer_init_from,
             "gt_topic": dataset_gt_topic,
-            "odom_topic": odom_in_topic,
+            "odom_topic": robak_infer_odom_topic,
             "max_step_trans": robak_infer_max_step_trans,
             "max_step_yaw": robak_infer_max_step_yaw,
             "delta_ema_alpha": robak_infer_delta_ema_alpha,
             "odom_heading_alpha": robak_infer_odom_heading_alpha,
+            "odom_heading_gain": robak_infer_odom_heading_gain,
             "odom_sync_tolerance_sec": robak_infer_odom_sync_tolerance,
             "odom_delta_xy_alpha": robak_infer_odom_delta_xy_alpha,
+            "odom_delta_xy_gain": robak_infer_odom_delta_xy_gain,
             "odom_delta_yaw_alpha": robak_infer_odom_delta_yaw_alpha,
+            "odom_delta_yaw_gain": robak_infer_odom_delta_yaw_gain,
             "odom_pose_xy_alpha": robak_infer_odom_pose_xy_alpha,
             "odom_pose_xy_gain": robak_infer_odom_pose_xy_gain,
             "odom_pose_xy_alpha_max": robak_infer_odom_pose_xy_alpha_max,
+            "odom_guard_enabled": robak_odom_guard_enabled,
+            "odom_guard_xy_error_m": robak_odom_guard_xy_error_m,
+            "odom_guard_xy_anchor_base": robak_odom_guard_xy_anchor_base,
+            "odom_guard_xy_anchor_gain": robak_odom_guard_xy_anchor_gain,
+            "odom_guard_yaw_error_rad": robak_odom_guard_yaw_error_rad,
+            "odom_guard_yaw_anchor_base": robak_odom_guard_yaw_anchor_base,
+            "odom_guard_yaw_anchor_gain": robak_odom_guard_yaw_anchor_gain,
+            "odom_rebase_to_local_origin": robak_odom_rebase_to_local_origin,
+            "use_odom_corrections": robak_use_odom_corrections,
+            "force_odom_pose": robak_force_odom_pose,
+            "odom_fallback_before_model_ready": robak_odom_fallback_before_model_ready,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -1984,19 +2504,33 @@ def launch_setup(context, *args, **kwargs):
             "pose_topic": robak_pose_topic_no_slam,
             "tf_parent": robak_tf_parent_no_slam,
             "tf_child": robak_tf_child_no_slam,
-            "init_from": "gt",
+            "init_from": robak_no_slam_infer_init_from,
             "gt_topic": dataset_gt_topic,
-            "odom_topic": odom_in_topic,
-            "max_step_trans": robak_infer_max_step_trans,
-            "max_step_yaw": robak_infer_max_step_yaw,
-            "delta_ema_alpha": robak_infer_delta_ema_alpha,
-            "odom_heading_alpha": robak_infer_odom_heading_alpha,
-            "odom_sync_tolerance_sec": robak_infer_odom_sync_tolerance,
-            "odom_delta_xy_alpha": robak_infer_odom_delta_xy_alpha,
-            "odom_delta_yaw_alpha": robak_infer_odom_delta_yaw_alpha,
-            "odom_pose_xy_alpha": robak_infer_odom_pose_xy_alpha,
-            "odom_pose_xy_gain": robak_infer_odom_pose_xy_gain,
-            "odom_pose_xy_alpha_max": robak_infer_odom_pose_xy_alpha_max,
+            "odom_topic": robak_no_slam_infer_odom_topic,
+            "max_step_trans": robak_no_slam_infer_max_step_trans,
+            "max_step_yaw": robak_no_slam_infer_max_step_yaw,
+            "delta_ema_alpha": robak_no_slam_infer_delta_ema_alpha,
+            "odom_heading_alpha": robak_no_slam_infer_odom_heading_alpha,
+            "odom_heading_gain": robak_no_slam_infer_odom_heading_gain,
+            "odom_sync_tolerance_sec": robak_no_slam_infer_odom_sync_tolerance,
+            "odom_delta_xy_alpha": robak_no_slam_infer_odom_delta_xy_alpha,
+            "odom_delta_xy_gain": robak_no_slam_infer_odom_delta_xy_gain,
+            "odom_delta_yaw_alpha": robak_no_slam_infer_odom_delta_yaw_alpha,
+            "odom_delta_yaw_gain": robak_no_slam_infer_odom_delta_yaw_gain,
+            "odom_pose_xy_alpha": robak_no_slam_infer_odom_pose_xy_alpha,
+            "odom_pose_xy_gain": robak_no_slam_infer_odom_pose_xy_gain,
+            "odom_pose_xy_alpha_max": robak_no_slam_infer_odom_pose_xy_alpha_max,
+            "odom_guard_enabled": robak_no_slam_odom_guard_enabled,
+            "odom_guard_xy_error_m": robak_no_slam_odom_guard_xy_error_m,
+            "odom_guard_xy_anchor_base": robak_no_slam_odom_guard_xy_anchor_base,
+            "odom_guard_xy_anchor_gain": robak_no_slam_odom_guard_xy_anchor_gain,
+            "odom_guard_yaw_error_rad": robak_no_slam_odom_guard_yaw_error_rad,
+            "odom_guard_yaw_anchor_base": robak_no_slam_odom_guard_yaw_anchor_base,
+            "odom_guard_yaw_anchor_gain": robak_no_slam_odom_guard_yaw_anchor_gain,
+            "odom_rebase_to_local_origin": robak_no_slam_odom_rebase_to_local_origin,
+            "use_odom_corrections": robak_no_slam_use_odom_corrections,
+            "force_odom_pose": robak_no_slam_force_odom_pose,
+            "odom_fallback_before_model_ready": robak_no_slam_odom_fallback_before_model_ready,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -2016,8 +2550,10 @@ def launch_setup(context, *args, **kwargs):
             "max_samples": rywak_max_samples,
             "scan_topic": rywak_dataset_scan_topic,
             "odom_topic": rywak_odom_label_topic,
+            "gt_topic": rywak_gt_topic,
             "sync_tolerance_sec": rywak_sync_tolerance,
             "interpolate_odom": rywak_interpolate_odom,
+            "interpolate_gt": rywak_interpolate_gt,
             "sync_pair_gap_sec": rywak_sync_pair_gap,
             "delta_scan_clip": rywak_delta_scan_clip,
             "min_sample_dist": rywak_min_sample_dist,
@@ -2057,11 +2593,11 @@ def launch_setup(context, *args, **kwargs):
         package="ai_slam_ai",
         executable="train_model_rywak",
         parameters=[{
-            "use_sim_time": True,
+            "use_sim_time": train_nodes_use_sim_time,
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "dataset_name": rywak_dataset_name,
+            "dataset_name": rywak_train_dataset_name,
             "model_name": rywak_model_name,
             "history_name": rywak_history_name,
             "skip_if_model_exists": skip_if_model_exists,
@@ -2080,6 +2616,9 @@ def launch_setup(context, *args, **kwargs):
             "huber_delta": rywak_huber_delta,
             "input_noise_std": rywak_input_noise_std,
             "clip_grad_norm": rywak_clip_grad_norm,
+            "loss_dx_weight": rywak_loss_dx_weight,
+            "loss_dy_weight": rywak_loss_dy_weight,
+            "loss_dtheta_weight": rywak_loss_dtheta_weight,
             "loss_v_weight": rywak_loss_v_weight,
             "loss_w_weight": rywak_loss_w_weight,
             "write_experiment_metadata": False,
@@ -2099,9 +2638,10 @@ def launch_setup(context, *args, **kwargs):
             "model_source_experiment_id": model_source_experiment_id,
             "model_name": rywak_model_name,
             "scan_topic": "/scan_slam_rywak",
+            "relay_scan_topic": rywak_relay_scan_topic,
             "pose_topic": rywak_pose_topic,
-            "odom_topic": rywak_odom_label_topic,
-            "init_from_odom_topic": odom_in_topic,
+            "odom_topic": rywak_infer_odom_topic,
+            "init_from_odom_topic": rywak_infer_init_from_odom_topic,
             "sync_tolerance_sec": rywak_sync_tolerance,
             "interpolate_odom": rywak_interpolate_odom,
             "sync_pair_gap_sec": rywak_sync_pair_gap,
@@ -2114,12 +2654,32 @@ def launch_setup(context, *args, **kwargs):
             "fuse_odom_w_gain": rywak_fuse_odom_w_gain,
             "vel_ema_alpha": rywak_vel_ema_alpha,
             "anchor_yaw_to_odom": rywak_anchor_yaw_to_odom,
+            "anchor_yaw_to_odom_gain": rywak_anchor_yaw_to_odom_gain,
             "anchor_xy_to_odom": rywak_anchor_xy_to_odom,
             "anchor_xy_to_odom_gain": rywak_anchor_xy_to_odom_gain,
             "heading_for_xy_odom_weight": rywak_heading_for_xy_odom_weight,
             "xy_step_odom_weight": rywak_xy_step_odom_weight,
             "xy_step_odom_gain": rywak_xy_step_odom_gain,
             "max_integration_dt": rywak_max_integration_dt,
+            "max_step_trans": rywak_max_step_trans,
+            "max_step_yaw": rywak_max_step_yaw,
+            "odom_rebase_to_local_origin": rywak_odom_rebase_to_local_origin,
+            "use_odom_corrections": rywak_use_odom_corrections,
+            "force_odom_pose": rywak_force_odom_pose,
+            "odom_fallback_before_model_ready": rywak_odom_fallback_before_model_ready,
+            "odom_guard_enabled": rywak_odom_guard_enabled,
+            "odom_guard_fuse_weight": rywak_odom_guard_fuse_weight,
+            "odom_guard_v_abs_diff": rywak_odom_guard_v_abs_diff,
+            "odom_guard_v_rel_diff": rywak_odom_guard_v_rel_diff,
+            "odom_guard_w_abs_diff": rywak_odom_guard_w_abs_diff,
+            "odom_guard_w_rel_diff": rywak_odom_guard_w_rel_diff,
+            "odom_guard_sign_conflict_speed": rywak_odom_guard_sign_conflict_speed,
+            "odom_guard_xy_error_m": rywak_odom_guard_xy_error_m,
+            "odom_guard_xy_anchor_base": rywak_odom_guard_xy_anchor_base,
+            "odom_guard_xy_anchor_gain": rywak_odom_guard_xy_anchor_gain,
+            "odom_guard_yaw_error_rad": rywak_odom_guard_yaw_error_rad,
+            "odom_guard_yaw_anchor_base": rywak_odom_guard_yaw_anchor_base,
+            "odom_guard_yaw_anchor_gain": rywak_odom_guard_yaw_anchor_gain,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -2139,26 +2699,46 @@ def launch_setup(context, *args, **kwargs):
             "pose_topic": rywak_pose_topic_no_slam,
             "tf_parent": rywak_tf_parent_no_slam,
             "tf_child": rywak_tf_child_no_slam,
-            "odom_topic": rywak_odom_label_topic,
-            "init_from_odom_topic": odom_in_topic,
-            "sync_tolerance_sec": rywak_sync_tolerance,
-            "interpolate_odom": rywak_interpolate_odom,
-            "sync_pair_gap_sec": rywak_sync_pair_gap,
-            "delta_scan_clip": rywak_delta_scan_clip,
-            "v_clip_abs": rywak_v_clip_abs,
-            "w_clip_abs": rywak_w_clip_abs,
-            "fuse_odom_v_weight": rywak_fuse_odom_v_weight,
-            "fuse_odom_w_weight": rywak_fuse_odom_w_weight,
-            "fuse_odom_v_gain": rywak_fuse_odom_v_gain,
-            "fuse_odom_w_gain": rywak_fuse_odom_w_gain,
-            "vel_ema_alpha": rywak_vel_ema_alpha,
-            "anchor_yaw_to_odom": rywak_anchor_yaw_to_odom,
-            "anchor_xy_to_odom": rywak_anchor_xy_to_odom,
-            "anchor_xy_to_odom_gain": rywak_anchor_xy_to_odom_gain,
-            "heading_for_xy_odom_weight": rywak_heading_for_xy_odom_weight,
-            "xy_step_odom_weight": rywak_xy_step_odom_weight,
-            "xy_step_odom_gain": rywak_xy_step_odom_gain,
-            "max_integration_dt": rywak_max_integration_dt,
+            "odom_topic": rywak_no_slam_infer_odom_topic,
+            "init_from_odom_topic": rywak_no_slam_infer_init_from_odom_topic,
+            "sync_tolerance_sec": rywak_no_slam_sync_tolerance,
+            "interpolate_odom": rywak_no_slam_interpolate_odom,
+            "sync_pair_gap_sec": rywak_no_slam_sync_pair_gap,
+            "delta_scan_clip": rywak_no_slam_delta_scan_clip,
+            "v_clip_abs": rywak_no_slam_v_clip_abs,
+            "w_clip_abs": rywak_no_slam_w_clip_abs,
+            "fuse_odom_v_weight": rywak_no_slam_fuse_odom_v_weight,
+            "fuse_odom_w_weight": rywak_no_slam_fuse_odom_w_weight,
+            "fuse_odom_v_gain": rywak_no_slam_fuse_odom_v_gain,
+            "fuse_odom_w_gain": rywak_no_slam_fuse_odom_w_gain,
+            "vel_ema_alpha": rywak_no_slam_vel_ema_alpha,
+            "anchor_yaw_to_odom": rywak_no_slam_anchor_yaw_to_odom,
+            "anchor_yaw_to_odom_gain": rywak_no_slam_anchor_yaw_to_odom_gain,
+            "anchor_xy_to_odom": rywak_no_slam_anchor_xy_to_odom,
+            "anchor_xy_to_odom_gain": rywak_no_slam_anchor_xy_to_odom_gain,
+            "heading_for_xy_odom_weight": rywak_no_slam_heading_for_xy_odom_weight,
+            "xy_step_odom_weight": rywak_no_slam_xy_step_odom_weight,
+            "xy_step_odom_gain": rywak_no_slam_xy_step_odom_gain,
+            "max_integration_dt": rywak_no_slam_max_integration_dt,
+            "max_step_trans": rywak_no_slam_max_step_trans,
+            "max_step_yaw": rywak_no_slam_max_step_yaw,
+            "odom_rebase_to_local_origin": rywak_no_slam_odom_rebase_to_local_origin,
+            "use_odom_corrections": rywak_no_slam_use_odom_corrections,
+            "force_odom_pose": rywak_no_slam_force_odom_pose,
+            "odom_fallback_before_model_ready": rywak_no_slam_odom_fallback_before_model_ready,
+            "odom_guard_enabled": rywak_no_slam_odom_guard_enabled,
+            "odom_guard_fuse_weight": rywak_no_slam_odom_guard_fuse_weight,
+            "odom_guard_v_abs_diff": rywak_no_slam_odom_guard_v_abs_diff,
+            "odom_guard_v_rel_diff": rywak_no_slam_odom_guard_v_rel_diff,
+            "odom_guard_w_abs_diff": rywak_no_slam_odom_guard_w_abs_diff,
+            "odom_guard_w_rel_diff": rywak_no_slam_odom_guard_w_rel_diff,
+            "odom_guard_sign_conflict_speed": rywak_no_slam_odom_guard_sign_conflict_speed,
+            "odom_guard_xy_error_m": rywak_no_slam_odom_guard_xy_error_m,
+            "odom_guard_xy_anchor_base": rywak_no_slam_odom_guard_xy_anchor_base,
+            "odom_guard_xy_anchor_gain": rywak_no_slam_odom_guard_xy_anchor_gain,
+            "odom_guard_yaw_error_rad": rywak_no_slam_odom_guard_yaw_error_rad,
+            "odom_guard_yaw_anchor_base": rywak_no_slam_odom_guard_yaw_anchor_base,
+            "odom_guard_yaw_anchor_gain": rywak_no_slam_odom_guard_yaw_anchor_gain,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -2188,6 +2768,7 @@ def launch_setup(context, *args, **kwargs):
             "sync_tolerance_sec": eval_sync_tolerance,
             "maps_rotate_180": eval_maps_rotate_180,
             "maps_max_cols": eval_maps_max_cols,
+            "warmup_sec": eval_warmup_sec,
             "points_min_translation": eval_points_min_translation,
             "points_min_rotation": eval_points_min_rotation,
             "points_min_time_gap_sec": eval_points_min_time_gap_sec,
@@ -2206,10 +2787,17 @@ def launch_setup(context, *args, **kwargs):
             "pose_topic_rywak": rywak_pose_topic,
             "pose_topic_robak_no_slam": robak_pose_topic_no_slam,
             "pose_topic_rywak_no_slam": rywak_pose_topic_no_slam,
-            "robak_dataset_name": robak_dataset_name,
+            "slam_baseline_tf_topic": "/tf",
+            "slam_baseline_map_frame": slam_baseline_map_frame,
+            "slam_baseline_odom_frame": slam_baseline_odom_frame,
+            "slam_robak_map_frame": slam_robak_map_frame,
+            "slam_robak_odom_frame": slam_robak_odom_frame,
+            "slam_rywak_map_frame": slam_rywak_map_frame,
+            "slam_rywak_odom_frame": slam_rywak_odom_frame,
+            "robak_dataset_name": robak_train_dataset_name,
             "robak_model_name": robak_model_name,
             "robak_history_name": robak_history_name,
-            "rywak_dataset_name": rywak_dataset_name,
+            "rywak_dataset_name": rywak_train_dataset_name,
             "rywak_model_name": rywak_model_name,
             "rywak_history_name": rywak_history_name,
         }],
@@ -2450,67 +3038,58 @@ def launch_setup(context, *args, **kwargs):
         ),
         condition=IfCondition(str(do_eval_phase).lower())
     )
-    return [
-        *env_vars,
+    sim_stack_actions = [
         gz_launch_headless,
         gz_launch_gui,
-
         TimerAction(period=bridge_delay, actions=[bridge, bridge_tf_world]),
-
         robot_state_pub,
-
         # 4x scan_fix (baseline + osobne tory)
         scan_fix_baseline,
         scan_fix_ai,
         scan_fix_robak,
         scan_fix_rywak,
-
         # scan-matcher tory
         scan_matcher_local,
         scan_matcher_bruteforce,
-
         gt_pose,
         odom_corruptor,
-        driver_auto,
-        driver_planned,
-
-        # SLAM toolbox 
+        TimerAction(period=driver_start_delay, actions=[driver_auto, driver_planned]),
+        # SLAM toolbox
         slam_baseline,
         slam_ai,
         slam_robak,
         slam_rywak,
-
-        # lifecycle transitions 
+        # lifecycle transitions
         configure_baseline,
         activate_baseline,
-
         configure_ai,
         activate_ai,
-
         configure_robak,
         activate_robak,
-
         configure_rywak,
         activate_rywak,
-
-        # pipeline dataset/train/infer
+        # pipeline nodes that depend on simulator
         dataset_motion_watchdog,
         dataset_rec,
-        trainer,
         infer,
-
         dataset_rec_robak,
-        trainer_robak,
         infer_robak,
         infer_robak_no_slam,
-
         dataset_rec_rywak,
-        trainer_rywak,
         infer_rywak,
         infer_rywak_no_slam,
-
         evaluator,
+    ]
 
+    return [
+        *env_vars,
+        GroupAction(
+            actions=sim_stack_actions,
+            condition=IfCondition(str(not skip_simulation_for_external_train).lower()),
+        ),
+        trainer,
+        trainer_robak,
+        trainer_rywak,
         *auto_shutdown_dataset_handlers,
         *auto_shutdown_train_handlers,
         auto_shutdown_eval,
@@ -2541,6 +3120,11 @@ def generate_launch_description():
             "model_source_experiment_id",
             default_value="__USE_CONFIG__",
             description="Load *.pt from out/<this_id>/ (empty = same as experiment_id)",
+        ),
+        DeclareLaunchArgument(
+            "dataset_source_experiment_id",
+            default_value="__USE_CONFIG__",
+            description="Train from out/<this_id>/dataset*.npz (empty = collect local dataset)",
         ),
         OpaqueFunction(function=launch_setup),
     ])

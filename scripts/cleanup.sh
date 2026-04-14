@@ -4,13 +4,20 @@
 echo "Cleaning up ROS2 and Gazebo processes..."
 
 # Kill Gazebo Harmonic processes (gz sim)
+# Szeroki sweep "gz" (jak wcześniej), ale z filtrem PID:
+# nie ubijamy samego cleanup.sh ani procesu rodzica.
+pgrep -f "gz" \
+  | awk -v self="$$" -v parent="$PPID" '$1 != self && $1 != parent { print $1 }' \
+  | xargs -r kill -9 2>/dev/null || true
+
 pkill -9 -f "gz sim" 2>/dev/null
 pkill -9 -f "gz-sim" 2>/dev/null
 pkill -9 -f "ruby.*gz" 2>/dev/null
 killall -9 gz 2>/dev/null
 killall -9 gzserver 2>/dev/null
 killall -9 gzclient 2>/dev/null
-killall -9 ruby 2>/dev/null  # gz often runs via ruby wrapper
+# Nie ubijamy globalnie wszystkich procesów ruby (zbyt agresywne).
+# Gazebo-ruby zamykamy selektywnie przez wzorzec "ruby.*gz" powyżej.
 
 # Kill specific Gazebo Harmonic server/gui
 pkill -9 -f "gz-sim-server" 2>/dev/null
@@ -54,11 +61,28 @@ pkill -9 -f "_ros2_daemon" 2>/dev/null
 # Wait for processes to fully terminate
 sleep 1
 
-# Force kill any remaining gazebo-related processes
-pgrep -f "gz|gazebo|ignition" | xargs -r kill -9 2>/dev/null
+# Force kill any remaining Gazebo-related processes.
+pgrep -f "(gz|gazebo|ign gazebo|ignition)" \
+  | awk -v self="$$" -v parent="$PPID" '$1 != self && $1 != parent { print $1 }' \
+  | xargs -r kill -9 2>/dev/null || true
 
 # Wait a bit more
 sleep 1
+
+# Final hard check: nie zostawiaj osieroconych procesów środowiska.
+for _attempt in 1 2 3; do
+  _stale_pids="$(
+    pgrep -f "(gz|gazebo|ign gazebo|ignition|ros2 launch ai_slam_bringup demo.launch.py|/ros_gz_bridge/parameter_bridge|/ai_slam_ai/dataset_recorder|/ai_slam_bringup/planned_path_driver|/ai_slam_bringup/dataset_motion_watchdog|/ai_slam_bringup/odom_corruptor|/ai_slam_bringup/gt_pose_publisher|/ai_slam_bringup/scan_fix)" \
+      | awk -v self="$$" -v parent="$PPID" '$1 != self && $1 != parent { print $1 }' \
+      || true
+  )"
+  if [ -z "${_stale_pids}" ]; then
+    break
+  fi
+  echo "Cleanup retry ${_attempt}: usuwam osierocone PID: ${_stale_pids}" >&2
+  echo "${_stale_pids}" | xargs -r kill -9 2>/dev/null || true
+  sleep 0.5
+done
 
 # Stop ROS2 daemon cleanly (if running)
 ros2 daemon stop >/dev/null 2>&1 || true

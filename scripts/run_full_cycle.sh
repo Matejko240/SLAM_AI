@@ -145,23 +145,78 @@ if [ "$REQUESTED_PHASE" = "train" ] || [ "$REQUESTED_PHASE" = "dataset" ]; then
 fi
 
 PASSTHROUGH_ARGS=()
+HAS_MODEL_SOURCE_OVERRIDE="false"
 for arg in "$@"; do
     if [[ "$arg" == phase:=* ]]; then
         continue
+    fi
+    if [[ "$arg" == model_source_experiment_id:=* ]]; then
+        HAS_MODEL_SOURCE_OVERRIDE="true"
     fi
     PASSTHROUGH_ARGS+=("$arg")
 done
 
 # --- 2. Parsowanie Konfiguracji (bezpiecznie przez YAML) ---
 mapfile -t CONFIG_LINES < <(
-python3 - "$CONFIG_PATH" <<'PY'
+python3 - "$CONFIG_PATH" "$ROOT_DIR/ai_slam_ws/src/ai_slam_bringup/config" <<'PY'
 import json
+import os
 import sys
 import yaml
 
-cfg_path = sys.argv[1]
-with open(cfg_path, "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f) or {}
+cfg_path = os.path.abspath(sys.argv[1])
+default_config_dir = os.path.abspath(sys.argv[2])
+
+def _deep_merge_dicts(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+def _resolve_config_reference(ref: str, current_dir: str) -> str:
+    ref = str(ref).strip()
+    if not ref:
+        raise ValueError("Empty config reference in 'extends'")
+    if os.path.isabs(ref):
+        return ref
+    candidate_current = os.path.abspath(os.path.join(current_dir, ref))
+    if os.path.exists(candidate_current):
+        return candidate_current
+    return os.path.abspath(os.path.join(default_config_dir, ref))
+
+def _load_config_recursive(path: str, stack: tuple[str, ...] = ()) -> dict:
+    abs_path = os.path.abspath(path)
+    if abs_path in stack:
+        cycle_chain = " -> ".join([*stack, abs_path])
+        raise RuntimeError(f"Config extends cycle detected: {cycle_chain}")
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"Config file not found: {abs_path}")
+    with open(abs_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config must be a YAML mapping/object: {abs_path}")
+
+    extends = data.pop("extends", None)
+    if not extends:
+        return data
+    if isinstance(extends, str):
+        parents = [extends]
+    elif isinstance(extends, list):
+        parents = [str(item) for item in extends if str(item).strip()]
+    else:
+        raise ValueError(f"Invalid 'extends' type in {abs_path}: expected string or list")
+
+    merged_parent = {}
+    for parent_ref in parents:
+        parent_path = _resolve_config_reference(parent_ref, os.path.dirname(abs_path))
+        parent_cfg = _load_config_recursive(parent_path, (*stack, abs_path))
+        merged_parent = _deep_merge_dicts(merged_parent, parent_cfg)
+    return _deep_merge_dicts(merged_parent, data)
+
+cfg = _load_config_recursive(cfg_path)
 
 sim = cfg.get("simulation", {}) or {}
 pipeline = cfg.get("pipeline", {}) or {}
@@ -274,13 +329,64 @@ echo ""
 
 # Sprawdzamy komplet artefaktów treningu dla wszystkich aktywnych torów.
 mapfile -t TRAIN_EXPECTED_FILES < <(
-python3 - "$CONFIG_PATH" <<'PY'
+python3 - "$CONFIG_PATH" "$ROOT_DIR/ai_slam_ws/src/ai_slam_bringup/config" <<'PY'
+import os
 import sys
 import yaml
 
-cfg_path = sys.argv[1]
-with open(cfg_path, "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f) or {}
+cfg_path = os.path.abspath(sys.argv[1])
+default_config_dir = os.path.abspath(sys.argv[2])
+
+def _deep_merge_dicts(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+def _resolve_config_reference(ref: str, current_dir: str) -> str:
+    ref = str(ref).strip()
+    if not ref:
+        raise ValueError("Empty config reference in 'extends'")
+    if os.path.isabs(ref):
+        return ref
+    candidate_current = os.path.abspath(os.path.join(current_dir, ref))
+    if os.path.exists(candidate_current):
+        return candidate_current
+    return os.path.abspath(os.path.join(default_config_dir, ref))
+
+def _load_config_recursive(path: str, stack: tuple[str, ...] = ()) -> dict:
+    abs_path = os.path.abspath(path)
+    if abs_path in stack:
+        cycle_chain = " -> ".join([*stack, abs_path])
+        raise RuntimeError(f"Config extends cycle detected: {cycle_chain}")
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"Config file not found: {abs_path}")
+    with open(abs_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config must be a YAML mapping/object: {abs_path}")
+
+    extends = data.pop("extends", None)
+    if not extends:
+        return data
+    if isinstance(extends, str):
+        parents = [extends]
+    elif isinstance(extends, list):
+        parents = [str(item) for item in extends if str(item).strip()]
+    else:
+        raise ValueError(f"Invalid 'extends' type in {abs_path}: expected string or list")
+
+    merged_parent = {}
+    for parent_ref in parents:
+        parent_path = _resolve_config_reference(parent_ref, os.path.dirname(abs_path))
+        parent_cfg = _load_config_recursive(parent_path, (*stack, abs_path))
+        merged_parent = _deep_merge_dicts(merged_parent, parent_cfg)
+    return _deep_merge_dicts(merged_parent, data)
+
+cfg = _load_config_recursive(cfg_path)
 
 experiment = cfg.get("experiment", {}) or {}
 tracks = cfg.get("tracks", {}) or {}
@@ -423,6 +529,9 @@ PY
         "experiment_id:=$EXP_ID"
         "eval_duration_sec:=$EVAL_TIME"
     )
+    if [ "$DO_TRAIN" = "true" ] && [ "$HAS_MODEL_SOURCE_OVERRIDE" != "true" ]; then
+        TEST_CMD+=("model_source_experiment_id:=$EXP_ID")
+    fi
     if [ -n "$OUTPUT_SUBDIR" ]; then
         TEST_CMD+=("evaluation_output_subdir:=$OUTPUT_SUBDIR")
     fi

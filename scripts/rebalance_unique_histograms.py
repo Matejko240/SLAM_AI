@@ -88,8 +88,6 @@ def _deduplicate_xy(
     features: np.ndarray,
     labels: np.ndarray,
     pose_key: np.ndarray | None,
-    *,
-    use_pose_key: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, int, np.ndarray, str]:
     if features.shape[0] == 0:
         return (
@@ -98,17 +96,12 @@ def _deduplicate_xy(
             pose_key,
             0,
             np.zeros((0,), dtype=np.int64),
-            "X+Y+P" if use_pose_key and pose_key is not None else "X+Y",
+            "X+Y",
         )
     flat_x = np.ascontiguousarray(features.reshape((features.shape[0], -1)))
     flat_y = np.ascontiguousarray(labels.reshape((labels.shape[0], -1)))
-    if use_pose_key and pose_key is not None:
-        flat_p = np.ascontiguousarray(pose_key.reshape((pose_key.shape[0], -1)))
-        merged = np.concatenate([flat_x, flat_y, flat_p], axis=1)
-        dedup_key = "X+Y+P"
-    else:
-        merged = np.concatenate([flat_x, flat_y], axis=1)
-        dedup_key = "X+Y"
+    merged = np.concatenate([flat_x, flat_y], axis=1)
+    dedup_key = "X+Y"
     merged_view = np.ascontiguousarray(merged).view(
         np.dtype((np.void, merged.dtype.itemsize * merged.shape[1]))
     )
@@ -218,6 +211,19 @@ def _select_indices_from_cells(
     return np.sort(np.concatenate(chunks, axis=0).astype(np.int64))
 
 
+def _rywak_metrics(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, str, str, str]:
+    y = np.asarray(labels, dtype=np.float32)
+    if y.ndim != 2 or y.shape[1] < 2:
+        raise ValueError(f"Invalid Rywak labels shape: {y.shape}. Expected (N,2) or (N,3).")
+    if y.shape[1] >= 3:
+        metric_row = np.linalg.norm(y[:, :2], axis=1).astype(np.float32)
+        metric_col = np.abs(y[:, 2]).astype(np.float32)
+        return metric_row, metric_col, "translation_rotation", "m", "rad"
+    metric_row = np.abs(y[:, 0]).astype(np.float32)
+    metric_col = np.abs(y[:, 1]).astype(np.float32)
+    return metric_row, metric_col, "velocity", "m/s", "rad/s"
+
+
 def _rebalance_one(
     npz_path: Path,
     out_path: Path,
@@ -231,7 +237,6 @@ def _rebalance_one(
     seed: int,
     require_all_bins: bool,
     label: str,
-    use_pose_key_for_dedup: bool,
 ) -> dict:
     with np.load(npz_path, allow_pickle=True) as data:
         if feature_key not in data or "Y" not in data:
@@ -245,13 +250,13 @@ def _rebalance_one(
     if pose_raw is not None and pose_raw.shape[0] != labels_raw.shape[0]:
         raise ValueError(f"{npz_path}: pose/label rows mismatch")
 
-    dedup_pose_requested = bool(use_pose_key_for_dedup)
+    # Deduplication policy: always X+Y (pose key deliberately ignored).
+    dedup_pose_requested = False
     dedup_pose_available = pose_raw is not None
     features, labels, pose, removed_dups, unique_idx, dedup_key_used = _deduplicate_xy(
         features_raw,
         labels_raw,
         pose_raw,
-        use_pose_key=dedup_pose_requested and dedup_pose_available,
     )
     metric_row_dedup = np.asarray(metric_row, dtype=np.float64).reshape(-1)[unique_idx]
     metric_col_dedup = np.asarray(metric_col, dtype=np.float64).reshape(-1)[unique_idx]
@@ -324,7 +329,6 @@ def _rebalance_one(
         features_out,
         labels_out,
         pose_out,
-        use_pose_key=dedup_pose_requested and dedup_pose_available,
     )
     if removed_again != 0 or features_chk.shape[0] != features_out.shape[0]:
         raise RuntimeError(f"{label}: non-unique samples remained after balancing")
@@ -416,7 +420,7 @@ def main() -> int:
     ap.add_argument(
         "--dedup-use-pose-key",
         action="store_true",
-        help="Use X+Y+P dedup key when P (pose_prev/curr) exists; otherwise fallback to X+Y.",
+        help="DEPRECATED (ignored). Deduplication is always performed on X+Y only.",
     )
     args = ap.parse_args()
 
@@ -435,22 +439,30 @@ def main() -> int:
             raise SystemExit("--rywak-out is required when --rywak-npz is provided")
         with np.load(args.rywak_npz, allow_pickle=True) as d:
             y = np.asarray(d["Y"], dtype=np.float32)
-        ry_metric_v = np.abs(y[:, 0]).astype(np.float32)
-        ry_metric_w = np.abs(y[:, 1]).astype(np.float32)
+        (
+            ry_metric_row,
+            ry_metric_col,
+            ry_metric_mode,
+            ry_row_unit,
+            ry_col_unit,
+        ) = _rywak_metrics(y)
+        ry_label = "rywak_translation_rotation" if ry_metric_mode == "translation_rotation" else "rywak_v_w"
         ry = _rebalance_one(
             args.rywak_npz,
             args.rywak_out,
             feature_key="X",
             bins=int(args.bins),
-            metric_row=ry_metric_v,
-            metric_col=ry_metric_w,
+            metric_row=ry_metric_row,
+            metric_col=ry_metric_col,
             row_range=(float(args.rywak_v_min), float(args.rywak_v_max)),
             col_range=(float(args.rywak_w_min), float(args.rywak_w_max)),
             seed=int(args.seed) + 17,
             require_all_bins=bool(args.require_all_bins),
-            label="rywak_v_w",
-            use_pose_key_for_dedup=bool(args.dedup_use_pose_key),
+            label=ry_label,
         )
+        ry["metric_mode"] = ry_metric_mode
+        ry["row_metric_unit"] = ry_row_unit
+        ry["col_metric_unit"] = ry_col_unit
         summary["rywak"] = ry
         failed = failed or (not bool(ry.get("success", False)))
 
@@ -473,7 +485,6 @@ def main() -> int:
             seed=int(args.seed) + 29,
             require_all_bins=bool(args.require_all_bins),
             label="robak_translation_rotation",
-            use_pose_key_for_dedup=bool(args.dedup_use_pose_key),
         )
         summary["robak"] = rb
         failed = failed or (not bool(rb.get("success", False)))

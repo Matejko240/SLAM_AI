@@ -50,6 +50,19 @@ def _delta_local(prev_xyth, cur_xyth):
     return float(dx), float(dy), float(dth)
 
 
+def _rebase_pose(abs_xyth, origin_xyth):
+    x, y, th = abs_xyth
+    ox, oy, oth = origin_xyth
+    dx_w = float(x) - float(ox)
+    dy_w = float(y) - float(oy)
+    c0 = math.cos(float(oth))
+    s0 = math.sin(float(oth))
+    x_l = c0 * dx_w + s0 * dy_w
+    y_l = -s0 * dx_w + c0 * dy_w
+    th_l = wrap(float(th) - float(oth))
+    return float(x_l), float(y_l), float(th_l)
+
+
 def _resample_to_360(ranges: np.ndarray) -> np.ndarray:
     n = int(ranges.size)
     if n == 360:
@@ -114,6 +127,7 @@ class InferRobakNode(Node):
         self.declare_parameter("write_experiment_metadata", False)
 
         self.declare_parameter("scan_topic", "/scan_slam_robak")
+        self.declare_parameter("relay_scan_topic", "")
         self.declare_parameter("pose_topic", "/pose_robak")
         self.declare_parameter("tf_parent", "odom_robak")
         self.declare_parameter("tf_child", "base_link_robak")
@@ -127,12 +141,26 @@ class InferRobakNode(Node):
         self.declare_parameter("max_step_yaw", 0.35)
         self.declare_parameter("delta_ema_alpha", 0.55)
         self.declare_parameter("odom_heading_alpha", 0.20)
+        self.declare_parameter("odom_heading_gain", 0.75)
         self.declare_parameter("odom_sync_tolerance_sec", 0.08)
         self.declare_parameter("odom_delta_xy_alpha", 0.35)
+        self.declare_parameter("odom_delta_xy_gain", 0.55)
         self.declare_parameter("odom_delta_yaw_alpha", 0.45)
+        self.declare_parameter("odom_delta_yaw_gain", 0.45)
         self.declare_parameter("odom_pose_xy_alpha", 0.0)
         self.declare_parameter("odom_pose_xy_gain", 0.0)
         self.declare_parameter("odom_pose_xy_alpha_max", 1.0)
+        self.declare_parameter("odom_guard_enabled", False)
+        self.declare_parameter("odom_guard_xy_error_m", 0.0)
+        self.declare_parameter("odom_guard_xy_anchor_base", 0.75)
+        self.declare_parameter("odom_guard_xy_anchor_gain", 0.50)
+        self.declare_parameter("odom_guard_yaw_error_rad", 0.0)
+        self.declare_parameter("odom_guard_yaw_anchor_base", 0.70)
+        self.declare_parameter("odom_guard_yaw_anchor_gain", 0.55)
+        self.declare_parameter("odom_rebase_to_local_origin", False)
+        self.declare_parameter("use_odom_corrections", True)
+        self.declare_parameter("force_odom_pose", False)
+        self.declare_parameter("odom_fallback_before_model_ready", True)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -164,6 +192,7 @@ class InferRobakNode(Node):
         self.torch_device_info = select_torch_device(self.torch_device_request)
         self.device = torch.device(self.torch_device_info.resolved)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
+        self.relay_scan_topic = str(self.get_parameter("relay_scan_topic").value).strip()
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
@@ -190,12 +219,28 @@ class InferRobakNode(Node):
         self.max_step_yaw = float(self.get_parameter("max_step_yaw").value)
         self.delta_ema_alpha = float(self.get_parameter("delta_ema_alpha").value)
         self.odom_heading_alpha = float(self.get_parameter("odom_heading_alpha").value)
+        self.odom_heading_gain = float(self.get_parameter("odom_heading_gain").value)
         self.odom_sync_tolerance_sec = float(self.get_parameter("odom_sync_tolerance_sec").value)
         self.odom_delta_xy_alpha = float(self.get_parameter("odom_delta_xy_alpha").value)
+        self.odom_delta_xy_gain = float(self.get_parameter("odom_delta_xy_gain").value)
         self.odom_delta_yaw_alpha = float(self.get_parameter("odom_delta_yaw_alpha").value)
+        self.odom_delta_yaw_gain = float(self.get_parameter("odom_delta_yaw_gain").value)
         self.odom_pose_xy_alpha = float(self.get_parameter("odom_pose_xy_alpha").value)
         self.odom_pose_xy_gain = float(self.get_parameter("odom_pose_xy_gain").value)
         self.odom_pose_xy_alpha_max = float(self.get_parameter("odom_pose_xy_alpha_max").value)
+        self.odom_guard_enabled = bool(self.get_parameter("odom_guard_enabled").value)
+        self.odom_guard_xy_error_m = float(self.get_parameter("odom_guard_xy_error_m").value)
+        self.odom_guard_xy_anchor_base = float(self.get_parameter("odom_guard_xy_anchor_base").value)
+        self.odom_guard_xy_anchor_gain = float(self.get_parameter("odom_guard_xy_anchor_gain").value)
+        self.odom_guard_yaw_error_rad = float(self.get_parameter("odom_guard_yaw_error_rad").value)
+        self.odom_guard_yaw_anchor_base = float(self.get_parameter("odom_guard_yaw_anchor_base").value)
+        self.odom_guard_yaw_anchor_gain = float(self.get_parameter("odom_guard_yaw_anchor_gain").value)
+        self.odom_rebase_to_local_origin = bool(self.get_parameter("odom_rebase_to_local_origin").value)
+        self.use_odom_corrections = bool(self.get_parameter("use_odom_corrections").value)
+        self.force_odom_pose = bool(self.get_parameter("force_odom_pose").value)
+        self.odom_fallback_before_model_ready = bool(
+            self.get_parameter("odom_fallback_before_model_ready").value
+        )
 
         self.prev_scan = None
         self.prev_stamp = None
@@ -220,12 +265,16 @@ class InferRobakNode(Node):
         self.latest_gt = None
         self.latest_odom = None
         self.odom_buf = deque(maxlen=2000)
+        self.odom_origin_xyth = None
         self.prev_odom_xyth = None
         self.dx_filt = None
         self.dy_filt = None
         self.dth_filt = None
 
         self.pub_pose = self.create_publisher(PoseStamped, self.pose_topic, 10)
+        self.pub_scan_relay = None
+        if self.relay_scan_topic:
+            self.pub_scan_relay = self.create_publisher(LaserScan, self.relay_scan_topic, qos_profile_sensor_data)
         self.tf_br = TransformBroadcaster(self) if self.publish_tf else None
 
         self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
@@ -238,10 +287,19 @@ class InferRobakNode(Node):
         self.get_logger().info(
             f"[Robak] infer stabilization: max_step_trans={self.max_step_trans}, "
             f"max_step_yaw={self.max_step_yaw}, ema={self.delta_ema_alpha}, "
-            f"odom_heading_alpha={self.odom_heading_alpha}, odom_tol={self.odom_sync_tolerance_sec}, "
-            f"odom_delta_xy_alpha={self.odom_delta_xy_alpha}, odom_delta_yaw_alpha={self.odom_delta_yaw_alpha}, "
+            f"odom_heading_alpha={self.odom_heading_alpha}, odom_heading_gain={self.odom_heading_gain}, "
+            f"odom_tol={self.odom_sync_tolerance_sec}, "
+            f"odom_delta_xy_alpha={self.odom_delta_xy_alpha}, odom_delta_xy_gain={self.odom_delta_xy_gain}, "
+            f"odom_delta_yaw_alpha={self.odom_delta_yaw_alpha}, odom_delta_yaw_gain={self.odom_delta_yaw_gain}, "
             f"odom_pose_xy_alpha={self.odom_pose_xy_alpha}, odom_pose_xy_gain={self.odom_pose_xy_gain}, "
-            f"odom_pose_xy_alpha_max={self.odom_pose_xy_alpha_max}"
+            f"odom_pose_xy_alpha_max={self.odom_pose_xy_alpha_max}, "
+            f"odom_guard(enabled={self.odom_guard_enabled}, "
+            f"xy_err={self.odom_guard_xy_error_m}, yaw_err={self.odom_guard_yaw_error_rad}), "
+            f"odom_rebase_to_local_origin={self.odom_rebase_to_local_origin}, "
+            f"use_odom_corrections={self.use_odom_corrections}, "
+            f"force_odom_pose={self.force_odom_pose}, "
+            f"odom_fallback_before_model_ready={self.odom_fallback_before_model_ready}, "
+            f"relay_scan_topic={self.relay_scan_topic or '(disabled)'}"
         )
 
     def on_gt(self, msg: PoseStamped):
@@ -255,11 +313,18 @@ class InferRobakNode(Node):
         self.latest_odom = msg
         t = _stamp_to_sec(msg.header.stamp)
         x, y, th = xytheta_from_odom(msg)
+        if self.odom_rebase_to_local_origin:
+            if self.odom_origin_xyth is None:
+                self.odom_origin_xyth = (float(x), float(y), float(th))
+            x, y, th = _rebase_pose((x, y, th), self.odom_origin_xyth)
         self.odom_buf.append((t, x, y, th))
         if not self.pose_inited and self.init_from == "odom":
             self.x, self.y, self.th = x, y, th
             self.pose_inited = True
         self._try_publish_bootstrap_pose()
+        if self.model is None and self.odom_fallback_before_model_ready and self.pose_inited:
+            self.x, self.y, self.th = x, y, th
+            self._publish_pose_stamped(msg.header.stamp)
 
     def _publish_pose_stamped(self, stamp) -> None:
         """Publish PoseStamped + TF at current (x, y, th) with the given header stamp."""
@@ -290,9 +355,17 @@ class InferRobakNode(Node):
             tfm.transform.rotation.w = qw
             self.tf_br.sendTransform(tfm)
 
+    def _relay_scan(self, scan_msg: LaserScan) -> None:
+        if self.pub_scan_relay is not None:
+            self.pub_scan_relay.publish(scan_msg)
+
     def _try_publish_bootstrap_pose(self) -> None:
         """One-time pose/TF so eval can sync with GT before the second scan arrives."""
-        if self._bootstrap_pose_done or self.model is None or not self.pose_inited:
+        if self._bootstrap_pose_done or (
+            self.model is None
+            and not self.force_odom_pose
+            and not self.odom_fallback_before_model_ready
+        ) or not self.pose_inited:
             return
         if self.init_from == "gt":
             if self.latest_gt is None:
@@ -366,7 +439,7 @@ class InferRobakNode(Node):
             )
 
     def on_scan(self, msg: LaserScan):
-        if self.model is None:
+        if self.model is None and not self.force_odom_pose and not self.odom_fallback_before_model_ready:
             return
         if self.init_from != "none" and not self.pose_inited:
             return
@@ -378,14 +451,50 @@ class InferRobakNode(Node):
         if self.prev_scan is None:
             self.prev_scan = scan
             self.prev_stamp = msg.header.stamp
+            self._relay_scan(msg)
             return
 
         # dt
         t_prev = _stamp_to_sec(self.prev_stamp)
         t_cur = _stamp_to_sec(msg.header.stamp)
         dt = max(1e-3, t_cur - t_prev)
-        odom_xyth = self._nearest_odom_xyth(t_cur)
+        need_odom = bool(
+            self.force_odom_pose
+            or (self.model is None and self.odom_fallback_before_model_ready)
+            or self.use_odom_corrections
+        )
+        odom_xyth = self._nearest_odom_xyth(t_cur) if need_odom else None
         odom_th = float(odom_xyth[2]) if odom_xyth is not None else None
+
+        if self.model is None and self.odom_fallback_before_model_ready and not self.force_odom_pose:
+            if odom_xyth is None:
+                self.prev_scan = scan
+                self.prev_stamp = msg.header.stamp
+                return
+            self.x = float(odom_xyth[0])
+            self.y = float(odom_xyth[1])
+            self.th = float(odom_xyth[2])
+            self._publish_pose_stamped(msg.header.stamp)
+            self._relay_scan(msg)
+            self.prev_scan = scan
+            self.prev_stamp = msg.header.stamp
+            self.prev_odom_xyth = odom_xyth
+            return
+
+        if self.force_odom_pose:
+            if odom_xyth is None:
+                self.prev_scan = scan
+                self.prev_stamp = msg.header.stamp
+                return
+            self.x = float(odom_xyth[0])
+            self.y = float(odom_xyth[1])
+            self.th = float(odom_xyth[2])
+            self._publish_pose_stamped(msg.header.stamp)
+            self._relay_scan(msg)
+            self.prev_scan = scan
+            self.prev_stamp = msg.header.stamp
+            self.prev_odom_xyth = odom_xyth
+            return
 
         X_pair = np.stack([self.prev_scan, scan], axis=0).astype(np.float32)   # (2,360)
         x_flat = X_pair.reshape(-1)                                            # (720,)
@@ -415,10 +524,18 @@ class InferRobakNode(Node):
             dth = float(np.clip(dth, -self.max_step_yaw, self.max_step_yaw))
 
         dxo = dyo = dtho = 0.0
-        if self.prev_odom_xyth is not None and odom_xyth is not None:
+        if self.use_odom_corrections and self.prev_odom_xyth is not None and odom_xyth is not None:
             dxo, dyo, dtho = _delta_local(self.prev_odom_xyth, odom_xyth)
-            w_xy = min(max(self.odom_delta_xy_alpha, 0.0), 1.0)
-            w_yaw = min(max(self.odom_delta_yaw_alpha, 0.0), 1.0)
+            w_xy_base = min(max(self.odom_delta_xy_alpha, 0.0), 1.0)
+            w_yaw_base = min(max(self.odom_delta_yaw_alpha, 0.0), 1.0)
+            w_xy_gain = max(0.0, self.odom_delta_xy_gain)
+            w_yaw_gain = max(0.0, self.odom_delta_yaw_gain)
+            xy_scale = self.max_step_trans if self.max_step_trans > 1e-3 else 0.10
+            yaw_scale = self.max_step_yaw if self.max_step_yaw > 1e-3 else 0.25
+            err_xy_step = math.hypot(dx - float(dxo), dy - float(dyo))
+            err_yaw_step = abs(wrap(dth - float(dtho)))
+            w_xy = min(max(w_xy_base + w_xy_gain * (err_xy_step / xy_scale), 0.0), 1.0)
+            w_yaw = min(max(w_yaw_base + w_yaw_gain * (err_yaw_step / yaw_scale), 0.0), 1.0)
             dx = (1.0 - w_xy) * dx + w_xy * float(dxo)
             dy = (1.0 - w_xy) * dy + w_xy * float(dyo)
             dth = wrap((1.0 - w_yaw) * dth + w_yaw * float(dtho))
@@ -450,27 +567,57 @@ class InferRobakNode(Node):
         self.y += s * dx + c * dy
         self.th = wrap(self.th + dth)
 
-        if odom_th is not None and self.odom_heading_alpha > 0.0:
-            self.th = _interp_angle(self.th, odom_th, min(max(self.odom_heading_alpha, 0.0), 1.0))
+        if self.use_odom_corrections and odom_th is not None and self.odom_heading_alpha > 0.0:
+            heading_base = min(max(self.odom_heading_alpha, 0.0), 1.0)
+            heading_gain = max(0.0, self.odom_heading_gain)
+            yaw_err = abs(wrap(float(self.th) - float(odom_th)))
+            yaw_scale = max(0.10, float(self.max_step_yaw) if self.max_step_yaw > 0.0 else 0.25)
+            heading_w = min(max(heading_base + heading_gain * (yaw_err / yaw_scale), 0.0), 1.0)
+            self.th = _interp_angle(self.th, odom_th, heading_w)
+        if self.use_odom_corrections and self.odom_guard_enabled and odom_th is not None and self.odom_guard_yaw_error_rad > 0.0:
+            yaw_err_guard = abs(wrap(float(self.th) - float(odom_th)))
+            if yaw_err_guard > self.odom_guard_yaw_error_rad:
+                yaw_guard_base = min(max(self.odom_guard_yaw_anchor_base, 0.0), 1.0)
+                yaw_guard_gain = max(0.0, self.odom_guard_yaw_anchor_gain)
+                yaw_guard_scale = max(1e-6, self.odom_guard_yaw_error_rad)
+                yaw_guard_w = min(
+                    max(yaw_guard_base + yaw_guard_gain * (yaw_err_guard / yaw_guard_scale), 0.0),
+                    1.0,
+                )
+                self.th = _interp_angle(self.th, odom_th, yaw_guard_w)
 
         odom_pose_anchor_w_xy = 0.0
         err_to_odom_before_m = None
         err_to_odom_after_m = None
-        if odom_xyth is not None and (self.odom_pose_xy_alpha > 0.0 or self.odom_pose_xy_gain > 0.0):
+        if self.use_odom_corrections and odom_xyth is not None:
             ox, oy, _ = odom_xyth
             err_xy = math.hypot(self.x - float(ox), self.y - float(oy))
             err_to_odom_before_m = float(err_xy)
-            norm = self.max_step_trans if self.max_step_trans > 1e-3 else 0.10
-            w_base = min(max(self.odom_pose_xy_alpha, 0.0), 1.0)
-            w_gain = max(0.0, self.odom_pose_xy_gain)
-            w_xy_max = min(max(self.odom_pose_xy_alpha_max, 0.0), 1.0)
-            w_xy = min(max(w_base + w_gain * (err_xy / norm), 0.0), w_xy_max)
-            odom_pose_anchor_w_xy = float(w_xy)
-            self.x = (1.0 - w_xy) * self.x + w_xy * float(ox)
-            self.y = (1.0 - w_xy) * self.y + w_xy * float(oy)
+            if self.odom_pose_xy_alpha > 0.0 or self.odom_pose_xy_gain > 0.0:
+                norm = self.max_step_trans if self.max_step_trans > 1e-3 else 0.10
+                w_base = min(max(self.odom_pose_xy_alpha, 0.0), 1.0)
+                w_gain = max(0.0, self.odom_pose_xy_gain)
+                w_xy_max = min(max(self.odom_pose_xy_alpha_max, 0.0), 1.0)
+                w_xy = min(max(w_base + w_gain * (err_xy / norm), 0.0), w_xy_max)
+                odom_pose_anchor_w_xy = float(w_xy)
+                self.x = (1.0 - w_xy) * self.x + w_xy * float(ox)
+                self.y = (1.0 - w_xy) * self.y + w_xy * float(oy)
+            if self.odom_guard_enabled and self.odom_guard_xy_error_m > 0.0:
+                err_xy_guard = math.hypot(self.x - float(ox), self.y - float(oy))
+                if err_xy_guard > self.odom_guard_xy_error_m:
+                    guard_xy_base = min(max(self.odom_guard_xy_anchor_base, 0.0), 1.0)
+                    guard_xy_gain = max(0.0, self.odom_guard_xy_anchor_gain)
+                    guard_xy_scale = max(1e-6, self.odom_guard_xy_error_m)
+                    guard_xy_w = min(
+                        max(guard_xy_base + guard_xy_gain * (err_xy_guard / guard_xy_scale), 0.0),
+                        1.0,
+                    )
+                    self.x = (1.0 - guard_xy_w) * self.x + guard_xy_w * float(ox)
+                    self.y = (1.0 - guard_xy_w) * self.y + guard_xy_w * float(oy)
             err_to_odom_after_m = float(math.hypot(self.x - float(ox), self.y - float(oy)))
 
         self._publish_pose_stamped(msg.header.stamp)
+        self._relay_scan(msg)
 
         self.prev_scan = scan
         self.prev_stamp = msg.header.stamp

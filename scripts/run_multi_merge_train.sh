@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WS_DIR="${ROOT_DIR}/ai_slam_ws"
 OUT_DIR="${ROOT_DIR}/out"
-DEFAULT_CONFIG="${WS_DIR}/src/ai_slam_bringup/config/experiment_config_office_cyclic_dataset.yaml"
+DEFAULT_CONFIG="${WS_DIR}/src/ai_slam_bringup/config/experiment_config_office_acyclic_dataset.yaml"
 
 CONFIG_PATH="${DEFAULT_CONFIG}"
 CONFIG_SEQUENCE_CSV=""
@@ -20,7 +20,6 @@ TRAIN_SEEDS_CSV="123,321,777"
 SKIP_BUILD=false
 ADAPTIVE_CONFIG=true
 ADAPTIVE_PATH=true
-DEDUP_USE_POSE_KEY=true
 WARMUP_BASE_RUNS=2
 FOCUS_SEQUENCE_CSV=""
 APPEND_FROM_MERGE_EXP_ID=""
@@ -51,11 +50,11 @@ Options:
   --min-target-per-bin-rywak <N>  Minimalna liczba próbek/bin dla Rywaka po strict rebalance (default: ${MIN_TARGET_PER_BIN_RYWAK})
   --min-target-per-bin-robak <N>  Minimalna liczba próbek/bin dla Robaka po strict rebalance (default: ${MIN_TARGET_PER_BIN_ROBAK})
   --train-seeds <csv>         Seedy treningu, np. "123,321,777" (default: ${TRAIN_SEEDS_CSV})
-  --focus-sequence <csv>      Sekwencja fokusów rund: balanced,rotation,translation,slalom (alias: linear=translation)
+  --focus-sequence <csv>      Sekwencja fokusów rund: balanced,rotation,translation,slalom,serpentine (aliasy: linear=translation, zigzag=serpentine)
   --append-from-merge <exp_id>  Dołącza nowe rundy do istniejącego merge out/<exp_id> (bez zaczynania od zera)
   --adaptive-config <bool>    Adaptacyjne strojenie configu między rundami (default: true)
   --adaptive-path <bool>      Przy adaptive-config=true: czy adaptować geometrię planned_path (default: true)
-  --dedup-use-pose-key <bool> Deduplikacja po X+Y+P (gdy P dostępne), zamiast tylko X+Y (default: true)
+  --dedup-use-pose-key <bool> DEPRECATED (ignorowane) - deduplikacja zawsze po X+Y
   --warmup-base-runs <N>      Pierwsze N rund wymusza bazową trasę (safe warmup; adaptive_path=OFF, focus=balanced) (default: ${WARMUP_BASE_RUNS})
   --gui <true|false>          Czy odpalać Gazebo GUI (default: false)
   --dataset-only              Tylko zbieranie datasetów + merge + strict rebalance (bez treningu).
@@ -74,7 +73,7 @@ Opis:
   Uwaga:
   - Czas rundy datasetu jest capowany do --dataset-duration-cap-sec (domyślnie 600s).
   - Przy adaptive-config=true zmienia sterowanie oraz geometrię planned_path
-    (tymczasowy spec z dodatkowymi kotwicami slalomu dla rund rotation/slalom/balanced).
+    (tymczasowy spec z dodatkowymi kotwicami slalomu/serpentine dla rund rotation/slalom/serpentine/balanced).
   - Przy adaptive-config=true i adaptive-path=false: focus/parametry są adaptowane, ale geometria planned_path pozostaje bez zmian.
 
   tryb dataset-only:
@@ -88,6 +87,12 @@ EOF
 
 log() {
   printf '[multi-merge-train] %s\n' "$*"
+}
+
+STOP_REQUESTED=false
+handle_interrupt() {
+  STOP_REQUESTED=true
+  log "Otrzymano sygnał przerwania (SIGINT/SIGTERM). Kończę po bieżącej operacji..."
 }
 
 calc_elapsed_sec() {
@@ -220,6 +225,64 @@ cleanup_ros() {
   if [[ -x "${ROOT_DIR}/scripts/cleanup.sh" ]]; then
     bash "${ROOT_DIR}/scripts/cleanup.sh" >/dev/null 2>&1 || true
   fi
+}
+
+pid_state() {
+  local pid="$1"
+  ps -o stat= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true
+}
+
+list_runtime_conflict_pids() {
+  # Procesy, które nie powinny istnieć przed startem nowej rundy datasetu.
+  # Filtrujemy siebie i parenta, żeby uniknąć fałszywych trafień.
+  local raw
+  raw="$(
+    pgrep -f "(gz sim|ruby .*/gz sim|gz-sim|ros2 launch ai_slam_bringup demo.launch.py|/ros_gz_bridge/parameter_bridge|/ai_slam_ai/dataset_recorder|/ai_slam_bringup/planned_path_driver|/ai_slam_bringup/dataset_motion_watchdog|/ai_slam_bringup/odom_corruptor|/ai_slam_bringup/gt_pose_publisher|/ai_slam_bringup/scan_fix)" \
+      | awk -v self="$$" -v parent="$PPID" '$1 != self && $1 != parent { print $1 }' \
+      || true
+  )"
+  if [[ -z "${raw}" ]]; then
+    return 0
+  fi
+  while IFS= read -r _pid; do
+    [[ -z "${_pid}" ]] && continue
+    _st="$(pid_state "${_pid}")"
+    # Zombie nie da się "zabić" sygnałem; nie blokuj rund przez osierocone Z.
+    if [[ "${_st}" == Z* ]]; then
+      continue
+    fi
+    echo "${_pid}"
+  done <<< "${raw}"
+}
+
+assert_clean_runtime() {
+  local stale
+  local attempt
+  for attempt in 1 2 3; do
+    stale="$(list_runtime_conflict_pids)"
+    if [[ -z "${stale}" ]]; then
+      return 0
+    fi
+    log "WARN: wykryto osierocone procesy runtime przed rundą: ${stale//$'\n'/ } (attempt=${attempt}/3)"
+    log "Ponawiam cleanup, aby uniknąć skażenia datasetu..."
+    cleanup_ros
+    stale="$(list_runtime_conflict_pids)"
+    if [[ -z "${stale}" ]]; then
+      return 0
+    fi
+    # Dodatkowe lokalne dobijanie PID wykrytych przez guard.
+    echo "${stale}" | xargs -r kill -TERM 2>/dev/null || true
+    sleep 0.4
+    echo "${stale}" | xargs -r kill -KILL 2>/dev/null || true
+    sleep 0.6
+  done
+  stale="$(list_runtime_conflict_pids)"
+  if [[ -n "${stale}" ]]; then
+    echo "Runtime nie został wyczyszczony (pozostałe PID: ${stale//$'\n'/ }). Przerywam, żeby nie mieszać środowisk." >&2
+    ps -o pid,ppid,stat,comm,args -p "$(echo "${stale}" | tr '\n' ',' | sed 's/,$//')" >&2 || true
+    return 1
+  fi
+  return 0
 }
 
 require_file() {
@@ -577,15 +640,22 @@ min_target_rywak = int(sys.argv[4])
 min_target_robak = int(sys.argv[5])
 prev_hist_dir = sys.argv[6].strip()
 
-if focus_override == "linear":
-    focus_override = "translation"
+if focus_override in {"linear", "translation"}:
+    # Translation focus jest obecnie niestabilny (częste watchdog/incomplete_artifacts),
+    # więc mapujemy go na bezpieczniejszy balanced.
+    focus_override = "balanced"
+if focus_override == "slalom":
+    # Slalom też ma niski yield; zastępujemy go serpentine.
+    focus_override = "serpentine"
+if focus_override in {"zygzag", "zigzak", "zyzgak", "zigzag"}:
+    focus_override = "serpentine"
 
-valid = {"balanced", "rotation", "translation", "slalom"}
+valid = {"balanced", "rotation", "translation", "slalom", "serpentine"}
 if focus_override in valid:
     print(focus_override)
     raise SystemExit(0)
 
-cycle = ["translation", "rotation", "slalom", "balanced"]
+cycle = ["balanced", "serpentine", "rotation"]
 
 if not prev_summary:
     print(cycle[(run_idx - 1) % len(cycle)])
@@ -646,31 +716,62 @@ if prev_hist_dir:
 if ry_tgt > 0 and ry_tgt < min_target_rywak:
     if weak_lin is not None and weak_ang is not None:
         if weak_lin <= weak_ang:
-            print("translation")
+            print("balanced")
         else:
-            print("rotation")
+            print("serpentine")
     elif ry_row_min <= ry_col_min:
-        print("translation")
+        print("balanced")
     elif ry_col_min < ry_row_min:
-        print("rotation")
+        print("serpentine")
     else:
-        print("slalom")
+        print("balanced")
     raise SystemExit(0)
 if rb_tgt > 0 and rb_tgt < min_target_robak:
     if rb_col_min <= rb_row_min:
         print("rotation")
     else:
-        print("translation")
+        print("balanced")
     raise SystemExit(0)
 
 if rb_reason == "missing_bins":
     print("rotation")
 elif ry_reason == "no_feasible_target":
-    print("slalom")
+    print("serpentine")
 elif rb_reason == "no_feasible_target":
-    print("translation")
+    print("balanced")
 else:
     print(cycle[(run_idx - 1) % len(cycle)])
+PY
+}
+
+run_signature_from_cfg() {
+  local cfg_path="$1"
+  python3 - "${cfg_path}" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+cfg_path = Path(sys.argv[1]).expanduser().resolve()
+if not cfg_path.is_file():
+    print("unknown|-1")
+    raise SystemExit(0)
+
+try:
+    with cfg_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+except Exception:
+    print("unknown|-1")
+    raise SystemExit(0)
+
+exp = cfg.get("experiment", {}) if isinstance(cfg.get("experiment", {}), dict) else {}
+focus = str(exp.get("adaptive_focus_mode", "unknown")).strip().lower() or "unknown"
+phase_raw = exp.get("adaptive_velocity_explore_phase", -1)
+try:
+    phase = int(phase_raw)
+except Exception:
+    phase = -1
+
+print(f"{focus}|{phase}")
 PY
 }
 
@@ -735,7 +836,9 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --dedup-use-pose-key)
-      DEDUP_USE_POSE_KEY="${2:?missing value for --dedup-use-pose-key}"
+      # Deprecated: kept for backward compatibility only.
+      _ignored_dedup_pose_key="${2:?missing value for --dedup-use-pose-key}"
+      echo "[multi-merge-train] WARN: --dedup-use-pose-key jest przestarzałe i ignorowane (dedup zawsze po X+Y)." >&2
       shift 2
       ;;
     --warmup-base-runs)
@@ -843,10 +946,6 @@ if [[ "${ADAPTIVE_PATH}" != "true" && "${ADAPTIVE_PATH}" != "false" ]]; then
   echo "--adaptive-path musi mieć wartość true/false" >&2
   exit 1
 fi
-if [[ "${DEDUP_USE_POSE_KEY}" != "true" && "${DEDUP_USE_POSE_KEY}" != "false" ]]; then
-  echo "--dedup-use-pose-key musi mieć wartość true/false" >&2
-  exit 1
-fi
 if [[ "${RUN_MODE}" == "train_only" && -z "${TRAIN_ONLY_EXP_ID}" ]]; then
   echo "--train-only wymaga podania experiment_id" >&2
   exit 1
@@ -859,6 +958,21 @@ if [[ "${RUN_MODE}" == "train_only" && -n "${PATH_SEQUENCE_CSV}" ]]; then
 fi
 if [[ "${RUN_MODE}" == "train_only" && -n "${APPEND_FROM_MERGE_EXP_ID}" ]]; then
   echo "--train-only nie używa --append-from-merge" >&2
+  exit 1
+fi
+
+# Single-instance guard: zapobiega równoległym uruchomieniom, które mieszają tematy ROS/Gazebo.
+if ! command -v flock >/dev/null 2>&1; then
+  echo "Brak narzędzia 'flock' (pakiet util-linux). Nie można bezpiecznie uruchomić single-instance guard." >&2
+  exit 1
+fi
+LOCK_FILE="/tmp/slam_multi_merge_train.lock"
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+  echo "Wykryto już uruchomioną instancję run_multi_merge_train.sh (lock: ${LOCK_FILE})." >&2
+  echo "Najpierw zatrzymaj poprzedni proces, np.:" >&2
+  echo "  pgrep -af run_multi_merge_train.sh" >&2
+  echo "  pkill -f run_multi_merge_train.sh" >&2
   exit 1
 fi
 
@@ -888,10 +1002,22 @@ def fv(dct, key, default):
     except Exception:
         return float(default)
 
-print(f"RYWAK_V_MIN={fv(ry, 'balance_linear_hist_min_mps', 0.0):.12g}")
-print(f"RYWAK_V_MAX={fv(ry, 'balance_linear_hist_max_mps', 1.2):.12g}")
-print(f"RYWAK_W_MIN={fv(ry, 'balance_angular_hist_min_radps', 0.0):.12g}")
-print(f"RYWAK_W_MAX={fv(ry, 'balance_angular_hist_max_radps', 3.0):.12g}")
+print(
+    "RYWAK_V_MIN="
+    f"{fv(ry, 'balance_linear_hist_min_mps', ry.get('balance_translation_hist_min_m', 0.0)):.12g}"
+)
+print(
+    "RYWAK_V_MAX="
+    f"{fv(ry, 'balance_linear_hist_max_mps', ry.get('balance_translation_hist_max_m', 1.2)):.12g}"
+)
+print(
+    "RYWAK_W_MIN="
+    f"{fv(ry, 'balance_angular_hist_min_radps', ry.get('balance_rotation_hist_min_rad', 0.0)):.12g}"
+)
+print(
+    "RYWAK_W_MAX="
+    f"{fv(ry, 'balance_angular_hist_max_radps', ry.get('balance_rotation_hist_max_rad', 3.0)):.12g}"
+)
 print(f"ROBAK_T_MIN={fv(rb, 'balance_translation_hist_min_m', 0.0):.12g}")
 print(f"ROBAK_T_MAX={fv(rb, 'balance_translation_hist_max_m', 1.0):.12g}")
 print(f"ROBAK_R_MIN={fv(rb, 'balance_rotation_hist_min_deg', 0.0):.12g}")
@@ -912,6 +1038,7 @@ fi
 
 source_ros_setup "${WS_DIR}/install/setup.bash"
 trap cleanup_ros EXIT
+trap handle_interrupt INT TERM
 
 rywak_linear_paths=()
 rywak_angular_paths=()
@@ -931,15 +1058,14 @@ TMP_CONFIG_DIR="$(mktemp -d /tmp/slam_multi_cfg_XXXXXX)"
 DATASET_TIMING_JSONL="${TMP_CONFIG_DIR}/dataset_run_timing.jsonl"
 DATASET_TIMING_SUMMARY_PATH=""
 touch "${DATASET_TIMING_JSONL}"
-DEDUP_POSE_ARGS=()
-if [[ "${DEDUP_USE_POSE_KEY}" == "true" ]]; then
-  DEDUP_POSE_ARGS+=(--dedup-use-pose-key)
-fi
 FORCE_BASE_PATH_NEXT=false
 FORCE_BASE_PATH_REASON=""
 SAFE_MODE_AFTER_BAD_RUNS=2
 SAFE_MODE_RUNS_LEFT=0
 SAFE_MODE_REASON=""
+VELOCITY_EXPLORE_PHASES=8
+FAIL_SIGNATURE_COOLDOWN_RUNS=12
+declare -A FAILED_SIGNATURE_COOLDOWN=()
 
 if [[ "${RUN_MODE}" != "train_only" && -n "${APPEND_FROM_MERGE_EXP_ID}" ]]; then
   APPEND_MERGE_DIR="${OUT_DIR}/${APPEND_FROM_MERGE_EXP_ID}"
@@ -989,7 +1115,25 @@ fi
 
 if [[ "${RUN_MODE}" != "train_only" ]]; then
 for run_idx in $(seq 1 "${MAX_DATASET_RUNS}"); do
+  if [[ "${STOP_REQUESTED}" == "true" ]]; then
+    log "Przerwanie zgłoszone: zatrzymuję pętlę datasetów przed startem rundy ${run_idx}."
+    break
+  fi
   cleanup_ros
+  if ! assert_clean_runtime; then
+    exit 1
+  fi
+  # Starzenie cooldownu sygnatur nieudanych konfiguracji.
+  if [[ "${#FAILED_SIGNATURE_COOLDOWN[@]}" -gt 0 ]]; then
+    for sig in "${!FAILED_SIGNATURE_COOLDOWN[@]}"; do
+      left="${FAILED_SIGNATURE_COOLDOWN[${sig}]}"
+      if [[ -z "${left}" ]] || (( left <= 1 )); then
+        unset "FAILED_SIGNATURE_COOLDOWN[$sig]"
+      else
+        FAILED_SIGNATURE_COOLDOWN["${sig}"]=$((left - 1))
+      fi
+    done
+  fi
   base_cfg_run="$(choose_round_robin "${run_idx}" "${CONFIG_SEQUENCE[@]}")"
   selected_path=""
   if [[ "${#PATH_SEQUENCE[@]}" -gt 0 ]]; then
@@ -1036,6 +1180,19 @@ for run_idx in $(seq 1 "${MAX_DATASET_RUNS}"); do
     FORCE_BASE_PATH_NEXT=false
     FORCE_BASE_PATH_REASON=""
   fi
+  if [[ "${run_safe_mode}" != "true" ]]; then
+    predicted_phase=$(( (run_idx - 1) % VELOCITY_EXPLORE_PHASES ))
+    predicted_signature="${focus_mode}|${predicted_phase}"
+    cooldown_left="${FAILED_SIGNATURE_COOLDOWN[${predicted_signature}]:-0}"
+    if (( cooldown_left > 0 )); then
+      log "Adaptive memory: pomijam niedawno nieudaną konfigurację ${predicted_signature} (cooldown=${cooldown_left}). Wymuszam safe balanced."
+      run_selected_path=""
+      run_adaptive_path="false"
+      run_safe_mode=true
+      focus_mode="balanced"
+      SAFE_MODE_REASON="signature_cooldown_${predicted_signature//|/_}"
+    fi
+  fi
   if [[ "${run_safe_mode}" == "true" ]]; then
     if [[ -n "${SAFE_MODE_REASON}" ]]; then
       log "Safe mode: run ${run_idx} -> baza + focus=balanced (remaining_safe_runs=${SAFE_MODE_RUNS_LEFT}) | reason=${SAFE_MODE_REASON}"
@@ -1049,11 +1206,12 @@ for run_idx in $(seq 1 "${MAX_DATASET_RUNS}"); do
 
   ts="$(date +%Y%m%d_%H%M%S)"
   dataset_exp_id="exp_multi_dataset_${ts}_r${run_idx}"
+  run_signature_key=""
 
   eval "$(extract_rywak_weak_bins "${PREV_HIST_REPORT_DIR}")"
 
   run_cfg="${TMP_CONFIG_DIR}/run_${run_idx}_${ts}.yaml"
-  python3 - "${base_cfg_run}" "${run_cfg}" "${focus_mode}" "${run_selected_path}" "${run_idx}" "${ADAPTIVE_CONFIG}" "${run_adaptive_path}" "${DATASET_DURATION_CAP_SEC}" \
+  python3 - "${base_cfg_run}" "${run_cfg}" "${focus_mode}" "${run_selected_path}" "${run_idx}" "${ADAPTIVE_CONFIG}" "${run_adaptive_path}" "${run_safe_mode}" "${DATASET_DURATION_CAP_SEC}" \
     "${RYWAK_WEAK_LINEAR_BIN_CENTER}" "${RYWAK_WEAK_LINEAR_BIN_MIN}" "${RYWAK_WEAK_LINEAR_BIN_MAX}" "${RYWAK_WEAK_LINEAR_COUNT}" \
     "${RYWAK_WEAK_ANGULAR_BIN_CENTER}" "${RYWAK_WEAK_ANGULAR_BIN_MIN}" "${RYWAK_WEAK_ANGULAR_BIN_MAX}" "${RYWAK_WEAK_ANGULAR_COUNT}" \
     "${RYWAK_WEAK_LINEAR_BIN_INDEX}" "${RYWAK_WEAK_ANGULAR_BIN_INDEX}" \
@@ -1072,6 +1230,7 @@ import yaml
     run_idx_s,
     adaptive_cfg_s,
     adaptive_path_s,
+    run_safe_mode_s,
     dataset_cap_s,
     weak_lin_center_s,
     weak_lin_min_s,
@@ -1091,6 +1250,7 @@ import yaml
 run_idx = int(run_idx_s)
 adaptive_cfg = adaptive_cfg_s.strip().lower() == "true"
 adaptive_path = adaptive_path_s.strip().lower() == "true"
+run_safe_mode = run_safe_mode_s.strip().lower() == "true"
 dataset_cap = max(1.0, float(dataset_cap_s))
 
 def _to_float(v: str, default: float = float("nan")) -> float:
@@ -1144,6 +1304,7 @@ experiment["seed"] = dataset_seed
 experiment["adaptive_dataset_seed"] = dataset_seed
 experiment["adaptive_focus_enabled"] = bool(adaptive_cfg)
 experiment["adaptive_path_enabled"] = bool(adaptive_path)
+experiment["adaptive_safe_mode_active"] = bool(run_safe_mode)
 # Wyłączamy tor AI-SLAM; zbieramy datasety tylko baseline/Robak/Rywak.
 tracks["tor2_ai_slam"] = False
 
@@ -1271,6 +1432,12 @@ pp.setdefault("lookahead_m", 0.22)
 pp.setdefault("heading_gain", 2.4)
 pp.setdefault("heading_stop_deg", 52.0)
 pp.setdefault("heading_resume_deg", 32.0)
+pp.setdefault("turn_in_place_max_duration_sec", 0.0)
+pp.setdefault("turn_in_place_escape_v_ratio", 0.0)
+pp.setdefault("turn_in_place_escape_v_min_mps", 0.0)
+pp.setdefault("post_turn_forward_boost_sec", 0.0)
+pp.setdefault("post_turn_forward_min_v_ratio", 0.0)
+pp.setdefault("post_turn_forward_min_v_mps", 0.0)
 pp.setdefault("alignment_cos_power", 2.4)
 pp.setdefault("excitation_period_sec", 3.8)
 pp.setdefault("excitation_v_min_scale", 0.02)
@@ -1287,7 +1454,56 @@ def unit_pos(v: float, lo: float, hi: float):
         return None
     return clamp((v - lo) / (hi - lo), 0.0, 1.0)
 
+def safe_max(v: float, fallback: float) -> float:
+    if math.isfinite(v) and v > 0.0:
+        return float(v)
+    return float(fallback)
+
+def explored_mult(base_mult: float, weak_norm):
+    # Wyższe niedobory bliżej górnych koszyków dostają silniejszy overshoot.
+    if weak_norm is None:
+        blend = 0.55
+    else:
+        blend = clamp(0.25 + 0.75 * float(weak_norm), 0.25, 1.0)
+    return 1.0 + (float(base_mult) - 1.0) * blend
+
+weak_lin_norm = unit_pos(weak_lin_center, rywak_v_min, rywak_v_max)
+weak_ang_norm = unit_pos(weak_ang_center, rywak_w_min, rywak_w_max)
+rywak_v_interest_max = safe_max(rywak_v_max, 2.0)
+rywak_w_interest_max = safe_max(rywak_w_max, 3.0)
+# Harmonogram prób: ograniczony (do ~1.6x), bo wyższe mnożniki mocno podbijały
+# odsetek watchdog/incomplete_artifacts.
+velocity_explore_schedule = (1.00, 1.10, 1.20, 1.32, 1.45, 1.55, 1.60, 1.28)
+if run_safe_mode:
+    velocity_explore_phase = -1
+    velocity_explore_mult = 1.0
+    lin_explore_mult = 1.0
+    ang_explore_mult = 1.0
+    lin_explore_cap = min(2.0, 1.25 * rywak_v_interest_max)
+    ang_explore_cap = min(3.5, 1.20 * rywak_w_interest_max)
+else:
+    velocity_explore_phase = (run_idx - 1) % len(velocity_explore_schedule)
+    velocity_explore_mult = float(velocity_explore_schedule[velocity_explore_phase])
+    lin_explore_mult = explored_mult(velocity_explore_mult, weak_lin_norm)
+    ang_explore_mult = explored_mult(velocity_explore_mult, weak_ang_norm)
+    lin_explore_cap = 1.60 * rywak_v_interest_max
+    ang_explore_cap = 1.55 * rywak_w_interest_max
+experiment["adaptive_velocity_explore_phase"] = int(velocity_explore_phase)
+experiment["adaptive_velocity_explore_mult"] = float(velocity_explore_mult)
+experiment["adaptive_velocity_explore_lin_mult"] = float(lin_explore_mult)
+experiment["adaptive_velocity_explore_ang_mult"] = float(ang_explore_mult)
+experiment["adaptive_velocity_interest_vmax_mps"] = float(rywak_v_interest_max)
+experiment["adaptive_velocity_interest_wmax_radps"] = float(rywak_w_interest_max)
+experiment["adaptive_velocity_explore_cap_vmax_mps"] = float(lin_explore_cap)
+experiment["adaptive_velocity_explore_cap_wmax_radps"] = float(ang_explore_cap)
+
 mode = focus_mode.strip().lower()
+if mode in {"linear", "translation"}:
+    mode = "balanced"
+if mode == "slalom":
+    mode = "serpentine"
+if mode in {"zygzag", "zigzak", "zyzgak", "zigzag"}:
+    mode = "serpentine"
 if mode == "rotation":
     pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 1.0)), 0.6, 0.95)
     pp["angular_vel_max"] = 3.0
@@ -1295,6 +1511,12 @@ if mode == "rotation":
     pp["heading_gain"] = clamp(float(pp.get("heading_gain", 3.2)), 3.0, 4.0)
     pp["heading_stop_deg"] = clamp(float(pp.get("heading_stop_deg", 68.0)), 60.0, 80.0)
     pp["heading_resume_deg"] = clamp(float(pp.get("heading_resume_deg", 42.0)), 35.0, 55.0)
+    pp["turn_in_place_max_duration_sec"] = 0.95
+    pp["turn_in_place_escape_v_ratio"] = 0.24
+    pp["turn_in_place_escape_v_min_mps"] = 0.14
+    pp["post_turn_forward_boost_sec"] = 1.30
+    pp["post_turn_forward_min_v_ratio"] = 0.52
+    pp["post_turn_forward_min_v_mps"] = 0.30
     pp["excitation_period_sec"] = 2.1
     pp["excitation_v_min_scale"] = 0.0
     pp["excitation_v_max_scale"] = 0.95
@@ -1308,9 +1530,6 @@ if mode == "rotation":
     rywak["min_sample_dyaw"] = 0.005
     rywak["min_delta_scan_rms"] = 0.0
     rywak["sample_filter_mode"] = "any"
-    # Normalize against the full configured histogram range (not weak-bin edges),
-    # otherwise norm would be ~0.5 for every bin center.
-    weak_ang_norm = unit_pos(weak_ang_center, rywak_w_min, rywak_w_max)
     if weak_ang_norm is not None and weak_ang_count >= 0:
         # Dla najsłabszych wysokich binów angular (blisko max zakresu) wymuszamy
         # wyraźnie mocniejszą rotację; inaczej angular_vel_max bywa tuż poniżej progu binu.
@@ -1348,6 +1567,12 @@ elif mode == "translation":
     # W translation-focus unikamy turn-in-place: podnosimy progi histerezy.
     pp["heading_stop_deg"] = clamp(float(pp.get("heading_stop_deg", 82.0)), 72.0, 89.0)
     pp["heading_resume_deg"] = clamp(float(pp.get("heading_resume_deg", 60.0)), 48.0, 75.0)
+    pp["turn_in_place_max_duration_sec"] = 0.0
+    pp["turn_in_place_escape_v_ratio"] = 0.0
+    pp["turn_in_place_escape_v_min_mps"] = 0.0
+    pp["post_turn_forward_boost_sec"] = 0.0
+    pp["post_turn_forward_min_v_ratio"] = 0.0
+    pp["post_turn_forward_min_v_mps"] = 0.0
     pp["alignment_cos_power"] = clamp(float(pp.get("alignment_cos_power", 1.1)), 1.0, 1.5)
     # Zmieniamy profil excitation między rundami, żeby uzupełniać różne biny v.
     pp["excitation_period_sec"] = float(period_targets[t_phase])
@@ -1360,9 +1585,6 @@ elif mode == "translation":
     rywak["min_sample_dyaw"] = 0.005
     rywak["min_delta_scan_rms"] = 0.0
     rywak["sample_filter_mode"] = "any"
-    # Normalize against the full configured histogram range (not weak-bin edges),
-    # otherwise norm would be ~0.5 for every bin center.
-    weak_lin_norm = unit_pos(weak_lin_center, rywak_v_min, rywak_v_max)
     if weak_lin_norm is not None and weak_lin_count >= 0:
         if weak_lin_norm < 0.20:
             lin_target = 1.28
@@ -1397,6 +1619,12 @@ elif mode == "slalom":
     pp["angular_vel_max"] = 3.0
     pp["lookahead_m"] = clamp(float(pp.get("lookahead_m", 0.16)), 0.12, 0.20)
     pp["heading_gain"] = clamp(float(pp.get("heading_gain", 3.0)), 2.8, 4.0)
+    pp["turn_in_place_max_duration_sec"] = 0.70
+    pp["turn_in_place_escape_v_ratio"] = 0.20
+    pp["turn_in_place_escape_v_min_mps"] = 0.16
+    pp["post_turn_forward_boost_sec"] = 0.95
+    pp["post_turn_forward_min_v_ratio"] = 0.42
+    pp["post_turn_forward_min_v_mps"] = 0.28
     pp["alignment_cos_power"] = clamp(float(pp.get("alignment_cos_power", 3.0)), 2.4, 4.0)
     pp["excitation_period_sec"] = 2.0
     pp["excitation_v_min_scale"] = 0.02
@@ -1406,6 +1634,46 @@ elif mode == "slalom":
     robak["max_pair_dist"] = max(2.0, float(robak.get("max_pair_dist", 1.0)))
     rywak["min_sample_dist"] = 0.02
     rywak["min_sample_dyaw"] = 0.03
+elif mode == "serpentine":
+    # Agresywniejszy profil pod wysokie |w| i większe różnice kolejnych skanów
+    # przy zachowaniu ruchu translacyjnego (bez spin-in-place).
+    pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 1.25)), 1.05, 1.70)
+    pp["angular_vel_max"] = 3.0
+    pp["lookahead_m"] = clamp(float(pp.get("lookahead_m", 0.12)), 0.09, 0.16)
+    pp["heading_gain"] = clamp(float(pp.get("heading_gain", 4.0)), 3.5, 5.0)
+    pp["heading_stop_deg"] = clamp(float(pp.get("heading_stop_deg", 90.0)), 84.0, 96.0)
+    pp["heading_resume_deg"] = clamp(float(pp.get("heading_resume_deg", 66.0)), 56.0, 80.0)
+    pp["turn_in_place_max_duration_sec"] = 0.65
+    pp["turn_in_place_escape_v_ratio"] = 0.32
+    pp["turn_in_place_escape_v_min_mps"] = 0.22
+    pp["post_turn_forward_boost_sec"] = 1.55
+    pp["post_turn_forward_min_v_ratio"] = 0.62
+    pp["post_turn_forward_min_v_mps"] = 0.38
+    pp["alignment_cos_power"] = clamp(float(pp.get("alignment_cos_power", 3.8)), 3.0, 5.0)
+    pp["excitation_period_sec"] = 1.25
+    pp["excitation_v_min_scale"] = 0.00
+    pp["excitation_v_max_scale"] = 1.10
+    pp["excitation_heading_bias_deg"] = 86.0
+    robak["offsets"] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]
+    robak["max_pair_dist"] = max(2.8, float(robak.get("max_pair_dist", 1.0)))
+    robak["max_pair_dyaw"] = 3.141592653589793
+    robak["pair_filter_mode"] = "any"
+    robak["min_pair_dyaw"] = min(0.02, float(robak.get("min_pair_dyaw", 0.05)))
+    rywak["min_sample_dist"] = 0.004
+    rywak["min_sample_dyaw"] = 0.004
+    rywak["min_delta_scan_rms"] = 0.0
+    rywak["sample_filter_mode"] = "any"
+    if weak_ang_norm is not None and weak_ang_count >= 0:
+        pp["excitation_heading_bias_deg"] = clamp(62.0 + 34.0 * float(weak_ang_norm), 60.0, 92.0)
+        pp["excitation_period_sec"] = clamp(1.45 - 0.30 * float(weak_ang_norm), 1.05, 1.45)
+        if weak_ang_norm >= 0.80:
+            pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 1.20)), 0.95, 1.35)
+            pp["lookahead_m"] = clamp(float(pp.get("lookahead_m", 0.11)), 0.08, 0.13)
+            pp["heading_gain"] = clamp(float(pp.get("heading_gain", 4.4)), 4.0, 5.2)
+            pp["angular_vel_max"] = 3.0
+        experiment["adaptive_rywak_weak_angular_bin_index"] = int(weak_ang_idx)
+        experiment["adaptive_rywak_weak_angular_bin_center_radps"] = float(weak_ang_center)
+        experiment["adaptive_rywak_weak_angular_bin_count"] = int(weak_ang_count)
 else:
     # balanced
     pp["linear_vel_max"] = clamp(float(pp.get("linear_vel_max", 1.55)), 1.3, 1.95)
@@ -1414,6 +1682,12 @@ else:
     pp["heading_gain"] = clamp(float(pp.get("heading_gain", 1.9)), 1.6, 2.4)
     pp["heading_stop_deg"] = clamp(float(pp.get("heading_stop_deg", 74.0)), 66.0, 86.0)
     pp["heading_resume_deg"] = clamp(float(pp.get("heading_resume_deg", 50.0)), 40.0, 68.0)
+    pp["turn_in_place_max_duration_sec"] = 0.0
+    pp["turn_in_place_escape_v_ratio"] = 0.0
+    pp["turn_in_place_escape_v_min_mps"] = 0.0
+    pp["post_turn_forward_boost_sec"] = 0.0
+    pp["post_turn_forward_min_v_ratio"] = 0.0
+    pp["post_turn_forward_min_v_mps"] = 0.0
     pp["excitation_period_sec"] = 2.4
     pp["excitation_v_min_scale"] = 0.12
     pp["excitation_v_max_scale"] = 2.0
@@ -1425,6 +1699,29 @@ else:
     rywak["min_delta_scan_rms"] = 0.0
     rywak["sample_filter_mode"] = "any"
 
+# Eksploracja prędkości: szerszy zakres niż bazowy, ale ograniczony do stabilniejszych
+# widełek (bez agresywnych 2x), bo finalny rebalance i tak odcina dane do zakresu celu.
+base_lin_vmax = float(pp.get("linear_vel_max", rywak_v_interest_max))
+base_ang_vmax = float(pp.get("angular_vel_max", rywak_w_interest_max))
+lin_floor = rywak_v_interest_max
+ang_floor = rywak_w_interest_max
+if mode in {"balanced", "serpentine"}:
+    lin_floor = rywak_v_interest_max * lin_explore_mult
+if mode in {"rotation", "serpentine", "balanced"}:
+    ang_floor = rywak_w_interest_max * ang_explore_mult
+lin_target = max(base_lin_vmax, lin_floor)
+ang_target = max(base_ang_vmax, ang_floor)
+if run_safe_mode:
+    lin_target = min(lin_target, 2.0)
+    ang_target = min(ang_target, 3.5)
+    pp["excitation_v_max_scale"] = min(float(pp.get("excitation_v_max_scale", 1.4)), 1.4)
+    pp["excitation_heading_bias_deg"] = clamp(float(pp.get("excitation_heading_bias_deg", 20.0)), 0.0, 35.0)
+    experiment["adaptive_safe_velocity_mode"] = "conservative"
+pp["linear_vel_max"] = clamp(lin_target, 0.45, lin_explore_cap)
+pp["angular_vel_max"] = clamp(ang_target, 1.0, ang_explore_cap)
+experiment["adaptive_linear_vel_max_mps"] = float(pp.get("linear_vel_max", rywak_v_interest_max))
+experiment["adaptive_angular_vel_max_radps"] = float(pp.get("angular_vel_max", rywak_w_interest_max))
+
 if bool(pp.get("loop_path", True)):
     robak["trajectory_mode"] = "cycle"
     rywak["trajectory_mode"] = "cycle"
@@ -1434,7 +1731,7 @@ else:
     # Mniej odrzuceń "trajectory_repeats" przy no_cycle bez łamania zasady unikalności.
     robak["trajectory_cell_size_m"] = 0.02
     rywak["trajectory_cell_size_m"] = 0.005
-    if mode == "slalom":
+    if mode in {"slalom", "serpentine"}:
         robak["trajectory_cell_size_m"] = 0.025
         rywak["trajectory_cell_size_m"] = 0.008
 
@@ -1459,6 +1756,7 @@ PY
   elif [[ "${ADAPTIVE_CONFIG}" == "true" && "${run_adaptive_path}" == "false" ]]; then
     log "Adaptive focus: ON | adaptive path geometry: OFF (brak modyfikacji planned_path)"
   fi
+  run_signature_key="$(run_signature_from_cfg "${run_cfg}")"
 
   log "=== RUN ${run_idx}/${MAX_DATASET_RUNS}: dataset collection (${dataset_exp_id}) ==="
   log "Config base=${base_cfg_run} | focus=${focus_mode} | path=${run_selected_path:-<from-config>} | adaptive_path=${run_adaptive_path} | run_cfg=${run_cfg}"
@@ -1474,6 +1772,20 @@ PY
   run_wall_end="$(date +%s.%N)"
   run_wall_sec="$(calc_elapsed_sec "${run_wall_start}" "${run_wall_end}")"
 
+  if [[ "${STOP_REQUESTED}" == "true" || "${launch_rc}" -eq 130 || "${launch_rc}" -eq 143 || "${launch_rc}" -eq 2 ]]; then
+    append_dataset_timing_jsonl \
+      "${DATASET_TIMING_JSONL}" \
+      "${run_idx}" \
+      "${dataset_exp_id}" \
+      "${run_wall_sec}" \
+      "user_interrupted" \
+      "${launch_rc}" \
+      "${run_cfg}"
+    log "Przerwano przez użytkownika/sygnał (rc=${launch_rc}). Kończę bez uruchamiania kolejnych rund."
+    STOP_REQUESTED=true
+    break
+  fi
+
   if [[ "${launch_rc}" -ne 0 ]]; then
     append_dataset_timing_jsonl \
       "${DATASET_TIMING_JSONL}" \
@@ -1484,6 +1796,10 @@ PY
       "${launch_rc}" \
       "${run_cfg}"
     log "WARN: dataset run ${dataset_exp_id} zakończony błędem rc=${launch_rc}; pomijam rundę i jadę dalej."
+    if [[ -n "${run_signature_key}" && "${run_signature_key}" != "unknown|-1" ]]; then
+      FAILED_SIGNATURE_COOLDOWN["${run_signature_key}"]="${FAIL_SIGNATURE_COOLDOWN_RUNS}"
+      log "Adaptive memory: cooldown=${FAIL_SIGNATURE_COOLDOWN_RUNS} dla sygnatury ${run_signature_key} (reason=launch_rc_${launch_rc})"
+    fi
     FORCE_BASE_PATH_NEXT=true
     FORCE_BASE_PATH_REASON="launch_rc_${launch_rc}"
     if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
@@ -1517,6 +1833,10 @@ PY
       "${launch_rc}" \
       "${run_cfg}"
     log "WARN: runda ${dataset_exp_id} przerwana lub niepełna (np. watchdog/no-motion). Pomijam i przechodzę dalej."
+    if [[ -n "${run_signature_key}" && "${run_signature_key}" != "unknown|-1" ]]; then
+      FAILED_SIGNATURE_COOLDOWN["${run_signature_key}"]="${FAIL_SIGNATURE_COOLDOWN_RUNS}"
+      log "Adaptive memory: cooldown=${FAIL_SIGNATURE_COOLDOWN_RUNS} dla sygnatury ${run_signature_key} (reason=incomplete_artifacts)"
+    fi
     FORCE_BASE_PATH_NEXT=true
     FORCE_BASE_PATH_REASON="incomplete_artifacts"
     if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
@@ -1530,23 +1850,10 @@ PY
     analyze_single_run_trajectory_health "${TMP_CONFIG_DIR}" "${dataset_exp_id}" "${run_cfg}"
   )"
   IFS=$'\t' read -r run_health_flag run_health_status run_health_segs run_health_pts run_health_len <<< "${run_health_line}"
+  run_accept_status="accepted"
   if [[ "${run_health_flag}" == "1" ]]; then
-    append_dataset_timing_jsonl \
-      "${DATASET_TIMING_JSONL}" \
-      "${run_idx}" \
-      "${dataset_exp_id}" \
-      "${run_wall_sec}" \
-      "rejected_trajectory_health" \
-      "${launch_rc}" \
-      "${run_cfg}"
-    log "WARN: odrzucam rundę ${dataset_exp_id} (traj health: status=${run_health_status}, stuck_segs=${run_health_segs}, stuck_pts=${run_health_pts}, len=${run_health_len}m)."
-    FORCE_BASE_PATH_NEXT=true
-    FORCE_BASE_PATH_REASON="traj_health_${run_health_status}_segs${run_health_segs}_pts${run_health_pts}_len${run_health_len}"
-    if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
-      SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
-    fi
-    SAFE_MODE_REASON="${FORCE_BASE_PATH_REASON}"
-    continue
+    run_accept_status="accepted_traj_health_warn"
+    log "WARN: runda ${dataset_exp_id} ma słabą jakość trajektorii (status=${run_health_status}, stuck_segs=${run_health_segs}, stuck_pts=${run_health_pts}, len=${run_health_len}m), ale NIE jest odrzucana."
   fi
 
   append_dataset_timing_jsonl \
@@ -1554,7 +1861,7 @@ PY
     "${run_idx}" \
     "${dataset_exp_id}" \
     "${run_wall_sec}" \
-    "accepted" \
+    "${run_accept_status}" \
     "${launch_rc}" \
     "${run_cfg}"
 
@@ -1581,8 +1888,7 @@ PY
     --rywak-angular "${rywak_angular_paths[@]}" \
     --robak-translation "${robak_translation_paths[@]}" \
     --robak-rotation "${robak_rotation_paths[@]}" \
-    --deduplicate \
-    "${DEDUP_POSE_ARGS[@]}"
+    --deduplicate
 
   log "Trajectory overview (all merged dataset runs)"
   if ! python3 "${ROOT_DIR}/scripts/plot_merged_dataset_trajectories.py" \
@@ -1598,13 +1904,7 @@ PY
     )"
     IFS=$'\t' read -r run_stuck_flag run_traj_status run_stuck_segs run_stuck_pts run_traj_len <<< "${health_line}"
     if [[ "${run_stuck_flag}" == "1" ]]; then
-      FORCE_BASE_PATH_NEXT=true
-      FORCE_BASE_PATH_REASON="traj_health_${run_traj_status}_segs${run_stuck_segs}_pts${run_stuck_pts}_len${run_traj_len}"
-      if [[ "${SAFE_MODE_RUNS_LEFT}" -lt "${SAFE_MODE_AFTER_BAD_RUNS}" ]]; then
-        SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
-      fi
-      SAFE_MODE_REASON="${FORCE_BASE_PATH_REASON}"
-      log "WARN: wykryto możliwe utknięcie/niski progres w ${dataset_exp_id} (status=${run_traj_status}, stuck_segs=${run_stuck_segs}, stuck_pts=${run_stuck_pts}, len=${run_traj_len}m). Następne runy: safe mode (baza + focus=balanced, adaptive_path=OFF)."
+      log "WARN: wykryto możliwe utknięcie/niski progres w ${dataset_exp_id} (status=${run_traj_status}, stuck_segs=${run_stuck_segs}, stuck_pts=${run_stuck_pts}, len=${run_traj_len}m). Informacyjnie: próbki pozostają w merge, bez odrzucania i bez wymuszonego safe mode."
     fi
   fi
 
@@ -1626,8 +1926,7 @@ PY
     --robak-t-min "${ROBAK_T_MIN}" \
     --robak-t-max "${ROBAK_T_MAX}" \
     --robak-r-min "${ROBAK_R_MIN}" \
-    --robak-r-max "${ROBAK_R_MAX}" \
-    "${DEDUP_POSE_ARGS[@]}"; then
+    --robak-r-max "${ROBAK_R_MAX}"; then
     strict_ok=true
   else
     strict_ok=false

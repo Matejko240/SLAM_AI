@@ -30,6 +30,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+from skimage.morphology import skeletonize
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "ai_slam_ws" / "src" / "ai_slam_bringup"))
@@ -68,6 +69,94 @@ _MIN_VERTEX_GAP_SEGMENTS = 3
 
 def _cells_world_xy(cells: list[tuple[int, int]], meta: dict) -> list[tuple[float, float]]:
     return [cell_to_world_center(r, c, meta, flip_y=FLIP_Y) for r, c in cells]
+
+
+def _dedup_consecutive_cells(cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not cells:
+        return []
+    out = [cells[0]]
+    for cell in cells[1:]:
+        if cell != out[-1]:
+            out.append(cell)
+    return out
+
+
+def cell_reuse_stats(cells: list[tuple[int, int]]) -> tuple[int, int, int, float]:
+    path = _dedup_consecutive_cells(list(cells))
+    n_total = len(path)
+    n_unique = len(set(path))
+    reuse = n_total - n_unique
+    reuse_pct = 100.0 * float(reuse) / float(max(1, n_total))
+    return n_total, n_unique, reuse, reuse_pct
+
+
+def polyline_to_cells(poly_xy: list[tuple[float, float]], meta: dict) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for x, y in poly_xy:
+        cell = world_to_cell(x, y, meta, flip_y=FLIP_Y)
+        if cell is None:
+            continue
+        if not out or cell != out[-1]:
+            out.append(cell)
+    return out
+
+
+def plan_polyline_cells_and_stats(
+    anchors: list[tuple[float, float]],
+    blocked: np.ndarray,
+    meta: dict,
+    *,
+    inflate_cells: int,
+) -> tuple[list[tuple[float, float]], list[tuple[int, int]], tuple[int, int, int, float]]:
+    poly = plan_polyline_through_anchors(
+        anchors, blocked, meta, flip_y=FLIP_Y, inflate_cells=inflate_cells
+    )
+    poly_cells = polyline_to_cells(poly, meta)
+    return poly, poly_cells, cell_reuse_stats(poly_cells)
+
+
+def enforce_zero_reuse_anchors(
+    cells: list[tuple[int, int]],
+    blocked: np.ndarray,
+    meta: dict,
+    inflate_cells: int,
+    preferred_anchors: list[tuple[float, float]],
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[int, int]]]:
+    tried: set[tuple[tuple[int, int], ...]] = set()
+    candidates: list[list[tuple[float, float]]] = [preferred_anchors]
+    for stride in (2, 1):
+        candidates.append(anchors_from_grid_stride(cells, meta, stride))
+    candidates.append(_cells_world_xy(cells, meta))
+
+    best_payload = None
+    best_reuse = None
+
+    for anchors in candidates:
+        key = tuple(polyline_to_cells(anchors, meta))
+        if key in tried:
+            continue
+        tried.add(key)
+        if len(anchors) < 2:
+            continue
+        poly, poly_cells, stats = plan_polyline_cells_and_stats(
+            anchors, blocked, meta, inflate_cells=inflate_cells
+        )
+        _n_total, _n_unique, reuse, _reuse_pct = stats
+        crosses = open_polyline_nonadjacent_segments_cross(poly)
+        if best_payload is None or reuse < best_reuse:
+            best_payload = (anchors, poly, poly_cells)
+            best_reuse = reuse
+        if reuse == 0 and not crosses:
+            return anchors, poly, poly_cells
+
+    if best_payload is None:
+        raise RuntimeError("Nie udało się wygenerować poprawnych anchors dla trasy acyklicznej.")
+
+    anchors, poly, poly_cells = best_payload
+    _n_total, _n_unique, reuse, reuse_pct = cell_reuse_stats(poly_cells)
+    raise RuntimeError(
+        f"Nie udało się zejść do 0% reuse dla trajektorii acyklicznej (najlepszy wynik: {reuse} komórek, {reuse_pct:.3f}%)."
+    )
 
 
 def _orient_2d(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
@@ -189,6 +278,431 @@ def open_polyline_nonadjacent_segments_cross(
                 return True
     return False
 
+
+
+
+def _iter_mask_neighbors(
+    mask: np.ndarray,
+    r: int,
+    c: int,
+    *,
+    guard_corners: bool = True,
+) -> list[tuple[int, int]]:
+    h, w = mask.shape
+    out: list[tuple[int, int]] = []
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+        nr, nc = r + dr, c + dc
+        if nr < 0 or nc < 0 or nr >= h or nc >= w or not mask[nr, nc]:
+            continue
+        if guard_corners and dr and dc:
+            if not mask[r + dr, c] or not mask[r, c + dc]:
+                continue
+        out.append((nr, nc))
+    return out
+
+
+def _iter_grid_neighbors(walk: np.ndarray, r: int, c: int) -> list[tuple[int, int]]:
+    return _iter_mask_neighbors(walk, r, c, guard_corners=True)
+
+
+def _nearest_true_cell(mask: np.ndarray, seed: tuple[int, int]) -> tuple[int, int]:
+    r0, c0 = seed
+    pts = np.argwhere(mask)
+    if pts.size == 0:
+        raise RuntimeError("Brak aktywnych komórek w masce.")
+    d2 = (pts[:, 0] - r0) ** 2 + (pts[:, 1] - c0) ** 2
+    rr, cc = pts[int(np.argmin(d2))]
+    return int(rr), int(cc)
+
+
+def _build_skeleton_graph_from_walk(
+    walk: np.ndarray,
+    start: tuple[int, int],
+) -> tuple[list[tuple[int, int]], list[dict], dict[int, list[tuple[int, int]]], int]:
+    skel = skeletonize(walk)
+    if not np.any(skel):
+        raise RuntimeError("Skeletonizacja nie zwróciła żadnych pikseli.")
+
+    start_skel = _nearest_true_cell(skel, start)
+
+    node_set: set[tuple[int, int]] = {start_skel}
+    skel_pts = np.argwhere(skel)
+    for rr, cc in skel_pts:
+        rr_i = int(rr)
+        cc_i = int(cc)
+        deg = len(_iter_mask_neighbors(skel, rr_i, cc_i, guard_corners=False))
+        if deg != 2:
+            node_set.add((rr_i, cc_i))
+
+    nodes = sorted(node_set)
+    node_to_idx = {cell: i for i, cell in enumerate(nodes)}
+    graph: dict[int, list[tuple[int, int]]] = {i: [] for i in range(len(nodes))}
+    edges: list[dict] = []
+    seen_steps: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+
+    for u in nodes:
+        u_idx = node_to_idx[u]
+        for first in _iter_mask_neighbors(skel, u[0], u[1], guard_corners=False):
+            if (u, first) in seen_steps:
+                continue
+
+            path = [u, first]
+            prev = u
+            cur = first
+
+            while cur not in node_to_idx:
+                nxts = [n for n in _iter_mask_neighbors(skel, cur[0], cur[1], guard_corners=False) if n != prev]
+                if len(nxts) != 1:
+                    break
+                nxt = nxts[0]
+                path.append(nxt)
+                prev, cur = cur, nxt
+
+            if cur not in node_to_idx or cur == u:
+                continue
+
+            for a, b in zip(path[:-1], path[1:]):
+                seen_steps.add((a, b))
+                seen_steps.add((b, a))
+
+            v_idx = node_to_idx[cur]
+            length = 0.0
+            for a, b in zip(path[:-1], path[1:]):
+                length += math.hypot(a[0] - b[0], a[1] - b[1])
+
+            eid = len(edges)
+            edges.append(
+                {
+                    "u": u_idx,
+                    "v": v_idx,
+                    "cells": path[:],
+                    "weight": max(length, 1.0),
+                }
+            )
+            graph[u_idx].append((v_idx, eid))
+            graph[v_idx].append((u_idx, eid))
+
+    return nodes, edges, graph, node_to_idx[start_skel]
+
+
+def _skeleton_reachable_edge_weight(
+    current_idx: int,
+    graph: dict[int, list[tuple[int, int]]],
+    edges: list[dict],
+    used_nodes_mask: int,
+    used_edges_mask: int,
+) -> float:
+    q = deque([current_idx])
+    seen_nodes = {current_idx}
+    seen_edges: set[int] = set()
+    total = 0.0
+
+    while q:
+        u = q.popleft()
+        for v, eid in graph.get(u, []):
+            if (used_edges_mask >> eid) & 1:
+                continue
+            if eid not in seen_edges:
+                seen_edges.add(eid)
+                total += float(edges[eid]["weight"])
+            if ((used_nodes_mask >> v) & 1) and v != current_idx:
+                continue
+            if v not in seen_nodes:
+                seen_nodes.add(v)
+                q.append(v)
+    return total
+
+
+def _skeleton_unused_degree(
+    current_idx: int,
+    graph: dict[int, list[tuple[int, int]]],
+    used_nodes_mask: int,
+    used_edges_mask: int,
+) -> int:
+    deg = 0
+    for v, eid in graph.get(current_idx, []):
+        if (used_edges_mask >> eid) & 1:
+            continue
+        if (used_nodes_mask >> v) & 1:
+            continue
+        deg += 1
+    return deg
+
+
+def _expand_skeleton_edge_path(
+    start_idx: int,
+    edge_ids: list[int],
+    nodes: list[tuple[int, int]],
+    edges: list[dict],
+) -> list[tuple[int, int]]:
+    current = start_idx
+    cells: list[tuple[int, int]] = [nodes[current]]
+    for eid in edge_ids:
+        e = edges[eid]
+        if current == e["u"]:
+            seg = e["cells"]
+            current = e["v"]
+        elif current == e["v"]:
+            seg = list(reversed(e["cells"]))
+            current = e["u"]
+        else:
+            raise RuntimeError(f"Krawędź {eid} nie jest incydentna z węzłem {current}.")
+        cells.extend(seg[1:])
+    return _dedup_consecutive_cells(cells)
+
+
+def build_acyclic_cells_on_skeleton_graph(
+    walk: np.ndarray,
+    start: tuple[int, int],
+    *,
+    beam_width: int = 128,
+    max_iters: int = 1200,
+    time_limit_sec: float = 10.0,
+    progress_every_sec: float = 2.0,
+    label: str = "Skeleton",
+) -> list[tuple[int, int]]:
+    import time
+
+    nodes, edges, graph, start_idx = _build_skeleton_graph_from_walk(walk, start)
+    if not edges:
+        return [start]
+
+    print(
+        f"[INFO] {label} skeleton graph: nodes={len(nodes)} edges={len(edges)} beam={beam_width}",
+        flush=True,
+    )
+
+    start_mask = 1 << start_idx
+    start_state = (
+        _skeleton_reachable_edge_weight(start_idx, graph, edges, start_mask, 0),
+        0.0,
+        start_idx,
+        start_mask,
+        0,
+        [],
+    )
+    beam = [start_state]
+    best = start_state
+    best_len = 0.0
+    iter_idx = 0
+    t0 = time.monotonic()
+    tlog = t0
+
+    while beam and iter_idx < max_iters and (time.monotonic() - t0) < time_limit_sec:
+        iter_idx += 1
+        next_states = []
+
+        for _optimistic, length_so_far, current_idx, used_nodes_mask, used_edges_mask, path_eids in beam:
+            expanded = False
+            for nxt, eid in graph.get(current_idx, []):
+                if (used_edges_mask >> eid) & 1:
+                    continue
+                if (used_nodes_mask >> nxt) & 1:
+                    continue
+
+                edge_len = float(edges[eid]["weight"])
+                new_len = float(length_so_far + edge_len)
+                trial_nodes_mask = used_nodes_mask | (1 << nxt)
+                trial_edges_mask = used_edges_mask | (1 << eid)
+
+                future = _skeleton_reachable_edge_weight(
+                    nxt, graph, edges, trial_nodes_mask, trial_edges_mask
+                )
+                unused_deg = _skeleton_unused_degree(nxt, graph, trial_nodes_mask, trial_edges_mask)
+
+                leaf_penalty = 0.0
+                if unused_deg == 0 and future > 0.0:
+                    leaf_penalty += 20.0
+                elif unused_deg == 1 and future > 20.0:
+                    leaf_penalty += 8.0
+
+                optimistic = new_len + 0.95 * future - leaf_penalty
+                st = (
+                    optimistic,
+                    new_len,
+                    nxt,
+                    trial_nodes_mask,
+                    trial_edges_mask,
+                    path_eids + [eid],
+                )
+                next_states.append(st)
+                expanded = True
+                if new_len > best_len:
+                    best = st
+                    best_len = new_len
+
+            if not expanded and length_so_far > best_len:
+                best = (_optimistic, length_so_far, current_idx, used_nodes_mask, used_edges_mask, path_eids)
+                best_len = length_so_far
+
+        if not next_states:
+            break
+
+        next_states.sort(
+            key=lambda st: (
+                st[0],
+                st[1],
+                _skeleton_unused_degree(st[2], graph, st[3], st[4]),
+            ),
+            reverse=True,
+        )
+
+        diversified = []
+        seen_sig = set()
+        for st in next_states:
+            sig = (st[2], int(st[4]).bit_count())
+            if sig in seen_sig and len(diversified) >= max(8, beam_width // 2):
+                continue
+            seen_sig.add(sig)
+            diversified.append(st)
+            if len(diversified) >= beam_width:
+                break
+        beam = diversified
+
+        now = time.monotonic()
+        if now - tlog >= progress_every_sec:
+            print(
+                f"[INFO] {label} skeleton beam: iter={iter_idx} beam={len(beam)} best_len={best_len:.1f} elapsed={now - t0:.1f}s",
+                flush=True,
+            )
+            tlog = now
+
+    elapsed = time.monotonic() - t0
+    if elapsed >= time_limit_sec:
+        print(
+            f"[WARN] {label} skeleton graph hit time limit after {elapsed:.1f}s; using best partial path.",
+            flush=True,
+        )
+    else:
+        print(
+            f"[INFO] {label} skeleton graph finished in {elapsed:.1f}s with best_len={best_len:.1f}.",
+            flush=True,
+        )
+
+    return _expand_skeleton_edge_path(start_idx, best[5], nodes, edges)
+
+
+
+def bfs_parents_from(walk: np.ndarray, seed: tuple[int, int]) -> tuple[dict[tuple[int, int], int], dict[tuple[int, int], tuple[int, int] | None]]:
+    dist = {seed: 0}
+    parent = {seed: None}
+    q = deque([seed])
+    while q:
+        r, c = q.popleft()
+        d0 = dist[(r, c)]
+        for nr, nc in _iter_grid_neighbors(walk, r, c):
+            if (nr, nc) in dist:
+                continue
+            dist[(nr, nc)] = d0 + 1
+            parent[(nr, nc)] = (r, c)
+            q.append((nr, nc))
+    return dist, parent
+
+
+def reconstruct_parent_path(parent: dict[tuple[int, int], tuple[int, int] | None], goal: tuple[int, int]) -> list[tuple[int, int]]:
+    if goal not in parent:
+        return []
+    out: list[tuple[int, int]] = []
+    cur: tuple[int, int] | None = goal
+    while cur is not None:
+        out.append(cur)
+        cur = parent[cur]
+    out.reverse()
+    return out
+
+
+def residual_walk_without_used(
+    walk: np.ndarray,
+    used: set[tuple[int, int]],
+    *,
+    keep: tuple[int, int] | None = None,
+) -> np.ndarray:
+    out = walk.copy()
+    for cell in used:
+        if keep is not None and cell == keep:
+            continue
+        out[cell[0], cell[1]] = False
+    if keep is not None:
+        out[keep[0], keep[1]] = True
+    return out
+
+
+def reachable_component_size(
+    walk: np.ndarray,
+    seed: tuple[int, int],
+) -> int:
+    if not walk[seed[0], seed[1]]:
+        return 0
+    dist, _parent = bfs_parents_from(walk, seed)
+    return int(len(dist))
+
+
+def _top_farthest_cells(dist: dict[tuple[int, int], int], limit: int) -> list[tuple[int, int]]:
+    if not dist:
+        return []
+    items = sorted(dist.items(), key=lambda kv: kv[1], reverse=True)
+    return [cell for cell, _d in items[: max(1, int(limit))]]
+
+
+def _initial_path_score(
+    walk: np.ndarray,
+    path: list[tuple[int, int]],
+) -> float:
+    if not path:
+        return -1e18
+    end = path[-1]
+    used = set(path[:-1])
+    residual = residual_walk_without_used(walk, used, keep=end)
+    future = reachable_component_size(residual, end)
+    branch = sum(1 for _ in _iter_grid_neighbors(residual, end[0], end[1]))
+    return float(len(path)) + 0.55 * float(future) + 6.0 * float(branch)
+
+
+def choose_initial_simple_path(
+    walk: np.ndarray,
+    start: tuple[int, int],
+    *,
+    top_k: int = 96,
+) -> list[tuple[int, int]]:
+    dist, parent = bfs_parents_from(walk, start)
+    if len(dist) <= 1:
+        return [start]
+    goals = _top_farthest_cells(dist, top_k)
+    best_path: list[tuple[int, int]] | None = None
+    best_score = -1e18
+    for goal in goals:
+        if goal == start:
+            continue
+        path = reconstruct_parent_path(parent, goal)
+        if len(path) < 2:
+            continue
+        score = _initial_path_score(walk, path)
+        if score > best_score:
+            best_score = score
+            best_path = path
+    if best_path is None:
+        far = max(dist, key=lambda k: dist[k])
+        best_path = reconstruct_parent_path(parent, far)
+    return best_path
+
+
+def _extension_score(
+    walk: np.ndarray,
+    used: set[tuple[int, int]],
+    seg: list[tuple[int, int]],
+) -> float:
+    if not seg:
+        return -1e18
+    cur = seg[0]
+    end = seg[-1]
+    new_used = set(used)
+    for cell in seg[1:]:
+        new_used.add(cell)
+    residual = residual_walk_without_used(walk, new_used, keep=end)
+    future = reachable_component_size(residual, end)
+    branch = sum(1 for _ in _iter_grid_neighbors(residual, end[0], end[1]))
+    manhattan = abs(end[0] - cur[0]) + abs(end[1] - cur[1])
+    return float(len(seg)) + 0.45 * float(future) + 4.0 * float(branch) + 0.15 * float(manhattan)
 
 def bfs_dist_from(walk, h: int, w: int, seed: tuple[int, int]) -> dict[tuple[int, int], int]:
     dist = {seed: 0}
@@ -320,62 +834,63 @@ def build_acyclic_cells(
     r_med = float(np.median(rs)) if balance_quadrants and rs.size > 0 else None
     c_med = float(np.median(cs)) if balance_quadrants and cs.size > 0 else None
 
-    d0 = bfs_dist_from(walk, h, w, start)
-    far_a = max(d0, key=lambda k: d0[k])
-    p = astar(walk, start, far_a)
-    if not p:
-        raise RuntimeError("A* start→far failed")
-    cells: list[tuple[int, int]] = list(p)
+    if max_cell_reuse > 1e-12:
+        max_cell_reuse = 0.0
+
+    cells: list[tuple[int, int]] = choose_initial_simple_path(walk, start, top_k=max(48, candidates_per_ext * 3))
+    if not cells:
+        raise RuntimeError("Nie udało się wyznaczyć początkowej ścieżki prostej")
     used: set[tuple[int, int]] = set(cells)
 
     for _ext in range(max_extensions):
         cur = cells[-1]
-        cr, cc = cur
+        residual = residual_walk_without_used(walk, used, keep=cur)
+        dist, parent = bfs_parents_from(residual, cur)
+        if len(dist) <= 1:
+            break
+
         existing_xy = _cells_world_xy(cells, meta)
-        # Bez pełnego BFS od cur — losuj kandydatów, sortuj po Manhattan od bieżącego końca.
-        raw = _sample_free_cells(walk, rng, max(650, candidates_per_ext * 90))
-        pool = [g for g in raw if g not in used]
-        pool.sort(key=lambda g: -(abs(g[0] - cr) + abs(g[1] - cc)))
-        pool = pool[: min(280, len(pool))]
+        all_reachable = [cell for cell in _top_farthest_cells(dist, max(48, candidates_per_ext * 4)) if cell != cur]
+        if not all_reachable:
+            break
+
+        pool = [g for g in all_reachable if g not in used]
+        if not pool:
+            break
         candidates = _pick_extension_candidates(
             pool,
             used,
             rng,
-            candidates_per_ext,
+            min(len(pool), max(12, candidates_per_ext)),
             r_med=r_med,
             c_med=c_med,
         )
 
         best_path: list[tuple[int, int]] | None = None
-        best_score = -1.0
+        best_score = -1e18
 
         for goal in candidates:
-            seg = astar(walk, cur, goal)
-            if seg is None or len(seg) < min_extension_len:
+            seg = reconstruct_parent_path(parent, goal)
+            if not seg or len(seg) < min_extension_len:
                 continue
-            ov = path_overlap_fraction(seg, used, skip_cells)
-            if ov > max_cell_reuse + 1e-15:
+            body = seg[1:]
+            if any(cell in used for cell in body):
                 continue
             seg_xy = _cells_world_xy(seg, meta)
             if extension_adds_polyline_cross(existing_xy, seg_xy):
                 continue
-            new_cells = len(set(seg[skip_cells:]) - used)
-            score = len(seg) * (1.0 - ov) + 0.5 * new_cells
+            score = _extension_score(walk, used, seg)
             if score > best_score:
                 best_score = score
                 best_path = seg
 
         if best_path is None:
             break
-        if best_path[0] == cells[-1]:
-            cells.extend(best_path[1:])
-            for c in best_path[1:]:
-                used.add(c)
-        else:
-            cells.extend(best_path)
-            for c in best_path:
-                used.add(c)
-    return cells
+        cells.extend(best_path[1:])
+        for c in best_path[1:]:
+            used.add(c)
+
+    return _dedup_consecutive_cells(cells)
 
 
 def anchors_from_grid_stride(
@@ -557,6 +1072,64 @@ def _collapse_office_upper_left_ping_pong(
     return _dedup_anchor_seq(out, min_step_m=0.20)
 
 
+def _collapse_hospital_upper_right_ping_pong(
+    anchors: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """
+    Usuń lokalny odcinek "tam-i-z-powrotem" w prawym górnym korytarzu hospital.
+
+    W praktyce ten fragment daje przejazd dwa razy po tej samej półce (x~5..11, y~17.5),
+    co nie wnosi nowego pokrycia trajektorii i prowokuje lokalne kręcenie.
+    """
+    if len(anchors) < 6:
+        return anchors
+
+    def in_ur_top_band(p: tuple[float, float]) -> bool:
+        x, y = p
+        return (4.8 <= abs(x) <= 12.2) and (17.20 <= y <= 17.90)
+
+    out: list[tuple[float, float]] = []
+    i = 0
+    n = len(anchors)
+    while i < n:
+        if not in_ur_top_band(anchors[i]):
+            out.append(anchors[i])
+            i += 1
+            continue
+
+        j = i
+        xs = [anchors[i][0]]
+        while (j + 1) < n and in_ur_top_band(anchors[j + 1]):
+            j += 1
+            xs.append(anchors[j][0])
+
+        # Monotoniczny przebieg (jedna strona) zostawiamy.
+        # Zmiana znaku kierunku x + duży span => lokalny ping-pong.
+        if (j - i) >= 3:
+            dirs: list[int] = []
+            for k in range(len(xs) - 1):
+                dx = xs[k + 1] - xs[k]
+                if abs(dx) < 0.15:
+                    continue
+                dirs.append(1 if dx > 0.0 else -1)
+            dir_changes = 0
+            for k in range(1, len(dirs)):
+                if dirs[k] != dirs[k - 1]:
+                    dir_changes += 1
+            x_span = max(xs) - min(xs)
+            if dir_changes >= 1 and x_span >= 1.5:
+                # Zostaw tylko wejście i wyjście z pasma.
+                out.append(anchors[i])
+                out.append(anchors[j])
+                i = j + 1
+                continue
+
+        out.extend(anchors[i : j + 1])
+        i = j + 1
+
+    return _dedup_anchor_seq(out, min_step_m=0.20)
+
+
 def inject_office_upper_left_u_turn(
     anchors: list[tuple[float, float]],
     blocked: np.ndarray,
@@ -666,20 +1239,66 @@ def build_acyclic_cells_for_map(
     amin_len = 18 if acyclic_min_ext_len is None else acyclic_min_ext_len
     areuse = acyclic_max_reuse if acyclic_reuse_override is None else acyclic_reuse_override
 
-    cells = build_acyclic_cells(
-        walk,
-        h,
-        w,
-        meta,
-        start,
-        rng,
-        max_extensions=n_ext,
-        max_cell_reuse=areuse,
-        skip_cells=10,
-        min_extension_len=amin_len,
-        candidates_per_ext=acyclic_candidates,
-        balance_quadrants=balance_quadrants,
-    )
+    cells: list[tuple[int, int]] | None = None
+    map_name = map_yaml.name.lower()
+
+    if "hospital" in map_name:
+        try:
+            cells = build_acyclic_cells_on_skeleton_graph(
+                walk,
+                start,
+                beam_width=128,
+                max_iters=1200,
+                time_limit_sec=10.0,
+                progress_every_sec=2.0,
+                label="Hospital",
+            )
+            print(
+                f"[INFO] Hospital skeleton graph produced {len(cells)} cells before anchor conversion.",
+                flush=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Hospital skeleton graph failed for {map_yaml.name}: {exc}"
+            ) from exc
+
+    elif "office" in map_name:
+        try:
+            cells = build_acyclic_cells_on_skeleton_graph(
+                walk,
+                start,
+                beam_width=128,
+                max_iters=1200,
+                time_limit_sec=10.0,
+                progress_every_sec=2.0,
+                label="Office",
+            )
+            print(
+                f"[INFO] Office skeleton graph produced {len(cells)} cells before anchor conversion.",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[WARN] Office skeleton graph failed for {map_yaml.name}: {exc}. Falling back to generic builder.",
+                flush=True,
+            )
+
+    if not cells:
+        cells = build_acyclic_cells(
+            walk,
+            h,
+            w,
+            meta,
+            start,
+            rng,
+            max_extensions=n_ext,
+            max_cell_reuse=areuse,
+            skip_cells=1,
+            min_extension_len=amin_len,
+            candidates_per_ext=acyclic_candidates,
+            balance_quadrants=balance_quadrants,
+        )
+
     return cells, blocked, walk, meta, inflate_cells
 
 
@@ -745,15 +1364,27 @@ def write_trajectory_yaml(
     laps_note: int,
     inflate_m: float,
 ) -> None:
-    n_unique = len(set(cells))
-    reuse = len(cells) - n_unique
-    reuse_pct = 100.0 * reuse / max(1, len(cells))
+    poly, poly_cells, (n_total, n_unique, reuse, reuse_pct) = plan_polyline_cells_and_stats(
+        anchors, blocked, meta, inflate_cells=inflate_cells
+    )
+    lp = sum(
+        math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1])
+        for i in range(len(poly) - 1)
+    )
+
+    raw_total, raw_unique, raw_reuse, raw_reuse_pct = cell_reuse_stats(cells)
+    if reuse == 0 and raw_reuse != 0:
+        raw_total = n_total
+        raw_unique = n_unique
+        raw_reuse = reuse
+        raw_reuse_pct = reuse_pct
 
     world_name = "world_office.sdf" if "office" in map_yaml.name else "world_hospital.sdf"
     ref_rel = map_yaml.name
     hdr = [
         f"# {name}: {tag} | map {ref_rel} | world {world_name}",
-        f"# Komórki: {len(cells)} (unikalnych {n_unique}, reuse {reuse_pct:.1f}%). Regeneracja: python3 scripts/generate_long_trajectories.py",
+        f"# Planned polyline cells: {n_total} (unikalnych {n_unique}, reuse {reuse_pct:.3f}%). Regeneracja: python3 scripts/generate_long_trajectories.py",
+        f"# Raw builder cells: {raw_total} (unikalnych {raw_unique}, reuse {raw_reuse_pct:.3f}%).",
         "# loop_path w tym pliku nadpisuje domyślny parametr ROS w planned_path_driver (jeśli obecny).",
     ]
     if loop_path:
@@ -761,7 +1392,7 @@ def write_trajectory_yaml(
             f"# Cyclic: identyczna trasa jak *_acyclic.yaml; loop_path=true — driver po końcu wraca na początek "
             f"(wiele pełnych przejazdów; typowo min. {laps_note} dla datasetu, parametr --laps={laps_note})."
         )
-    lp, _nanchors = write_planned_yaml(
+    write_planned_yaml(
         out_path,
         anchors=anchors,
         blocked=blocked,
@@ -774,7 +1405,7 @@ def write_trajectory_yaml(
     )
     print(
         f"[OK] {out_path.name}: anchors={len(anchors)}  A* poly ~{lp:.0f} m  "
-        f"cells={len(cells)}  reuse%={reuse_pct:.1f}",
+        f"poly_cells={n_total}  reuse%={reuse_pct:.3f}",
         flush=True,
     )
 
@@ -799,8 +1430,8 @@ def main() -> int:
     ap.add_argument(
         "--acyclic-max-reuse",
         type=float,
-        default=0.12,
-        help="Max. ułamek komórek nowego odcinka już odwiedzonych (poza skip prefix)",
+        default=0.0,
+        help="Max. ułamek komórek nowego odcinka już odwiedzonych (poza bieżącym węzłem). Domyślnie 0.0 = literalnie zero reuse.",
     )
     args = ap.parse_args()
     rng = random.Random(args.seed)
@@ -835,7 +1466,7 @@ def main() -> int:
             42,
             92,
             12,
-            0.19,
+            0.0,
         ),
     ]
 
@@ -858,22 +1489,33 @@ def main() -> int:
             anchors = compute_anchors_avoid_plan_cross(
                 cells, blocked, meta, inflate_cells, args.subsample_m
             )
-            if "office" in mpath.name.lower():
-                anchors, u_status = inject_office_upper_left_u_turn(
-                    anchors,
-                    blocked,
-                    meta,
-                    inflate_cells=inflate_cells,
-                )
-                if u_status == "injected":
-                    print("[INFO] Office: enforced upper-left U-turn (injected anchors).", flush=True)
-                elif u_status == "already_present":
-                    print("[INFO] Office: upper-left U-turn already present.", flush=True)
-                else:
+            if "hospital" in mpath.name.lower():
+                before_n = len(anchors)
+                anchors = _collapse_hospital_upper_right_ping_pong(anchors)
+                after_n = len(anchors)
+                if after_n < before_n:
                     print(
-                        "[WARN] Office: upper-left U-turn enforcement fallback (no valid candidate).",
+                        f"[INFO] Hospital: collapsed upper-right ping-pong anchors {before_n}->{after_n}.",
                         flush=True,
                     )
+
+            raw_total, raw_unique, raw_reuse, raw_reuse_pct = cell_reuse_stats(cells)
+            if raw_reuse != 0:
+                raise RuntimeError(
+                    f"Builder path is not acyclic: {raw_reuse} reused cells ({raw_reuse_pct:.3f}%)."
+                )
+
+            anchors, poly, poly_cells = enforce_zero_reuse_anchors(
+                cells, blocked, meta, inflate_cells, anchors
+            )
+            if open_polyline_nonadjacent_segments_cross(poly):
+                raise RuntimeError("Final acyclic polyline still contains a non-adjacent crossing.")
+            _n_total, _n_unique, poly_reuse, poly_reuse_pct = cell_reuse_stats(poly_cells)
+            if poly_reuse != 0:
+                raise RuntimeError(
+                    f"Final acyclic polyline still has reuse: {poly_reuse} cells ({poly_reuse_pct:.3f}%)."
+                )
+
             write_trajectory_yaml(
                 ta,
                 mpath,

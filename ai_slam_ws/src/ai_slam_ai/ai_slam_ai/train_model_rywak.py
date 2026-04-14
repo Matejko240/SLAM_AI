@@ -74,7 +74,7 @@ class TrainModelRywak(Node):
         self.declare_parameter("split_strategy", "tail_holdout_no_shuffle")
         self.declare_parameter("batch_size", 128)
         self.declare_parameter("torch_device", "auto")
-        self.declare_parameter("torch_deterministic", True)
+        self.declare_parameter("torch_deterministic", False)
         self.declare_parameter("dataset_wait_timeout", 600.0)
         self.declare_parameter("hidden_dims", [192, 96, 48])
         self.declare_parameter("dropout", 0.1)
@@ -82,6 +82,9 @@ class TrainModelRywak(Node):
         self.declare_parameter("huber_delta", 1.0)
         self.declare_parameter("input_noise_std", 0.02)
         self.declare_parameter("clip_grad_norm", 1.0)
+        self.declare_parameter("loss_dx_weight", 1.0)
+        self.declare_parameter("loss_dy_weight", 1.0)
+        self.declare_parameter("loss_dtheta_weight", 1.5)
         self.declare_parameter("loss_v_weight", 1.0)
         self.declare_parameter("loss_w_weight", 1.5)
 
@@ -116,6 +119,9 @@ class TrainModelRywak(Node):
         self.huber_delta = float(self.get_parameter("huber_delta").value)
         self.input_noise_std = float(self.get_parameter("input_noise_std").value)
         self.clip_grad_norm = float(self.get_parameter("clip_grad_norm").value)
+        self.loss_dx_weight = float(self.get_parameter("loss_dx_weight").value)
+        self.loss_dy_weight = float(self.get_parameter("loss_dy_weight").value)
+        self.loss_dtheta_weight = float(self.get_parameter("loss_dtheta_weight").value)
         self.loss_v_weight = float(self.get_parameter("loss_v_weight").value)
         self.loss_w_weight = float(self.get_parameter("loss_w_weight").value)
         self.torch_device_info = select_torch_device(self.torch_device_request)
@@ -179,11 +185,17 @@ class TrainModelRywak(Node):
 
         with np.load(self.dataset_path, allow_pickle=True) as data:
             X = data["X"].astype(np.float32)  # (N,in_dim)
-            Y = data["Y"].astype(np.float32)  # (N,2)
+            Y = data["Y"].astype(np.float32)  # (N,out_dim)
 
         n = int(X.shape[0])
         if n < 100:
             self.get_logger().error("[Rywak] Dataset too small.")
+            rclpy.shutdown()
+            return
+
+        out_dim = int(Y.shape[1]) if Y.ndim == 2 else 0
+        if out_dim < 1:
+            self.get_logger().error(f"[Rywak] Invalid output dimension in dataset Y: shape={Y.shape}")
             rclpy.shutdown()
             return
 
@@ -218,7 +230,7 @@ class TrainModelRywak(Node):
 
         model = MLP2(
             in_dim=int(X.shape[1]),
-            out_dim=2,
+            out_dim=out_dim,
             hidden_dims=self.hidden_dims,
             dropout=self.dropout,
         )
@@ -227,20 +239,30 @@ class TrainModelRywak(Node):
         if self.write_experiment_metadata:
             self.exp_logger.set_training_dataset_info(
                 n_total=n, n_train=X_tr.shape[0], n_val=n_val,
-                input_dim=int(X.shape[1]), output_dim=2
+                input_dim=int(X.shape[1]), output_dim=out_dim
             )
             self.exp_logger.set_training_model_info(
-                architecture=f"MLP2(in={int(X.shape[1])}->{self.hidden_dims}->2, dropout={self.dropout})",
+                architecture=f"MLP2(in={int(X.shape[1])}->{self.hidden_dims}->{out_dim}, dropout={self.dropout})",
                 model=model
             )
 
         opt = optim.Adam(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         loss_fn = nn.HuberLoss(delta=self.huber_delta, reduction="none")
+        if out_dim == 2:
+            target_weight_values = [max(self.loss_v_weight, 1e-6), max(self.loss_w_weight, 1e-6)]
+        elif out_dim == 3:
+            target_weight_values = [
+                max(self.loss_dx_weight, 1e-6),
+                max(self.loss_dy_weight, 1e-6),
+                max(self.loss_dtheta_weight, 1e-6),
+            ]
+        else:
+            target_weight_values = [1.0] * out_dim
         target_weights = torch.tensor(
-            [max(self.loss_v_weight, 1e-6), max(self.loss_w_weight, 1e-6)],
+            target_weight_values,
             dtype=torch.float32,
             device=self.device,
-        ).view(1, 2)
+        ).view(1, out_dim)
 
         best_val = float("inf")
         best_state = None
@@ -255,8 +277,13 @@ class TrainModelRywak(Node):
             "clip_grad_norm": self.clip_grad_norm,
             "split_strategy": split_strategy_used,
             "split": split_stats,
+            "out_dim": out_dim,
             "loss_v_weight": self.loss_v_weight,
             "loss_w_weight": self.loss_w_weight,
+            "loss_dx_weight": self.loss_dx_weight,
+            "loss_dy_weight": self.loss_dy_weight,
+            "loss_dtheta_weight": self.loss_dtheta_weight,
+            "target_weights": target_weight_values,
             "torch_device_requested": self.torch_device_info.requested,
             "torch_device_used": self.torch_device_info.resolved,
             "torch_device_reason": self.torch_device_info.reason,
@@ -315,6 +342,7 @@ class TrainModelRywak(Node):
             "y_mean": torch.from_numpy(y_mean.astype(np.float32)),
             "y_std": torch.from_numpy(y_std.astype(np.float32)),
             "in_dim": int(X.shape[1]),
+            "out_dim": out_dim,
             "hidden_dims": list(self.hidden_dims),
             "dropout": float(self.dropout),
             "seed": self.seed,

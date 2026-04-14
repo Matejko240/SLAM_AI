@@ -167,7 +167,7 @@ class DatasetRecorderRobak(Node):
         self.declare_parameter("max_pair_dist", 0.5)
         self.declare_parameter("max_pair_dyaw", float(math.pi))
 
-        self.declare_parameter("label_frame", "local")
+        self.declare_parameter("label_frame", "world")
         self.declare_parameter("sync_tolerance_sec", 0.08)
         self.declare_parameter("sync_pair_gap_sec", 0.2)
         self.declare_parameter("interpolate_gt", True)
@@ -749,6 +749,9 @@ class DatasetRecorderRobak(Node):
             "n": np.int64(Y.shape[0]),
             "stop_reason": np.asarray([self.stop_reason], dtype=object),
             "x_shape": np.asarray(X.shape, dtype=np.int64),
+            "feature_mode": np.asarray(["scan_prev_scan_curr"], dtype=object),
+            "out_dim": np.int64(3),
+            "label_mode": np.asarray(["gt_delta"], dtype=object),
             "label_frame": np.asarray([self.label_frame], dtype=object),
             "offsets": np.asarray(self.offsets, dtype=np.int64),
             "min_pair_dist": np.float32(self.min_pair_dist),

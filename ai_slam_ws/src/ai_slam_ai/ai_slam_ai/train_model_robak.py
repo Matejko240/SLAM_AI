@@ -70,7 +70,7 @@ class TrainModelRobak(Node):
         self.declare_parameter("split_strategy", "tail_holdout_no_shuffle")
         self.declare_parameter("batch_size", 128)
         self.declare_parameter("torch_device", "auto")
-        self.declare_parameter("torch_deterministic", True)
+        self.declare_parameter("torch_deterministic", False)
         self.declare_parameter("dataset_wait_timeout", 600.0)
 
         self.seed = int(self.get_parameter("seed").value)

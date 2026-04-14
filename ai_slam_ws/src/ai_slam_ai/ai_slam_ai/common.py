@@ -148,10 +148,14 @@ def wait_for_npz_dataset(
     poll_interval_sec: float = 0.5,
     required_keys: tuple[str, ...] | None = None,
 ) -> tuple[bool, Exception | None]:
-    deadline = time.time() + max(0.0, float(timeout_sec))
+    timeout = max(0.0, float(timeout_sec))
+    deadline = time.time() + timeout
     last_error: Exception | None = None
 
-    while time.time() < deadline:
+    # Ensure at least one validation attempt even when timeout_sec == 0.
+    first_attempt = True
+    while first_attempt or time.time() < deadline:
+        first_attempt = False
         if os.path.exists(path) and os.path.getsize(path) > 0:
             try:
                 with np.load(path, allow_pickle=True) as data:
@@ -168,7 +172,8 @@ def wait_for_npz_dataset(
                 return True, None
             except (EOFError, ValueError, OSError, zipfile.BadZipFile, KeyError) as exc:
                 last_error = exc
-        time.sleep(max(0.05, float(poll_interval_sec)))
+        if time.time() < deadline:
+            time.sleep(max(0.05, float(poll_interval_sec)))
 
     return False, last_error
 

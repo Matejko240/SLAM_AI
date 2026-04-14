@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generuje tymczasowy planned_path spec z adaptacją kotwic pod fokus rundy (np. mocniejszy slalom).
+Generuje tymczasowy planned_path spec z adaptacją kotwic pod fokus rundy (np. slalom/serpentine).
 
 Założenie:
 - nie wydłużamy czasu datasetu; zwiększamy pokrycie histogramów przez zmianę geometrii trasy,
@@ -46,6 +46,14 @@ _PROFILES: dict[str, Profile] = {
     "balanced": Profile(enabled=True, spacing_m=2.20, amplitude_m=0.16, max_anchor_count=550),
     "rotation": Profile(enabled=True, spacing_m=1.70, amplitude_m=0.26, max_anchor_count=650),
     "slalom": Profile(enabled=True, spacing_m=1.30, amplitude_m=0.34, max_anchor_count=800),
+    "serpentine": Profile(
+        enabled=True,
+        spacing_m=1.05,
+        amplitude_m=0.42,
+        max_anchor_count=900,
+        min_spacing_m=0.55,
+        max_amplitude_m=0.72,
+    ),
     # Translation fokus: bez agresywnego slalomu, ale z delikatnym przesunięciem toru,
     # żeby kolejne rundy dawały nowe próbki wysokich v.
     "translation": Profile(
@@ -411,6 +419,76 @@ def _generate_slalom_anchors(
     return reduced
 
 
+def _generate_serpentine_anchors(
+    base_poly: list[tuple[float, float]],
+    walkable: np.ndarray,
+    meta: dict,
+    *,
+    flip_y: bool,
+    spacing_m: float,
+    amplitude_m: float,
+    run_idx: int,
+    max_anchor_count: int,
+    locked_regions_xy: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float]]:
+    dense = _resample_polyline_by_distance(base_poly, step_m=spacing_m)
+    if len(dense) < 3:
+        return dense
+
+    out: list[tuple[float, float]] = [dense[0]]
+    sign = 1.0 if (run_idx % 2) == 1 else -1.0
+    for i in range(1, len(dense) - 1):
+        prev_p = dense[i - 1]
+        cur_p = dense[i]
+        next_p = dense[i + 1]
+        tx = next_p[0] - prev_p[0]
+        ty = next_p[1] - prev_p[1]
+        norm = math.hypot(tx, ty)
+        if norm < 1e-6:
+            continue
+        nx = -ty / norm
+        ny = tx / norm
+
+        if _point_in_regions(cur_p[0], cur_p[1], locked_regions_xy):
+            out.append(cur_p)
+            continue
+
+        h1 = math.atan2(cur_p[1] - prev_p[1], cur_p[0] - prev_p[0])
+        h2 = math.atan2(next_p[1] - cur_p[1], next_p[0] - cur_p[0])
+        turn = abs(_wrap_pi(h2 - h1))
+
+        if turn > math.radians(65.0):
+            amp_scale = 0.50
+        elif turn > math.radians(38.0):
+            amp_scale = 0.72
+        else:
+            amp_scale = 1.18
+        amp_local = max(0.01, amplitude_m * amp_scale)
+        candidate = _snap_candidate(
+            cur_p,
+            nx,
+            ny,
+            sign,
+            amp_local,
+            walkable,
+            meta,
+            flip_y=flip_y,
+        )
+        out.append(candidate)
+        sign *= -1.0
+
+    out.append(dense[-1])
+    cleaned = _dedup_points(out, min_step=max(0.07, spacing_m * 0.20))
+    if len(cleaned) <= max_anchor_count:
+        return cleaned
+    idxs = np.linspace(0, len(cleaned) - 1, num=max_anchor_count, dtype=np.int64)
+    keep_idx = sorted(set(int(i) for i in idxs.tolist()))
+    reduced = [cleaned[i] for i in keep_idx]
+    if len(reduced) == 1 and len(cleaned) > 1:
+        reduced.append(cleaned[-1])
+    return reduced
+
+
 def _generate_translation_anchors(
     base_poly: list[tuple[float, float]],
     walkable: np.ndarray,
@@ -518,7 +596,7 @@ def _rounded_anchors(
 def main() -> int:
     ap = argparse.ArgumentParser(description="Adaptacja planned path (kotwice) pod fokus rundy")
     ap.add_argument("--config", type=Path, required=True, help="Run config YAML do modyfikacji (in-place)")
-    ap.add_argument("--focus-mode", type=str, required=True, help="balanced|rotation|translation|slalom")
+    ap.add_argument("--focus-mode", type=str, required=True, help="balanced|rotation|translation|slalom|serpentine")
     ap.add_argument("--run-idx", type=int, required=True, help="Numer rundy (>=1)")
     ap.add_argument("--work-dir", type=Path, required=True, help="Katalog na tymczasowy spec YAML")
     args = ap.parse_args()
@@ -526,6 +604,10 @@ def main() -> int:
     cfg_path = args.config.resolve()
     cfg = _load_yaml(cfg_path)
     mode = args.focus_mode.strip().lower()
+    if mode in {"linear"}:
+        mode = "translation"
+    if mode in {"zygzag", "zigzak", "zyzgak", "zigzag"}:
+        mode = "serpentine"
     run_idx = max(1, int(args.run_idx))
     profile = _adaptive_profile(mode, run_idx)
 
@@ -602,10 +684,27 @@ def main() -> int:
     attempts = []
     serialize_ndigits = 3
     for attempt_idx in range(5):
-        amp_floor = 0.0 if mode == "translation" else 0.06
+        if mode == "translation":
+            amp_floor = 0.0
+        elif mode == "serpentine":
+            amp_floor = 0.12
+        else:
+            amp_floor = 0.06
         amp_try = max(amp_floor, profile.amplitude_m * (0.70 ** attempt_idx))
         if mode == "translation":
             anchors_try = _generate_translation_anchors(
+                base_poly,
+                walkable,
+                meta,
+                flip_y=map_flip_y,
+                spacing_m=profile.spacing_m,
+                amplitude_m=amp_try,
+                run_idx=run_idx,
+                max_anchor_count=profile.max_anchor_count,
+                locked_regions_xy=locked_regions_xy,
+            )
+        elif mode == "serpentine":
+            anchors_try = _generate_serpentine_anchors(
                 base_poly,
                 walkable,
                 meta,

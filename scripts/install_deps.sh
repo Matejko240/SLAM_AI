@@ -13,6 +13,19 @@ echo "Repo root: ${REPO_ROOT}"
 echo "ROS Distro: ${ROS_DISTRO}"
 echo "Ubuntu codename: ${OS_CODENAME}"
 
+# ROS apt source conflict guard:
+# jeśli istnieją jednocześnie ros2.list i ros2.sources, apt może zgłaszać
+# "Conflicting values set for option Signed-By".
+ROS2_LIST_FILE="/etc/apt/sources.list.d/ros2.list"
+ROS2_SOURCES_FILE="/etc/apt/sources.list.d/ros2.sources"
+if [[ -f "${ROS2_LIST_FILE}" && -f "${ROS2_SOURCES_FILE}" ]]; then
+  TS="$(date +%Y%m%d_%H%M%S)"
+  BACKUP_FILE="${ROS2_LIST_FILE}.bak.${TS}"
+  echo "Wykryto konflikt wpisów ROS APT: ${ROS2_LIST_FILE} + ${ROS2_SOURCES_FILE}"
+  echo "Archiwizuję ${ROS2_LIST_FILE} -> ${BACKUP_FILE} (preferuję ros2.sources zarządzane przez ros2-apt-source)"
+  sudo mv "${ROS2_LIST_FILE}" "${BACKUP_FILE}"
+fi
+
 # 1. Instalacja pakietów systemowych i ROS 2
 sudo apt-get update
 sudo apt-get install -f -y

@@ -15,6 +15,8 @@ try:
     from nav_msgs.msg import Odometry, OccupancyGrid
     from nav_msgs.srv import GetMap
     from sensor_msgs.msg import LaserScan
+    from std_msgs.msg import Bool
+    from tf2_msgs.msg import TFMessage
 except ModuleNotFoundError:
     # Pozwala importować moduł (testy funkcji pomocniczych) bez pełnego środowiska ROS2.
     rclpy = None
@@ -49,6 +51,9 @@ except ModuleNotFoundError:
     class LaserScan:  # type: ignore[override]
         pass
 
+    class TFMessage:  # type: ignore[override]
+        pass
+
     class GetMap:  # type: ignore[override]
         class Request:
             pass
@@ -64,25 +69,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-DEBUG_LOG_PATH = "/home/matejko/SLAM_AI/.cursor/debug-a69755.log"
-DEBUG_SESSION_ID = "a69755"
-
-
 def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    payload = {
-        "sessionId": DEBUG_SESSION_ID,
-        "runId": str(run_id),
-        "hypothesisId": str(hypothesis_id),
-        "location": str(location),
-        "message": str(message),
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    return
 
 
 def resolve_experiment_output_dir(base_out_dir: str, experiment_id: str | None) -> str:
@@ -119,6 +107,13 @@ def frame_matches_hint(frame_id: str, hint: str) -> bool:
     tokens = frame.replace("::", "/").replace(":", "/").split("/")
     tokens = [tok for tok in tokens if tok]
     return any((tok == h) or (h in tok) for tok in tokens)
+
+
+def normalize_frame_id(frame_id: str) -> str:
+    frame = str(frame_id).strip()
+    while frame.startswith("/"):
+        frame = frame[1:]
+    return frame
 
 
 def parse_filter_mode(value: str, default: str = "any") -> str:
@@ -488,6 +483,139 @@ def baseline_rmse_on_timeline(
     return rmse_xy, rmse_th, int(len(matched_idx))
 
 
+def filter_timeline_with_warmup(
+    ts: np.ndarray | list,
+    warmup_sec: float,
+    *series,
+) -> tuple:
+    t = np.asarray(ts, dtype=np.float64)
+    arrays = [np.asarray(arr) for arr in series]
+    lengths = [t.shape[0]] + [arr.shape[0] for arr in arrays]
+    n = min(lengths) if lengths else 0
+    if n <= 0:
+        empty_t = np.asarray([], dtype=np.float64)
+        empty_arrays = []
+        for arr in arrays:
+            tail_shape = tuple(arr.shape[1:]) if arr.ndim >= 1 else ()
+            empty_arrays.append(np.empty((0, *tail_shape), dtype=arr.dtype if hasattr(arr, "dtype") else np.float32))
+        return (empty_t, *empty_arrays)
+
+    t = t[:n]
+    arrays = [arr[:n] for arr in arrays]
+    warm = max(0.0, float(warmup_sec))
+    mask = t >= warm
+    return (t[mask], *[arr[mask] for arr in arrays])
+
+
+def _match_xy_on_timeline(
+    reference_ts: np.ndarray | list,
+    reference_xyth: np.ndarray | list,
+    timeline_ts: np.ndarray | list,
+    timeline_xyth: np.ndarray | list,
+) -> tuple[np.ndarray | None, np.ndarray | None, int]:
+    ref_t = np.asarray(reference_ts, dtype=np.float64)
+    ref_pose = np.asarray(reference_xyth, dtype=np.float64)
+    tar_t = np.asarray(timeline_ts, dtype=np.float64)
+    tar_pose = np.asarray(timeline_xyth, dtype=np.float64)
+
+    if ref_t.size == 0 or tar_t.size == 0 or ref_pose.size == 0 or tar_pose.size == 0:
+        return None, None, 0
+
+    n_ref = min(ref_t.shape[0], ref_pose.shape[0])
+    n_tar = min(tar_t.shape[0], tar_pose.shape[0])
+    if n_ref <= 0 or n_tar <= 0:
+        return None, None, 0
+
+    ref_t = ref_t[:n_ref]
+    ref_xy = ref_pose[:n_ref, :2]
+    tar_t = tar_t[:n_tar]
+    tar_xy = tar_pose[:n_tar, :2]
+
+    time_key = lambda value: int(round(float(value) * 1_000_000.0))
+    lookup = {time_key(ts): idx for idx, ts in enumerate(ref_t)}
+
+    ref_idx = []
+    tar_idx = []
+    for idx, ts in enumerate(tar_t):
+        key = time_key(ts)
+        if key in lookup:
+            ref_idx.append(lookup[key])
+            tar_idx.append(idx)
+
+    if not ref_idx:
+        return None, None, 0
+
+    return ref_xy[ref_idx], tar_xy[tar_idx], int(len(ref_idx))
+
+
+def ate_sim2_xy(
+    source_xy: np.ndarray | list,
+    target_xy: np.ndarray | list,
+) -> tuple[float | None, int, dict]:
+    src = np.asarray(source_xy, dtype=np.float64)
+    tgt = np.asarray(target_xy, dtype=np.float64)
+    if src.size == 0 or tgt.size == 0:
+        return None, 0, {}
+
+    n = min(src.shape[0], tgt.shape[0])
+    if n < 2:
+        return None, int(n), {}
+
+    src = src[:n, :2]
+    tgt = tgt[:n, :2]
+
+    src_mean = np.mean(src, axis=0)
+    tgt_mean = np.mean(tgt, axis=0)
+    src_centered = src - src_mean
+    tgt_centered = tgt - tgt_mean
+
+    cov = (tgt_centered.T @ src_centered) / float(n)
+    try:
+        u, singular_vals, vt = np.linalg.svd(cov)
+    except np.linalg.LinAlgError:
+        return None, int(n), {}
+
+    s = np.eye(2, dtype=np.float64)
+    if np.linalg.det(u) * np.linalg.det(vt) < 0.0:
+        s[1, 1] = -1.0
+
+    rot = u @ s @ vt
+    var_src = float(np.mean(np.sum(src_centered ** 2, axis=1)))
+    if var_src <= 1e-12:
+        return None, int(n), {}
+
+    scale = float(np.trace(np.diag(singular_vals) @ s) / var_src)
+    trans = tgt_mean - scale * (rot @ src_mean)
+    aligned = (scale * (rot @ src.T)).T + trans
+    err = aligned - tgt
+    rmse = float(np.sqrt(np.mean(np.sum(err ** 2, axis=1))))
+    yaw_deg = float(np.degrees(math.atan2(rot[1, 0], rot[0, 0])))
+
+    return rmse, int(n), {
+        "scale": scale,
+        "rotation_deg": yaw_deg,
+        "translation_x_m": float(trans[0]),
+        "translation_y_m": float(trans[1]),
+    }
+
+
+def ate_sim2_on_timeline(
+    reference_ts: np.ndarray | list,
+    reference_xyth: np.ndarray | list,
+    timeline_ts: np.ndarray | list,
+    timeline_xyth: np.ndarray | list,
+) -> tuple[float | None, int, dict]:
+    ref_xy, tar_xy, n_common = _match_xy_on_timeline(
+        reference_ts,
+        reference_xyth,
+        timeline_ts,
+        timeline_xyth,
+    )
+    if ref_xy is None or tar_xy is None or n_common <= 1:
+        return None, int(n_common), {}
+    return ate_sim2_xy(tar_xy, ref_xy)
+
+
 def error_trend_summary(ts: np.ndarray | list, err_xy: np.ndarray | list) -> dict:
     t = np.asarray(ts, dtype=np.float64)
     e = np.asarray(err_xy, dtype=np.float64)
@@ -586,6 +714,13 @@ class EvalNode(Node):
         self.declare_parameter("pose_topic_rywak", "/pose_rywak")
         self.declare_parameter("pose_topic_robak_no_slam", "/pose_robak_no_slam")
         self.declare_parameter("pose_topic_rywak_no_slam", "/pose_rywak_no_slam")
+        self.declare_parameter("slam_baseline_tf_topic", "/tf")
+        self.declare_parameter("slam_baseline_map_frame", "map")
+        self.declare_parameter("slam_baseline_odom_frame", "odom")
+        self.declare_parameter("slam_robak_map_frame", "map_robak")
+        self.declare_parameter("slam_robak_odom_frame", "odom_robak")
+        self.declare_parameter("slam_rywak_map_frame", "map_rywak")
+        self.declare_parameter("slam_rywak_odom_frame", "odom_rywak")
         self.declare_parameter("scan_topic_points", "/scan_slam")
         self.declare_parameter("points_max_range", 8.0)
         self.declare_parameter("points_beam_step", 6)
@@ -601,6 +736,7 @@ class EvalNode(Node):
         self.declare_parameter("sync_tolerance_sec", 0.15)
         self.declare_parameter("maps_rotate_180", True)
         self.declare_parameter("maps_max_cols", 3)
+        self.declare_parameter("warmup_sec", 0.0)
         # --- nazwy artefaktów (żeby results.json wskazywał faktyczne pliki)
         self.declare_parameter("robak_dataset_name", "dataset_robak.npz")
         self.declare_parameter("robak_model_name", "model_robak.pt")
@@ -690,6 +826,15 @@ class EvalNode(Node):
         self.err_xy_rywak = []
         self.err_th_rywak = []
         self.ts_rywak = []
+        self.err_xy_robak_slam = []
+        self.err_th_robak_slam = []
+        self.ts_robak_slam = []
+        self.err_xy_rywak_slam = []
+        self.err_th_rywak_slam = []
+        self.ts_rywak_slam = []
+        self.err_xy_slam_baseline = []
+        self.err_th_slam_baseline = []
+        self.ts_slam_baseline = []
         self.err_xy_robak_no_slam = []
         self.err_th_robak_no_slam = []
         self.ts_robak_no_slam = []
@@ -709,6 +854,9 @@ class EvalNode(Node):
         self.ts = []
         self.gt_xy = []
         self.odom_xy = []
+        self.slam_baseline_xy = []
+        self.robak_slam_xy = []
+        self.rywak_slam_xy = []
         self.ai_xy = []
 
         self.err_xy = []
@@ -723,6 +871,9 @@ class EvalNode(Node):
         # Śledzenie momentu startu inferencji AI
         self.ai_start_time = None  # Czas pierwszego otrzymania /pose_ai
         self.ai_start_idx = None   # Indeks w ts gdy AI wystartowało
+        
+        # Sygnał od planned_path_driver gdy trasa się skończy
+        self._trajectory_done = False
 
         self.gt_topic = str(self.get_parameter("gt_topic").value)
         self.odom_topic = str(self.get_parameter("odom_topic").value)
@@ -733,6 +884,28 @@ class EvalNode(Node):
         self.pose_topic_rywak = str(self.get_parameter("pose_topic_rywak").value)
         self.pose_topic_robak_no_slam = str(self.get_parameter("pose_topic_robak_no_slam").value)
         self.pose_topic_rywak_no_slam = str(self.get_parameter("pose_topic_rywak_no_slam").value)
+        self.slam_baseline_tf_topic = str(self.get_parameter("slam_baseline_tf_topic").value)
+        self.slam_baseline_map_frame = normalize_frame_id(
+            str(self.get_parameter("slam_baseline_map_frame").value)
+        ).lower()
+        self.slam_baseline_odom_frame = normalize_frame_id(
+            str(self.get_parameter("slam_baseline_odom_frame").value)
+        ).lower()
+        self.slam_robak_map_frame = normalize_frame_id(
+            str(self.get_parameter("slam_robak_map_frame").value)
+        ).lower()
+        self.slam_robak_odom_frame = normalize_frame_id(
+            str(self.get_parameter("slam_robak_odom_frame").value)
+        ).lower()
+        self.slam_rywak_map_frame = normalize_frame_id(
+            str(self.get_parameter("slam_rywak_map_frame").value)
+        ).lower()
+        self.slam_rywak_odom_frame = normalize_frame_id(
+            str(self.get_parameter("slam_rywak_odom_frame").value)
+        ).lower()
+        self._slam_baseline_map_to_odom = None
+        self._slam_robak_map_to_odom = None
+        self._slam_rywak_map_to_odom = None
         self.scan_topic_points = str(self.get_parameter("scan_topic_points").value)
         self.points_max_range = float(self.get_parameter("points_max_range").value)
         self.points_beam_step = int(self.get_parameter("points_beam_step").value)
@@ -748,6 +921,7 @@ class EvalNode(Node):
         self.sync_tolerance_sec = float(self.get_parameter("sync_tolerance_sec").value)
         self.maps_rotate_180 = bool(self.get_parameter("maps_rotate_180").value)
         self.maps_max_cols = max(1, int(self.get_parameter("maps_max_cols").value))
+        self.warmup_sec = max(0.0, float(self.get_parameter("warmup_sec").value))
         self.create_subscription(PoseStamped, self.gt_topic, self.on_gt, 50)
         self.create_subscription(Odometry, self.odom_topic, self.on_odom, 50)
         self.create_subscription(PoseStamped, self.pose_topic_ai, self.on_ai, 50)
@@ -757,6 +931,13 @@ class EvalNode(Node):
         self.create_subscription(PoseStamped, self.pose_topic_rywak, self.on_rywak, 50)
         self.create_subscription(PoseStamped, self.pose_topic_robak_no_slam, self.on_robak_no_slam, 50)
         self.create_subscription(PoseStamped, self.pose_topic_rywak_no_slam, self.on_rywak_no_slam, 50)
+        tf_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=200,
+        )
+        self.create_subscription(TFMessage, self.slam_baseline_tf_topic, self.on_tf, tf_qos)
         scan_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -790,6 +971,16 @@ class EvalNode(Node):
 
         self.create_subscription(OccupancyGrid, "/map_robak", self.on_map_robak, volatile_qos)
         self.create_subscription(OccupancyGrid, "/map_rywak", self.on_map_rywak, volatile_qos)
+        
+        # Subscribe to planned_path_driver completion signal
+        done_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self.create_subscription(Bool, "/planned_path_done", self._on_trajectory_done, done_qos)
+        
         # Create service clients for requesting maps directly from slam_toolbox
         # This is more reliable than topic subscriptions when slam_toolbox doesn't have active subscribers
         # Node names: slam_toolbox_baseline and slam_toolbox_ai (from demo.launch.py)
@@ -857,8 +1048,33 @@ class EvalNode(Node):
         self.get_logger().info(
             "[Eval] Trajectory RMSE: 'baseline' keys = GT vs odom_topic "
             f"({self.odom_topic!r}), not slam_toolbox pose. "
-            "Classical SLAM accuracy is reflected in IoU for /map and trajectory plots."
+            "Classical SLAM baseline ma osobny tor: rmse_*_slam_baseline oraz iou_map_slam_baseline."
         )
+        self.get_logger().info(
+            "[Eval] Baseline tracks: "
+            f"odometry={self.odom_topic!r}, "
+            f"classic_slam=({self.slam_baseline_map_frame}->{self.slam_baseline_odom_frame}) from "
+            f"{self.slam_baseline_tf_topic!r}"
+        )
+        self.get_logger().info(
+            "[Eval] Robak/Rywak tracks: "
+            f"robak_slam=({self.slam_robak_map_frame}->{self.slam_robak_odom_frame}) + {self.pose_topic_robak!r}, "
+            f"rywak_slam=({self.slam_rywak_map_frame}->{self.slam_rywak_odom_frame}) + {self.pose_topic_rywak!r}, "
+            f"raw_no_slam=({self.pose_topic_robak_no_slam!r}, {self.pose_topic_rywak_no_slam!r})"
+        )
+        self.get_logger().info(
+            f"[Eval] Metrics warmup: first {self.warmup_sec:.2f}s skipped for scalar trajectory metrics."
+        )
+
+    def _on_trajectory_done(self, msg: Bool) -> None:
+        """Handler dla sygnału ukończenia trasy z planned_path_driver."""
+        if msg.data:
+            self._trajectory_done = True
+            if self.t0 is not None:
+                t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
+                self.get_logger().info(
+                    f"[Eval] Planned path completed signal received at t={t:.1f}s - will finish evaluation shortly"
+                )
 
     def _load_ref_info(self, yaml_path):
         y = load_yaml_simple(yaml_path)
@@ -889,7 +1105,10 @@ class EvalNode(Node):
         base = os.path.dirname(yaml_path)
         img_path = os.path.join(base, info["image"])
         pgm = load_pgm(img_path)
-        occ = (pgm < 128).astype(np.bool_)
+        # PGM ma (0,0) w lewym-górnym rogu obrazu.
+        # Dla zgodności z OccupancyGrid/map_server (origin w lewym-dolnym rogu)
+        # odwracamy oś Y przy wczytywaniu referencji.
+        occ = np.flipud(pgm < 128).astype(np.bool_)
         return occ
 
     def _ref_info_for_map_comparison(self) -> dict:
@@ -899,6 +1118,16 @@ class EvalNode(Node):
         if isinstance(world_origin, (list, tuple)) and len(world_origin) >= 3:
             info["origin"] = [float(world_origin[0]), float(world_origin[1]), float(world_origin[2])]
         return info
+
+    @staticmethod
+    def _compose_map_odom_with_local_pose(map_to_odom, px: float, py: float, pth: float):
+        tx, ty, tyaw = map_to_odom
+        c = math.cos(tyaw)
+        s = math.sin(tyaw)
+        wx = tx + c * px - s * py
+        wy = ty + s * px + c * py
+        wth = wrap(tyaw + pth)
+        return wx, wy, wth
 
     def on_gt(self, msg: PoseStamped):
         self.gt = msg
@@ -933,6 +1162,31 @@ class EvalNode(Node):
 
     def on_rywak_no_slam(self, msg: PoseStamped):
         self.pose_rywak_no_slam = msg
+
+    def on_tf(self, msg: TFMessage):
+        if msg is None:
+            return
+        try:
+            for tfm in msg.transforms:
+                parent = normalize_frame_id(tfm.header.frame_id).lower()
+                child = normalize_frame_id(tfm.child_frame_id).lower()
+                trans = tfm.transform.translation
+                rot = tfm.transform.rotation
+                tx = float(trans.x)
+                ty = float(trans.y)
+                tyaw = float(yaw_from_quat(rot))
+                if parent == self.slam_baseline_map_frame and child == self.slam_baseline_odom_frame:
+                    self._slam_baseline_map_to_odom = (tx, ty, tyaw)
+                    continue
+                if parent == self.slam_robak_map_frame and child == self.slam_robak_odom_frame:
+                    self._slam_robak_map_to_odom = (tx, ty, tyaw)
+                    continue
+                if parent == self.slam_rywak_map_frame and child == self.slam_rywak_odom_frame:
+                    self._slam_rywak_map_to_odom = (tx, ty, tyaw)
+        except Exception as exc:
+            if not hasattr(self, "_warned_tf_parse"):
+                self._warned_tf_parse = True
+                self.get_logger().warn(f"[Eval] TF parse warning: {exc}")
     def on_map(self, msg: OccupancyGrid):
         self.map_baseline = msg
         if self.map_baseline is not None and not hasattr(self, '_map_logged'):
@@ -970,12 +1224,35 @@ class EvalNode(Node):
         res = float(self.ref_info["resolution"])
         ox = float(self.ref_info["origin"][0])
         oy = float(self.ref_info["origin"][1])
+        oyaw = float(self.ref_info["origin"][2]) if len(self.ref_info["origin"]) >= 3 else 0.0
         h, w = self.ref_occ.shape
-        j = int((x - ox) / res)
-        i = int((y - oy) / res)
+        dx = float(x) - ox
+        dy = float(y) - oy
+        c = math.cos(oyaw)
+        s = math.sin(oyaw)
+        xr = c * dx + s * dy
+        yr = -s * dx + c * dy
+        j = int(xr / res)
+        i = int(yr / res)
         if 0 <= i < h and 0 <= j < w:
             return i, j
         return None
+
+    def _pose_for_points_stamping(self, pose_msg: PoseStamped) -> tuple[float, float, float]:
+        x, y, th = xytheta_from_pose(pose_msg)
+        frame = normalize_frame_id(getattr(pose_msg.header, "frame_id", "")).lower()
+        # GT bywa publikowane w world; mapy punktowe są budowane w lokalnym układzie
+        # (tym samym co trajektorie RMSE), więc rzutujemy world -> local.
+        if self.gt_world_frame_hint and frame_matches_hint(frame, self.gt_world_frame_hint):
+            x, y = inverse_pose_transform_xy(
+                x,
+                y,
+                self.spawn_x,
+                self.spawn_y,
+                self.spawn_yaw,
+            )
+            th = wrap(th - self.spawn_yaw)
+        return x, y, th
 
     def _apply_logodds_update(
         self,
@@ -1000,7 +1277,7 @@ class EvalNode(Node):
         if logodds_grid is None or known_grid is None or self.ref_info is None:
             return
 
-        x, y, th = xytheta_from_pose(pose_msg)
+        x, y, th = self._pose_for_points_stamping(pose_msg)
         t_scan = self._stamp_to_sec(scan_msg.header.stamp)
         state = self.points_stamp_state.get(state_key)
         curr_pose = (x, y, th)
@@ -1146,6 +1423,14 @@ class EvalNode(Node):
             )
 
         t = (now - self.t0).nanoseconds * 1e-9
+        
+        # Jeśli trasa się skończyła i zebrano minimalny czas danych (aby było co ewaluować)
+        if self._trajectory_done and len(self.ts) > 10:
+            self.get_logger().info(
+                f"[Eval] Trajectory completion signal detected at t={t:.1f}s - finishing evaluation"
+            )
+            self.finish()
+            return
         if self.gt is None or self.odom is None:
             if t >= self.duration_sec:
                 self.finish()
@@ -1197,6 +1482,21 @@ class EvalNode(Node):
         self.err_xy.append([ex, ey])
         self.err_th.append(eth)
 
+        if self._slam_baseline_map_to_odom is not None:
+            mt_x, mt_y, mt_yaw = self._slam_baseline_map_to_odom
+            c = math.cos(mt_yaw)
+            s = math.sin(mt_yaw)
+            sx = mt_x + c * ox - s * oy
+            sy = mt_y + s * ox + c * oy
+            sth = wrap(mt_yaw + oth)
+            self.slam_baseline_xy.append([sx, sy, sth])
+            exs = gx - sx
+            eys = gy - sy
+            eths = wrap(gth - sth)
+            self.err_xy_slam_baseline.append([exs, eys])
+            self.err_th_slam_baseline.append(eths)
+            self.ts_slam_baseline.append(float(t))
+
         if self.pose_ai is not None and self._is_time_synced(self.pose_ai, self.gt):
             ax, ay, ath = xytheta_from_pose(self.pose_ai)
             self.ai_xy.append([ax, ay, ath])
@@ -1235,6 +1535,20 @@ class EvalNode(Node):
             self.err_xy_robak.append([exr, eyr])
             self.err_th_robak.append(ethr)
             self.ts_robak.append(float(t))
+            if self._slam_robak_map_to_odom is not None:
+                rsx, rsy, rsth = self._compose_map_odom_with_local_pose(
+                    self._slam_robak_map_to_odom,
+                    rx,
+                    ry,
+                    rth,
+                )
+                self.robak_slam_xy.append([rsx, rsy, rsth])
+                exrs = gx - rsx
+                eyrs = gy - rsy
+                ethrs = wrap(gth - rsth)
+                self.err_xy_robak_slam.append([exrs, eyrs])
+                self.err_th_robak_slam.append(ethrs)
+                self.ts_robak_slam.append(float(t))
 
         if self.pose_rywak is not None and self._is_time_synced(self.pose_rywak, self.gt):
             rx, ry, rth = xytheta_from_pose(self.pose_rywak)
@@ -1245,6 +1559,20 @@ class EvalNode(Node):
             self.err_xy_rywak.append([exr, eyr])
             self.err_th_rywak.append(ethr)
             self.ts_rywak.append(float(t))
+            if self._slam_rywak_map_to_odom is not None:
+                rsx, rsy, rsth = self._compose_map_odom_with_local_pose(
+                    self._slam_rywak_map_to_odom,
+                    rx,
+                    ry,
+                    rth,
+                )
+                self.rywak_slam_xy.append([rsx, rsy, rsth])
+                exrs = gx - rsx
+                eyrs = gy - rsy
+                ethrs = wrap(gth - rsth)
+                self.err_xy_rywak_slam.append([exrs, eyrs])
+                self.err_th_rywak_slam.append(ethrs)
+                self.ts_rywak_slam.append(float(t))
 
         if self.pose_robak_no_slam is not None and self._is_time_synced(self.pose_robak_no_slam, self.gt):
             rx, ry, rth = xytheta_from_pose(self.pose_robak_no_slam)
@@ -1388,55 +1716,269 @@ class EvalNode(Node):
             rclpy.shutdown()
             return
 
-        gt = np.asarray(self.gt_xy, dtype=np.float32)
-        od = np.asarray(self.odom_xy, dtype=np.float32)
-        rmse_xy = None
-        rmse_th = None
-        _, _, baseline_n_samples = rmse_from_error_components(self.err_xy, self.err_th)
-        if baseline_n_samples > 0:
-            rmse_xy, rmse_th, _ = rmse_from_error_components(self.err_xy, self.err_th)
-
-        rmse_xy_ai, rmse_th_ai, _ = rmse_from_error_components(self.err_xy_ai, self.err_th_ai)
-        rmse_xy_sm, rmse_th_sm, _ = rmse_from_error_components(self.err_xy_sm, self.err_th_sm)
-        rmse_xy_bf, rmse_th_bf, _ = rmse_from_error_components(self.err_xy_bf, self.err_th_bf)
-        rmse_xy_robak, rmse_th_robak, _ = rmse_from_error_components(self.err_xy_robak, self.err_th_robak)
-        rmse_xy_rywak, rmse_th_rywak, _ = rmse_from_error_components(self.err_xy_rywak, self.err_th_rywak)
-        rmse_xy_robak_no_slam, rmse_th_robak_no_slam, _ = rmse_from_error_components(
+        n_eval_samples_raw = int(len(self.ts))
+        ts_eval, err_xy_eval, err_th_eval, gt_eval, od_eval = filter_timeline_with_warmup(
+            self.ts,
+            self.warmup_sec,
+            self.err_xy,
+            self.err_th,
+            self.gt_xy,
+            self.odom_xy,
+        )
+        (
+            ts_slam_baseline_eval,
+            err_xy_slam_baseline_eval,
+            err_th_slam_baseline_eval,
+            slam_baseline_xy_eval,
+        ) = filter_timeline_with_warmup(
+            self.ts_slam_baseline,
+            self.warmup_sec,
+            self.err_xy_slam_baseline,
+            self.err_th_slam_baseline,
+            self.slam_baseline_xy,
+        )
+        ts_ai_eval, err_xy_ai_eval, err_th_ai_eval, ai_xy_eval = filter_timeline_with_warmup(
+            self.ts_ai,
+            self.warmup_sec,
+            self.err_xy_ai,
+            self.err_th_ai,
+            self.ai_xy,
+        )
+        ts_sm_eval, err_xy_sm_eval, err_th_sm_eval, sm_xy_eval = filter_timeline_with_warmup(
+            self.ts_sm,
+            self.warmup_sec,
+            self.err_xy_sm,
+            self.err_th_sm,
+            self.sm_xy,
+        )
+        ts_bf_eval, err_xy_bf_eval, err_th_bf_eval, bf_xy_eval = filter_timeline_with_warmup(
+            self.ts_bf,
+            self.warmup_sec,
+            self.err_xy_bf,
+            self.err_th_bf,
+            self.bf_xy,
+        )
+        ts_robak_eval, err_xy_robak_eval, err_th_robak_eval, robak_xy_eval = filter_timeline_with_warmup(
+            self.ts_robak,
+            self.warmup_sec,
+            self.err_xy_robak,
+            self.err_th_robak,
+            self.robak_xy,
+        )
+        (
+            ts_robak_slam_eval,
+            err_xy_robak_slam_eval,
+            err_th_robak_slam_eval,
+            robak_slam_xy_eval,
+        ) = filter_timeline_with_warmup(
+            self.ts_robak_slam,
+            self.warmup_sec,
+            self.err_xy_robak_slam,
+            self.err_th_robak_slam,
+            self.robak_slam_xy,
+        )
+        ts_rywak_eval, err_xy_rywak_eval, err_th_rywak_eval, rywak_xy_eval = filter_timeline_with_warmup(
+            self.ts_rywak,
+            self.warmup_sec,
+            self.err_xy_rywak,
+            self.err_th_rywak,
+            self.rywak_xy,
+        )
+        (
+            ts_rywak_slam_eval,
+            err_xy_rywak_slam_eval,
+            err_th_rywak_slam_eval,
+            rywak_slam_xy_eval,
+        ) = filter_timeline_with_warmup(
+            self.ts_rywak_slam,
+            self.warmup_sec,
+            self.err_xy_rywak_slam,
+            self.err_th_rywak_slam,
+            self.rywak_slam_xy,
+        )
+        (
+            ts_robak_no_slam_eval,
+            err_xy_robak_no_slam_eval,
+            err_th_robak_no_slam_eval,
+            robak_no_slam_xy_eval,
+        ) = filter_timeline_with_warmup(
+            self.ts_robak_no_slam,
+            self.warmup_sec,
             self.err_xy_robak_no_slam,
             self.err_th_robak_no_slam,
+            self.robak_no_slam_xy,
         )
-        rmse_xy_rywak_no_slam, rmse_th_rywak_no_slam, _ = rmse_from_error_components(
+        (
+            ts_rywak_no_slam_eval,
+            err_xy_rywak_no_slam_eval,
+            err_th_rywak_no_slam_eval,
+            rywak_no_slam_xy_eval,
+        ) = filter_timeline_with_warmup(
+            self.ts_rywak_no_slam,
+            self.warmup_sec,
             self.err_xy_rywak_no_slam,
             self.err_th_rywak_no_slam,
+            self.rywak_no_slam_xy,
+        )
+        has_robak_slam_eval = len(ts_robak_slam_eval) > 0
+        has_rywak_slam_eval = len(ts_rywak_slam_eval) > 0
+        ts_robak_effective_eval = ts_robak_slam_eval if has_robak_slam_eval else ts_robak_eval
+        err_xy_robak_effective_eval = err_xy_robak_slam_eval if has_robak_slam_eval else err_xy_robak_eval
+        err_th_robak_effective_eval = err_th_robak_slam_eval if has_robak_slam_eval else err_th_robak_eval
+        robak_effective_xy_eval = robak_slam_xy_eval if has_robak_slam_eval else robak_xy_eval
+        ts_rywak_effective_eval = ts_rywak_slam_eval if has_rywak_slam_eval else ts_rywak_eval
+        err_xy_rywak_effective_eval = err_xy_rywak_slam_eval if has_rywak_slam_eval else err_xy_rywak_eval
+        err_th_rywak_effective_eval = err_th_rywak_slam_eval if has_rywak_slam_eval else err_th_rywak_eval
+        rywak_effective_xy_eval = rywak_slam_xy_eval if has_rywak_slam_eval else rywak_xy_eval
+
+        rmse_xy = None
+        rmse_th = None
+        _, _, baseline_n_samples = rmse_from_error_components(err_xy_eval, err_th_eval)
+        if baseline_n_samples > 0:
+            rmse_xy, rmse_th, _ = rmse_from_error_components(err_xy_eval, err_th_eval)
+        rmse_xy_slam_baseline, rmse_th_slam_baseline, _ = rmse_from_error_components(
+            err_xy_slam_baseline_eval,
+            err_th_slam_baseline_eval,
+        )
+
+        rmse_xy_ai, rmse_th_ai, _ = rmse_from_error_components(err_xy_ai_eval, err_th_ai_eval)
+        rmse_xy_sm, rmse_th_sm, _ = rmse_from_error_components(err_xy_sm_eval, err_th_sm_eval)
+        rmse_xy_bf, rmse_th_bf, _ = rmse_from_error_components(err_xy_bf_eval, err_th_bf_eval)
+        rmse_xy_robak_raw, rmse_th_robak_raw, _ = rmse_from_error_components(err_xy_robak_eval, err_th_robak_eval)
+        rmse_xy_rywak_raw, rmse_th_rywak_raw, _ = rmse_from_error_components(err_xy_rywak_eval, err_th_rywak_eval)
+        rmse_xy_robak_slam, rmse_th_robak_slam, _ = rmse_from_error_components(
+            err_xy_robak_slam_eval,
+            err_th_robak_slam_eval,
+        )
+        rmse_xy_rywak_slam, rmse_th_rywak_slam, _ = rmse_from_error_components(
+            err_xy_rywak_slam_eval,
+            err_th_rywak_slam_eval,
+        )
+        rmse_xy_robak, rmse_th_robak, _ = rmse_from_error_components(
+            err_xy_robak_effective_eval,
+            err_th_robak_effective_eval,
+        )
+        rmse_xy_rywak, rmse_th_rywak, _ = rmse_from_error_components(
+            err_xy_rywak_effective_eval,
+            err_th_rywak_effective_eval,
+        )
+        rmse_xy_robak_no_slam, rmse_th_robak_no_slam, _ = rmse_from_error_components(
+            err_xy_robak_no_slam_eval,
+            err_th_robak_no_slam_eval,
+        )
+        rmse_xy_rywak_no_slam, rmse_th_rywak_no_slam, _ = rmse_from_error_components(
+            err_xy_rywak_no_slam_eval,
+            err_th_rywak_no_slam_eval,
         )
 
         rmse_xy_base_on_ai_t, rmse_th_base_on_ai_t, n_common_ai = baseline_rmse_on_timeline(
-            self.ts, self.err_xy, self.err_th, self.ts_ai
+            ts_eval, err_xy_eval, err_th_eval, ts_ai_eval
         )
         rmse_xy_base_on_sm_t, rmse_th_base_on_sm_t, n_common_sm = baseline_rmse_on_timeline(
-            self.ts, self.err_xy, self.err_th, self.ts_sm
+            ts_eval, err_xy_eval, err_th_eval, ts_sm_eval
         )
         rmse_xy_base_on_bf_t, rmse_th_base_on_bf_t, n_common_bf = baseline_rmse_on_timeline(
-            self.ts, self.err_xy, self.err_th, self.ts_bf
+            ts_eval, err_xy_eval, err_th_eval, ts_bf_eval
         )
         rmse_xy_base_on_robak_t, rmse_th_base_on_robak_t, n_common_robak = baseline_rmse_on_timeline(
-            self.ts, self.err_xy, self.err_th, self.ts_robak
+            ts_eval, err_xy_eval, err_th_eval, ts_robak_effective_eval
         )
         rmse_xy_base_on_rywak_t, rmse_th_base_on_rywak_t, n_common_rywak = baseline_rmse_on_timeline(
-            self.ts, self.err_xy, self.err_th, self.ts_rywak
+            ts_eval, err_xy_eval, err_th_eval, ts_rywak_effective_eval
         )
         rmse_xy_base_on_robak_no_slam_t, rmse_th_base_on_robak_no_slam_t, n_common_robak_no_slam = baseline_rmse_on_timeline(
-            self.ts,
-            self.err_xy,
-            self.err_th,
-            self.ts_robak_no_slam,
+            ts_eval,
+            err_xy_eval,
+            err_th_eval,
+            ts_robak_no_slam_eval,
         )
         rmse_xy_base_on_rywak_no_slam_t, rmse_th_base_on_rywak_no_slam_t, n_common_rywak_no_slam = baseline_rmse_on_timeline(
-            self.ts,
-            self.err_xy,
-            self.err_th,
-            self.ts_rywak_no_slam,
+            ts_eval,
+            err_xy_eval,
+            err_th_eval,
+            ts_rywak_no_slam_eval,
         )
+        (
+            rmse_xy_odom_on_slam_baseline_t,
+            rmse_th_odom_on_slam_baseline_t,
+            n_common_slam_baseline,
+        ) = baseline_rmse_on_timeline(
+            ts_eval,
+            err_xy_eval,
+            err_th_eval,
+            ts_slam_baseline_eval,
+        )
+
+        ate_sim2_xy_odom_topic, n_ate_odom_topic, ate_diag_odom_topic = ate_sim2_xy(
+            od_eval[:, :2] if od_eval.size else od_eval,
+            gt_eval[:, :2] if gt_eval.size else gt_eval,
+        )
+        ate_sim2_xy_slam_baseline, n_ate_slam_baseline, ate_diag_slam_baseline = ate_sim2_on_timeline(
+            ts_eval,
+            gt_eval,
+            ts_slam_baseline_eval,
+            slam_baseline_xy_eval,
+        )
+        ate_sim2_xy_ai, n_ate_ai, ate_diag_ai = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_ai_eval, ai_xy_eval
+        )
+        ate_sim2_xy_scanmatch, n_ate_scanmatch, ate_diag_scanmatch = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_sm_eval, sm_xy_eval
+        )
+        ate_sim2_xy_bruteforce, n_ate_bruteforce, ate_diag_bruteforce = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_bf_eval, bf_xy_eval
+        )
+        ate_sim2_xy_robak, n_ate_robak, ate_diag_robak = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_robak_effective_eval, robak_effective_xy_eval
+        )
+        ate_sim2_xy_rywak, n_ate_rywak, ate_diag_rywak = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_rywak_effective_eval, rywak_effective_xy_eval
+        )
+        ate_sim2_xy_robak_raw, n_ate_robak_raw, ate_diag_robak_raw = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_robak_eval, robak_xy_eval
+        )
+        ate_sim2_xy_rywak_raw, n_ate_rywak_raw, ate_diag_rywak_raw = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_rywak_eval, rywak_xy_eval
+        )
+        ate_sim2_xy_robak_slam, n_ate_robak_slam, ate_diag_robak_slam = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_robak_slam_eval, robak_slam_xy_eval
+        )
+        ate_sim2_xy_rywak_slam, n_ate_rywak_slam, ate_diag_rywak_slam = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_rywak_slam_eval, rywak_slam_xy_eval
+        )
+        ate_sim2_xy_robak_no_slam, n_ate_robak_no_slam, ate_diag_robak_no_slam = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_robak_no_slam_eval, robak_no_slam_xy_eval
+        )
+        ate_sim2_xy_rywak_no_slam, n_ate_rywak_no_slam, ate_diag_rywak_no_slam = ate_sim2_on_timeline(
+            ts_eval, gt_eval, ts_rywak_no_slam_eval, rywak_no_slam_xy_eval
+        )
+
+        def _xy_diff_stats(a_xytheta, b_xytheta):
+            aa = np.asarray(a_xytheta, dtype=np.float32)
+            bb = np.asarray(b_xytheta, dtype=np.float32)
+            if aa.size == 0 or bb.size == 0:
+                return {
+                    "n_compared": 0,
+                    "mean_xy_diff_m": None,
+                    "max_xy_diff_m": None,
+                }
+            n = int(min(aa.shape[0], bb.shape[0]))
+            if n <= 0:
+                return {
+                    "n_compared": 0,
+                    "mean_xy_diff_m": None,
+                    "max_xy_diff_m": None,
+                }
+            diff = np.linalg.norm(aa[:n, :2] - bb[:n, :2], axis=1)
+            return {
+                "n_compared": int(n),
+                "mean_xy_diff_m": float(np.mean(diff)) if diff.size > 0 else None,
+                "max_xy_diff_m": float(np.max(diff)) if diff.size > 0 else None,
+            }
+
+        robak_vs_no_slam_diff = _xy_diff_stats(robak_effective_xy_eval, robak_no_slam_xy_eval)
+        rywak_vs_no_slam_diff = _xy_diff_stats(rywak_effective_xy_eval, rywak_no_slam_xy_eval)
+
         iou_map = None
         iou_map_ai = None
         iou_map_robak = None
@@ -1587,6 +2129,7 @@ class EvalNode(Node):
         err_hist_path = os.path.join(self.artifact_dir, "eval_error_histograms.png")
         maps_path = os.path.join(self.artifact_dir, "eval_maps.png")
         map_layers_path = os.path.join(self.artifact_dir, "eval_map_layers.npz")
+        maps_dir_path = os.path.join(self.artifact_dir, "eval_maps")
         traj_data_path = os.path.join(self.artifact_dir, "eval_trajectory_data.npz")
         results_path = os.path.join(self.artifact_dir, "results.json")
 
@@ -1598,6 +2141,7 @@ class EvalNode(Node):
         dataset_hist_artifacts = self._plot_dataset_histograms()
         self._save_map_layers(map_layers_path)
         self._plot_maps(maps_path)
+        map_layer_artifacts = self._plot_maps_directory(maps_dir_path)
 
         results = {
             "mode": self.mode,
@@ -1608,38 +2152,77 @@ class EvalNode(Node):
             "artifact_subdir": self.artifact_subdir,
             "metrics_legend": {
                 "rmse_xy_odom_topic": (
-                    f"Kanon: RMSE ||p_gt - p_odom|| w XY; p_odom z odom_topic={self.odom_topic!r}. "
-                    "Nie jest to pozycja z slam_toolbox; jakość mapy: iou_map_baseline."
+                    f"Kanon ODOM: RMSE ||p_gt - p_odom|| w XY; p_odom z odom_topic={self.odom_topic!r}."
                 ),
                 "rmse_xy_baseline": "Alias legace (wartość jak rmse_xy_odom_topic).",
                 "rmse_theta_odom_topic": (
-                    "Kanon: RMSE błędu yaw — GT vs odom_topic (ta sama referencja pozycji co RMSE XY odom)."
+                    "Kanon ODOM: RMSE błędu yaw — GT vs odom_topic."
                 ),
                 "rmse_theta_baseline": "Alias legace (wartość jak rmse_theta_odom_topic).",
+                "rmse_xy_slam_baseline": (
+                    "Kanon SLAM: RMSE ||p_gt - p_slam|| w XY; "
+                    "p_slam odtworzony z TF (map->odom) + /odom."
+                ),
+                "rmse_xy_classic_slam": (
+                    "Kanon SLAM: RMSE ||p_gt - p_slam|| w XY; "
+                    "p_slam odtworzony z TF (map->odom) + /odom."
+                ),
+                "rmse_theta_slam_baseline": (
+                    "Kanon SLAM: RMSE błędu yaw — GT vs trajektoria klasycznego SLAM baseline."
+                ),
+                "rmse_theta_classic_slam": (
+                    "Kanon SLAM: RMSE błędu yaw — GT vs trajektoria klasycznego SLAM."
+                ),
                 "rmse_xy_ai": f"RMSE GT vs pose from pose_topic_ai={self.pose_topic_ai!r}.",
-                "rmse_xy_robak": f"RMSE GT vs pose from pose_topic_robak={self.pose_topic_robak!r}.",
-                "rmse_xy_rywak": f"RMSE GT vs pose from pose_topic_rywak={self.pose_topic_rywak!r}.",
+                "rmse_xy_robak": (
+                    "RMSE toru Robak + SLAM (trajektoria złożona z TF map_robak->odom_robak + pose_robak); "
+                    "fallback do trajektorii modelu gdy brak TF map->odom."
+                ),
+                "rmse_xy_rywak": (
+                    "RMSE toru Rywak + SLAM (trajektoria złożona z TF map_rywak->odom_rywak + pose_rywak); "
+                    "fallback do trajektorii modelu gdy brak TF map->odom."
+                ),
+                "rmse_xy_robak_raw_model": (
+                    f"RMSE GT vs surowa trajektoria modelu Robak z pose_topic_robak={self.pose_topic_robak!r} "
+                    "(bez korekty map->odom)."
+                ),
+                "rmse_xy_rywak_raw_model": (
+                    f"RMSE GT vs surowa trajektoria modelu Rywak z pose_topic_rywak={self.pose_topic_rywak!r} "
+                    "(bez korekty map->odom)."
+                ),
+                "rmse_xy_robak_slam": "RMSE GT vs trajektoria Robak + SLAM (map_robak->odom_robak + pose_robak).",
+                "rmse_xy_rywak_slam": "RMSE GT vs trajektoria Rywak + SLAM (map_rywak->odom_rywak + pose_rywak).",
                 "rmse_xy_robak_no_slam": (
                     f"RMSE GT vs pose from pose_topic_robak_no_slam={self.pose_topic_robak_no_slam!r}."
                 ),
                 "rmse_xy_rywak_no_slam": (
                     f"RMSE GT vs pose from pose_topic_rywak_no_slam={self.pose_topic_rywak_no_slam!r}."
                 ),
-                "iou_map_baseline": "IoU vs reference occupancy for slam_toolbox /map.",
+                "iou_map_baseline": "IoU vs reference occupancy for klasyczny SLAM /map.",
+                "iou_map_slam_baseline": "Alias kanoniczny (wartość jak iou_map_baseline).",
+                "iou_map_classic_slam": "IoU vs reference occupancy dla klasycznego SLAM /map.",
                 "iou_map_odom_points": "IoU mapy punktowej budowanej z czystej odometrii.",
                 "iou_map_gt_points": "IoU mapy punktowej budowanej z trajektorii GT.",
                 "iou_map_robak_no_slam": "IoU mapy punktowej toru Robak bez SLAM.",
                 "iou_map_rywak_no_slam": "IoU mapy punktowej toru Rywak bez SLAM.",
-                "rmse_xy_odom_topic_on_ai_timeline": "Baseline RMSE XY liczony na wspólnej osi czasu z próbkami AI.",
-                "rmse_xy_odom_topic_on_scanmatch_timeline": "Baseline RMSE XY liczony na wspólnej osi czasu z próbkami ScanMatcher.",
-                "rmse_xy_odom_topic_on_bruteforce_timeline": "Baseline RMSE XY liczony na wspólnej osi czasu z próbkami Bruteforce.",
-                "rmse_xy_odom_topic_on_robak_timeline": "Baseline RMSE XY liczony na wspólnej osi czasu z próbkami Robak.",
-                "rmse_xy_odom_topic_on_rywak_timeline": "Baseline RMSE XY liczony na wspólnej osi czasu z próbkami Rywak.",
+                "rmse_xy_odom_topic_on_ai_timeline": "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami AI.",
+                "rmse_xy_odom_topic_on_scanmatch_timeline": "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami ScanMatcher.",
+                "rmse_xy_odom_topic_on_bruteforce_timeline": "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami Bruteforce.",
+                "rmse_xy_odom_topic_on_robak_timeline": "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami Robak.",
+                "rmse_xy_odom_topic_on_rywak_timeline": "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami Rywak.",
                 "rmse_xy_odom_topic_on_robak_no_slam_timeline": (
-                    "Baseline RMSE XY liczony na wspólnej osi czasu z próbkami Robak bez SLAM."
+                    "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami Robak bez SLAM."
                 ),
                 "rmse_xy_odom_topic_on_rywak_no_slam_timeline": (
-                    "Baseline RMSE XY liczony na wspólnej osi czasu z próbkami Rywak bez SLAM."
+                    "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami Rywak bez SLAM."
+                ),
+                "rmse_xy_odom_topic_on_slam_baseline_timeline": (
+                    "RMSE ODOM XY liczony na wspólnej osi czasu z próbkami klasycznego SLAM baseline."
+                ),
+                "warmup_sec": "Początkowe sekundy ewaluacji pomijane przy metrykach trajektorii (RMSE/ATE).",
+                "ate_sim2_xy_*": (
+                    "ATE XY po dopasowaniu Sim(2) (skala+rotacja+translacja) do GT "
+                    "na wspólnej osi czasu; mniej wrażliwe na offset startowy i drift globalnej ramy."
                 ),
                 "note_trajectory_alignment": (
                     "Global RMSE in a fixed frame compares integration conventions; "
@@ -1647,13 +2230,26 @@ class EvalNode(Node):
                 ),
             },
             "metrics": {
+                "warmup_sec": float(self.warmup_sec),
                 "rmse_xy_odom_topic": rmse_xy,
                 "rmse_theta_odom_topic": rmse_th,
                 "rmse_xy_baseline": rmse_xy,
                 "rmse_theta_baseline": rmse_th,
+                "rmse_xy_slam_baseline": rmse_xy_slam_baseline,
+                "rmse_theta_slam_baseline": rmse_th_slam_baseline,
+                "rmse_xy_classic_slam": rmse_xy_slam_baseline,
+                "rmse_theta_classic_slam": rmse_th_slam_baseline,
+                "ate_sim2_xy_odom_topic": ate_sim2_xy_odom_topic,
+                "n_ate_samples_odom_topic": int(n_ate_odom_topic),
+                "ate_sim2_xy_slam_baseline": ate_sim2_xy_slam_baseline,
+                "n_ate_samples_slam_baseline": int(n_ate_slam_baseline),
                 "iou_map_baseline": iou_map,
+                "iou_map_slam_baseline": iou_map,
+                "iou_map_classic_slam": iou_map,
                 "rmse_xy_ai": rmse_xy_ai,
                 "rmse_theta_ai": rmse_th_ai,
+                "ate_sim2_xy_ai": ate_sim2_xy_ai,
+                "n_ate_samples_ai": int(n_ate_ai),
                 "iou_map_ai": iou_map_ai,
                 "rmse_xy_odom_topic_on_ai_timeline": rmse_xy_base_on_ai_t,
                 "rmse_theta_odom_topic_on_ai_timeline": rmse_th_base_on_ai_t,
@@ -1662,45 +2258,97 @@ class EvalNode(Node):
                 "iou_map_rywak": iou_map_rywak,
                 "rmse_xy_scanmatch": rmse_xy_sm,
                 "rmse_theta_scanmatch": rmse_th_sm,
+                "ate_sim2_xy_scanmatch": ate_sim2_xy_scanmatch,
+                "n_ate_samples_scanmatch": int(n_ate_scanmatch),
                 "rmse_xy_odom_topic_on_scanmatch_timeline": rmse_xy_base_on_sm_t,
                 "rmse_theta_odom_topic_on_scanmatch_timeline": rmse_th_base_on_sm_t,
                 "n_common_samples_scanmatch": int(n_common_sm),
                 "rmse_xy_bruteforce": rmse_xy_bf,
                 "rmse_theta_bruteforce": rmse_th_bf,
+                "ate_sim2_xy_bruteforce": ate_sim2_xy_bruteforce,
+                "n_ate_samples_bruteforce": int(n_ate_bruteforce),
                 "rmse_xy_odom_topic_on_bruteforce_timeline": rmse_xy_base_on_bf_t,
                 "rmse_theta_odom_topic_on_bruteforce_timeline": rmse_th_base_on_bf_t,
                 "n_common_samples_bruteforce": int(n_common_bf),
                 "rmse_xy_robak": rmse_xy_robak,
                 "rmse_theta_robak": rmse_th_robak,
+                "ate_sim2_xy_robak": ate_sim2_xy_robak,
+                "n_ate_samples_robak": int(n_ate_robak),
+                "rmse_xy_robak_raw_model": rmse_xy_robak_raw,
+                "rmse_theta_robak_raw_model": rmse_th_robak_raw,
+                "ate_sim2_xy_robak_raw_model": ate_sim2_xy_robak_raw,
+                "n_ate_samples_robak_raw_model": int(n_ate_robak_raw),
+                "rmse_xy_robak_slam": rmse_xy_robak_slam,
+                "rmse_theta_robak_slam": rmse_th_robak_slam,
+                "ate_sim2_xy_robak_slam": ate_sim2_xy_robak_slam,
+                "n_ate_samples_robak_slam": int(n_ate_robak_slam),
                 "rmse_xy_odom_topic_on_robak_timeline": rmse_xy_base_on_robak_t,
                 "rmse_theta_odom_topic_on_robak_timeline": rmse_th_base_on_robak_t,
                 "n_common_samples_robak": int(n_common_robak),
                 "rmse_xy_rywak": rmse_xy_rywak,
                 "rmse_theta_rywak": rmse_th_rywak,
+                "ate_sim2_xy_rywak": ate_sim2_xy_rywak,
+                "n_ate_samples_rywak": int(n_ate_rywak),
+                "rmse_xy_rywak_raw_model": rmse_xy_rywak_raw,
+                "rmse_theta_rywak_raw_model": rmse_th_rywak_raw,
+                "ate_sim2_xy_rywak_raw_model": ate_sim2_xy_rywak_raw,
+                "n_ate_samples_rywak_raw_model": int(n_ate_rywak_raw),
+                "rmse_xy_rywak_slam": rmse_xy_rywak_slam,
+                "rmse_theta_rywak_slam": rmse_th_rywak_slam,
+                "ate_sim2_xy_rywak_slam": ate_sim2_xy_rywak_slam,
+                "n_ate_samples_rywak_slam": int(n_ate_rywak_slam),
                 "rmse_xy_odom_topic_on_rywak_timeline": rmse_xy_base_on_rywak_t,
                 "rmse_theta_odom_topic_on_rywak_timeline": rmse_th_base_on_rywak_t,
                 "n_common_samples_rywak": int(n_common_rywak),
                 "rmse_xy_robak_no_slam": rmse_xy_robak_no_slam,
                 "rmse_theta_robak_no_slam": rmse_th_robak_no_slam,
+                "ate_sim2_xy_robak_no_slam": ate_sim2_xy_robak_no_slam,
+                "n_ate_samples_robak_no_slam": int(n_ate_robak_no_slam),
                 "rmse_xy_odom_topic_on_robak_no_slam_timeline": rmse_xy_base_on_robak_no_slam_t,
                 "rmse_theta_odom_topic_on_robak_no_slam_timeline": rmse_th_base_on_robak_no_slam_t,
                 "n_common_samples_robak_no_slam": int(n_common_robak_no_slam),
                 "rmse_xy_rywak_no_slam": rmse_xy_rywak_no_slam,
                 "rmse_theta_rywak_no_slam": rmse_th_rywak_no_slam,
+                "ate_sim2_xy_rywak_no_slam": ate_sim2_xy_rywak_no_slam,
+                "n_ate_samples_rywak_no_slam": int(n_ate_rywak_no_slam),
                 "rmse_xy_odom_topic_on_rywak_no_slam_timeline": rmse_xy_base_on_rywak_no_slam_t,
                 "rmse_theta_odom_topic_on_rywak_no_slam_timeline": rmse_th_base_on_rywak_no_slam_t,
                 "n_common_samples_rywak_no_slam": int(n_common_rywak_no_slam),
+                "rmse_xy_odom_topic_on_slam_baseline_timeline": rmse_xy_odom_on_slam_baseline_t,
+                "rmse_theta_odom_topic_on_slam_baseline_timeline": rmse_th_odom_on_slam_baseline_t,
+                "n_common_samples_slam_baseline": int(n_common_slam_baseline),
                 "iou_map_odom_points": iou_map_odom_points,
                 "iou_map_gt_points": iou_map_gt_points,
                 "iou_map_robak_no_slam": iou_map_robak_no_slam,
                 "iou_map_rywak_no_slam": iou_map_rywak_no_slam,
-                "n_evaluation_samples": int(len(self.ts)),
+                "n_evaluation_samples": int(len(ts_eval)),
+                "n_evaluation_samples_raw": int(n_eval_samples_raw),
             },
             "diagnostics": {
+                "warmup": {
+                    "warmup_sec": float(self.warmup_sec),
+                    "n_evaluation_samples_after_warmup": int(len(ts_eval)),
+                    "n_evaluation_samples_raw": int(n_eval_samples_raw),
+                },
                 "gt_jump_filter": {
                     "enabled": bool(self.gt_jump_filter_enabled),
                     "max_step_m": float(self.gt_jump_filter_max_step_m),
                     "dropped_samples": int(self.gt_jump_filter_dropped),
+                },
+                "ate_sim2_alignment": {
+                    "odom_topic": ate_diag_odom_topic,
+                    "slam_baseline": ate_diag_slam_baseline,
+                    "ai": ate_diag_ai,
+                    "scanmatch": ate_diag_scanmatch,
+                    "bruteforce": ate_diag_bruteforce,
+                    "robak": ate_diag_robak,
+                    "robak_raw_model": ate_diag_robak_raw,
+                    "robak_slam": ate_diag_robak_slam,
+                    "rywak": ate_diag_rywak,
+                    "rywak_raw_model": ate_diag_rywak_raw,
+                    "rywak_slam": ate_diag_rywak_slam,
+                    "robak_no_slam": ate_diag_robak_no_slam,
+                    "rywak_no_slam": ate_diag_rywak_no_slam,
                 },
                 "point_map_filter": {
                     key: {
@@ -1714,7 +2362,11 @@ class EvalNode(Node):
                         ),
                     }
                     for key, state in self.points_stamp_state.items()
-                }
+                },
+                "track_similarity": {
+                    "robak_slam_vs_no_slam_xy": robak_vs_no_slam_diff,
+                    "rywak_slam_vs_no_slam_xy": rywak_vs_no_slam_diff,
+                },
             },
             "artifacts": {
                 "results_json": results_path,
@@ -1724,9 +2376,11 @@ class EvalNode(Node):
                 "errors_histogram_png": err_hist_path,
                 "maps_png": maps_path,
                 "map_layers_npz": map_layers_path,
+                "maps_dir": maps_dir_path,
                 "reference_map_yaml": self.ref_yaml,
                 "config_snapshot_yaml": self.config_snapshot_out,
-                "map_topic_baseline": "/map",
+                "map_topic_classic_slam": "/map",
+                "odom_topic": self.odom_topic,
                 "map_topic_ai": "/map_ai",
                 "map_topic_robak": "/map_robak",
                 "map_topic_rywak": "/map_rywak",
@@ -1746,6 +2400,153 @@ class EvalNode(Node):
         }
         results["artifacts"].update(err_hist_per_method_artifacts)
         results["artifacts"].update(dataset_hist_artifacts)
+        results["artifacts"].update(map_layer_artifacts)
+        results["comparison"] = {
+            "rmse_xy": {
+                "odometry": rmse_xy,
+                "classic_slam": rmse_xy_slam_baseline,
+                "robak_slam": rmse_xy_robak,
+                "robak_no_slam": rmse_xy_robak_no_slam,
+                "rywak_slam": rmse_xy_rywak,
+                "rywak_no_slam": rmse_xy_rywak_no_slam,
+                "ai": rmse_xy_ai,
+                "scanmatch": rmse_xy_sm,
+                "bruteforce": rmse_xy_bf,
+            },
+            "iou_map": {
+                "classic_slam": iou_map,
+                "robak_slam": iou_map_robak,
+                "robak_no_slam_points": iou_map_robak_no_slam,
+                "rywak_slam": iou_map_rywak,
+                "rywak_no_slam_points": iou_map_rywak_no_slam,
+                "odometry_points": iou_map_odom_points,
+                "gt_points": iou_map_gt_points,
+                "ai": iou_map_ai,
+            },
+            "ate_sim2_xy": {
+                "odometry": ate_sim2_xy_odom_topic,
+                "classic_slam": ate_sim2_xy_slam_baseline,
+                "robak_slam": ate_sim2_xy_robak,
+                "robak_no_slam": ate_sim2_xy_robak_no_slam,
+                "rywak_slam": ate_sim2_xy_rywak,
+                "rywak_no_slam": ate_sim2_xy_rywak_no_slam,
+                "ai": ate_sim2_xy_ai,
+                "scanmatch": ate_sim2_xy_scanmatch,
+                "bruteforce": ate_sim2_xy_bruteforce,
+            },
+            "n_samples": {
+                "evaluation_after_warmup": int(len(ts_eval)),
+                "evaluation_raw": int(n_eval_samples_raw),
+                "common_robak": int(n_common_robak),
+                "common_robak_no_slam": int(n_common_robak_no_slam),
+                "common_rywak": int(n_common_rywak),
+                "common_rywak_no_slam": int(n_common_rywak_no_slam),
+            },
+            "rows": [
+                {
+                    "tor": "tor1",
+                    "track": "odometry",
+                    "display_name": "tor1: odometria (/odom)",
+                    "rmse_xy": rmse_xy,
+                    "rmse_theta": rmse_th,
+                    "ate_sim2_xy": ate_sim2_xy_odom_topic,
+                    "iou_map": iou_map_odom_points,
+                },
+                {
+                    "tor": "classic_slam",
+                    "track": "classic_slam",
+                    "display_name": "klasyczny SLAM (/map)",
+                    "rmse_xy": rmse_xy_slam_baseline,
+                    "rmse_theta": rmse_th_slam_baseline,
+                    "ate_sim2_xy": ate_sim2_xy_slam_baseline,
+                    "iou_map": iou_map,
+                },
+                {
+                    "tor": "tor5",
+                    "track": "robak_slam",
+                    "display_name": "tor5: robak + SLAM",
+                    "rmse_xy": rmse_xy_robak,
+                    "rmse_theta": rmse_th_robak,
+                    "ate_sim2_xy": ate_sim2_xy_robak,
+                    "iou_map": iou_map_robak,
+                },
+                {
+                    "tor": "tor7",
+                    "track": "robak_no_slam",
+                    "display_name": "tor7: robak bez SLAM",
+                    "rmse_xy": rmse_xy_robak_no_slam,
+                    "rmse_theta": rmse_th_robak_no_slam,
+                    "ate_sim2_xy": ate_sim2_xy_robak_no_slam,
+                    "iou_map": iou_map_robak_no_slam,
+                },
+                {
+                    "tor": "tor6",
+                    "track": "rywak_slam",
+                    "display_name": "tor6: rywak + SLAM",
+                    "rmse_xy": rmse_xy_rywak,
+                    "rmse_theta": rmse_th_rywak,
+                    "ate_sim2_xy": ate_sim2_xy_rywak,
+                    "iou_map": iou_map_rywak,
+                },
+                {
+                    "tor": "tor8",
+                    "track": "rywak_no_slam",
+                    "display_name": "tor8: rywak bez SLAM",
+                    "rmse_xy": rmse_xy_rywak_no_slam,
+                    "rmse_theta": rmse_th_rywak_no_slam,
+                    "ate_sim2_xy": ate_sim2_xy_rywak_no_slam,
+                    "iou_map": iou_map_rywak_no_slam,
+                },
+            ],
+        }
+        def _to_float_or_none(value):
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        primary_rows = []
+        primary_track_alias = {
+            "odometry": "odometry",
+            "classic_slam": "classic_slam",
+            "robak_slam": "tor5_robak_slam",
+            "rywak_slam": "tor6_rywak_slam",
+            "robak_no_slam": "tor7_robak_no_slam",
+            "rywak_no_slam": "tor8_rywak_no_slam",
+        }
+        for row in list(results["comparison"]["rows"]):
+            row_copy = dict(row)
+            row_copy["rmse_xy"] = _to_float_or_none(row_copy.get("rmse_xy"))
+            row_copy["rmse_theta"] = _to_float_or_none(row_copy.get("rmse_theta"))
+            row_copy["ate_sim2_xy"] = _to_float_or_none(row_copy.get("ate_sim2_xy"))
+            row_copy["iou_map"] = _to_float_or_none(row_copy.get("iou_map"))
+            row_copy["primary_track"] = primary_track_alias.get(str(row_copy.get("track")), str(row_copy.get("track")))
+            primary_rows.append(row_copy)
+
+        primary_rmse_rows = [row for row in primary_rows if row.get("rmse_xy") is not None]
+        primary_iou_rows = [row for row in primary_rows if row.get("iou_map") is not None]
+        results["primary_metrics"] = {
+            "description": (
+                "Kluczowe metryki do szybkiego porównania torów: tor1 (odometria), "
+                "klasyczny SLAM, tor5/6 (Robak/Rywak + SLAM), tor7/8 (bez SLAM)."
+            ),
+            "track_order": [row["primary_track"] for row in primary_rows],
+            "rmse_xy_m": {row["primary_track"]: row.get("rmse_xy") for row in primary_rows},
+            "rmse_theta_rad": {row["primary_track"]: row.get("rmse_theta") for row in primary_rows},
+            "iou_map": {row["primary_track"]: row.get("iou_map") for row in primary_rows},
+            "ate_sim2_xy_m": {row["primary_track"]: row.get("ate_sim2_xy") for row in primary_rows},
+            "rows": primary_rows,
+            "ranking": {
+                "rmse_xy_best_to_worst": [
+                    row["primary_track"] for row in sorted(primary_rmse_rows, key=lambda item: float(item["rmse_xy"]))
+                ],
+                "iou_map_best_to_worst": [
+                    row["primary_track"] for row in sorted(primary_iou_rows, key=lambda item: float(item["iou_map"]), reverse=True)
+                ],
+            },
+        }
         # region agent log
         _debug_log(
             run_id="pre-fix",
@@ -1753,14 +2554,17 @@ class EvalNode(Node):
             location="eval_node.py:results_summary",
             message="trajectory tracks availability and baseline semantics",
             data={
-                "n_eval_samples": int(len(self.ts)),
+                "n_eval_samples_after_warmup": int(len(ts_eval)),
+                "n_eval_samples_raw": int(n_eval_samples_raw),
                 "n_common_scanmatch": int(n_common_sm),
                 "n_common_ai": int(n_common_ai),
+                "n_common_slam_baseline": int(n_common_slam_baseline),
                 "n_common_robak": int(n_common_robak),
                 "n_common_rywak": int(n_common_rywak),
                 "n_common_robak_no_slam": int(n_common_robak_no_slam),
                 "n_common_rywak_no_slam": int(n_common_rywak_no_slam),
                 "rmse_xy_odom_topic": rmse_xy,
+                "rmse_xy_slam_baseline": rmse_xy_slam_baseline,
                 "rmse_xy_scanmatch": rmse_xy_sm,
                 "rmse_xy_ai": rmse_xy_ai,
                 "rmse_xy_robak": rmse_xy_robak,
@@ -1778,6 +2582,7 @@ class EvalNode(Node):
             message="map quality and known/occupied coverage",
             data={
                 "iou_map_baseline": iou_map,
+                "iou_map_slam_baseline": iou_map,
                 "iou_map_ai": iou_map_ai,
                 "iou_map_robak": iou_map_robak,
                 "iou_map_rywak": iou_map_rywak,
@@ -1799,10 +2604,11 @@ class EvalNode(Node):
             run_id="pre-fix",
             hypothesis_id="H4",
             location="eval_node.py:trajectory_extents",
-            message="gt and baseline extents in eval frame",
+            message="gt, odometry and classic-slam extents in eval frame",
             data={
                 "gt_count": int(len(self.gt_xy)),
-                "baseline_count": int(len(self.odom_xy)),
+                "odom_count": int(len(self.odom_xy)),
+                "slam_baseline_count": int(len(self.slam_baseline_xy)),
                 "gt_x_min": float(min([p[0] for p in self.gt_xy])) if self.gt_xy else None,
                 "gt_x_max": float(max([p[0] for p in self.gt_xy])) if self.gt_xy else None,
                 "gt_y_min": float(min([p[1] for p in self.gt_xy])) if self.gt_xy else None,
@@ -1811,6 +2617,10 @@ class EvalNode(Node):
                 "odom_x_max": float(max([p[0] for p in self.odom_xy])) if self.odom_xy else None,
                 "odom_y_min": float(min([p[1] for p in self.odom_xy])) if self.odom_xy else None,
                 "odom_y_max": float(max([p[1] for p in self.odom_xy])) if self.odom_xy else None,
+                "slam_baseline_x_min": float(min([p[0] for p in self.slam_baseline_xy])) if self.slam_baseline_xy else None,
+                "slam_baseline_x_max": float(max([p[0] for p in self.slam_baseline_xy])) if self.slam_baseline_xy else None,
+                "slam_baseline_y_min": float(min([p[1] for p in self.slam_baseline_xy])) if self.slam_baseline_xy else None,
+                "slam_baseline_y_max": float(max([p[1] for p in self.slam_baseline_xy])) if self.slam_baseline_xy else None,
             },
         )
         # endregion
@@ -1823,14 +2633,21 @@ class EvalNode(Node):
             data={
                 "odom_topic": str(self.odom_topic),
                 "world_name": str(self.world_name),
-                "baseline": error_trend_summary(self.ts, self.err_xy),
-                "scanmatch": error_trend_summary(self.ts_sm, self.err_xy_sm),
-                "ai": error_trend_summary(self.ts_ai, self.err_xy_ai),
-                "robak": error_trend_summary(self.ts_robak, self.err_xy_robak),
-                "rywak": error_trend_summary(self.ts_rywak, self.err_xy_rywak),
-                "robak_no_slam": error_trend_summary(self.ts_robak_no_slam, self.err_xy_robak_no_slam),
-                "rywak_no_slam": error_trend_summary(self.ts_rywak_no_slam, self.err_xy_rywak_no_slam),
+                "warmup_sec": float(self.warmup_sec),
+                "odometry": error_trend_summary(ts_eval, err_xy_eval),
+                "slam_baseline": error_trend_summary(ts_slam_baseline_eval, err_xy_slam_baseline_eval),
+                "scanmatch": error_trend_summary(ts_sm_eval, err_xy_sm_eval),
+                "ai": error_trend_summary(ts_ai_eval, err_xy_ai_eval),
+                "robak": error_trend_summary(ts_robak_effective_eval, err_xy_robak_effective_eval),
+                "rywak": error_trend_summary(ts_rywak_effective_eval, err_xy_rywak_effective_eval),
+                "robak_raw_model": error_trend_summary(ts_robak_eval, err_xy_robak_eval),
+                "rywak_raw_model": error_trend_summary(ts_rywak_eval, err_xy_rywak_eval),
+                "robak_slam": error_trend_summary(ts_robak_slam_eval, err_xy_robak_slam_eval),
+                "rywak_slam": error_trend_summary(ts_rywak_slam_eval, err_xy_rywak_slam_eval),
+                "robak_no_slam": error_trend_summary(ts_robak_no_slam_eval, err_xy_robak_no_slam_eval),
+                "rywak_no_slam": error_trend_summary(ts_rywak_no_slam_eval, err_xy_rywak_no_slam_eval),
                 "common_samples": {
+                    "slam_baseline": int(n_common_slam_baseline),
                     "scanmatch": int(n_common_sm),
                     "ai": int(n_common_ai),
                     "robak": int(n_common_robak),
@@ -1858,7 +2675,7 @@ class EvalNode(Node):
                 iou_map_ai=iou_map_ai,
                 iou_map_robak=iou_map_robak,
                 iou_map_rywak=iou_map_rywak,
-                n_samples=len(self.ts),
+                n_samples=len(ts_eval),
                 artifacts=results["artifacts"]
             )
 
@@ -1912,9 +2729,16 @@ class EvalNode(Node):
             path,
             time_s=np.asarray(self.ts, dtype=np.float32),
             gt_xytheta=_as_xytheta_array(self.gt_xy),
+            odom_xytheta=_as_xytheta_array(self.odom_xy),
+            odom_err_xy=_as_err_xy_array(self.err_xy),
+            odom_err_theta=_as_err_theta_array(self.err_th),
             baseline_xytheta=_as_xytheta_array(self.odom_xy),
             baseline_err_xy=_as_err_xy_array(self.err_xy),
             baseline_err_theta=_as_err_theta_array(self.err_th),
+            slam_baseline_time_s=np.asarray(self.ts_slam_baseline, dtype=np.float32),
+            slam_baseline_xytheta=_as_xytheta_array(self.slam_baseline_xy),
+            slam_baseline_err_xy=_as_err_xy_array(self.err_xy_slam_baseline),
+            slam_baseline_err_theta=_as_err_theta_array(self.err_th_slam_baseline),
             ai_time_s=np.asarray(self.ts_ai, dtype=np.float32),
             ai_xytheta=_as_xytheta_array(self.ai_xy),
             ai_err_xy=_as_err_xy_array(self.err_xy_ai),
@@ -1931,10 +2755,18 @@ class EvalNode(Node):
             robak_xytheta=_as_xytheta_array(self.robak_xy),
             robak_err_xy=_as_err_xy_array(self.err_xy_robak),
             robak_err_theta=_as_err_theta_array(self.err_th_robak),
+            robak_slam_time_s=np.asarray(self.ts_robak_slam, dtype=np.float32),
+            robak_slam_xytheta=_as_xytheta_array(self.robak_slam_xy),
+            robak_slam_err_xy=_as_err_xy_array(self.err_xy_robak_slam),
+            robak_slam_err_theta=_as_err_theta_array(self.err_th_robak_slam),
             rywak_time_s=np.asarray(self.ts_rywak, dtype=np.float32),
             rywak_xytheta=_as_xytheta_array(self.rywak_xy),
             rywak_err_xy=_as_err_xy_array(self.err_xy_rywak),
             rywak_err_theta=_as_err_theta_array(self.err_th_rywak),
+            rywak_slam_time_s=np.asarray(self.ts_rywak_slam, dtype=np.float32),
+            rywak_slam_xytheta=_as_xytheta_array(self.rywak_slam_xy),
+            rywak_slam_err_xy=_as_err_xy_array(self.err_xy_rywak_slam),
+            rywak_slam_err_theta=_as_err_theta_array(self.err_th_rywak_slam),
             robak_no_slam_time_s=np.asarray(self.ts_robak_no_slam, dtype=np.float32),
             robak_no_slam_xytheta=_as_xytheta_array(self.robak_no_slam_xy),
             robak_no_slam_err_xy=_as_err_xy_array(self.err_xy_robak_no_slam),
@@ -2019,6 +2851,13 @@ class EvalNode(Node):
     def _plot_trajectories(self, path):
         gt = np.asarray(self.gt_xy, dtype=np.float32)
         od = np.asarray(self.odom_xy, dtype=np.float32)
+        slam_baseline = np.asarray(self.slam_baseline_xy, dtype=np.float32)
+        robak_raw = np.asarray(self.robak_xy, dtype=np.float32)
+        rywak_raw = np.asarray(self.rywak_xy, dtype=np.float32)
+        robak_slam = np.asarray(self.robak_slam_xy, dtype=np.float32)
+        rywak_slam = np.asarray(self.rywak_slam_xy, dtype=np.float32)
+        robak_main = robak_slam if len(robak_slam) > 0 else robak_raw
+        rywak_main = rywak_slam if len(rywak_slam) > 0 else rywak_raw
 
         ref_poly, _, _, _, _ = self._reference_bounds_polygon()
         ref_walls = self._reference_walls_world_points()
@@ -2026,22 +2865,25 @@ class EvalNode(Node):
         fig, (ax_focus, ax_full) = plt.subplots(1, 2, figsize=(14.5, 6.4))
         from matplotlib.patches import Polygon
         label_gt = "GT (trajektoria rzeczywista)"
-        label_baseline = "baseline (SLAM)"
-        label_robak = "robak"
-        label_rywak = "rywak"
-        label_robak_no_slam = "robak (no SLAM)"
-        label_rywak_no_slam = "rywak (no SLAM)"
+        label_odom = "odometria (/odom)"
+        label_slam_baseline = "klasyczny SLAM (/map->odom + /odom)"
+        label_robak = "robak + SLAM"
+        label_rywak = "rywak + SLAM"
+        label_robak_no_slam = "robak bez SLAM"
+        label_rywak_no_slam = "rywak bez SLAM"
         label_scanmatch = "scanmatch"
         label_bruteforce = "bruteforce"
 
         series = [
             (gt, "tab:blue", label_gt, 1.8, 1.0),
-            (od, "tab:orange", label_baseline, 1.0, 0.7),
+            (od, "tab:orange", label_odom, 1.0, 0.8),
         ]
-        if len(self.robak_xy) > 0:
-            series.append((np.asarray(self.robak_xy, dtype=np.float32), "tab:red", label_robak, 1.0, 0.85))
-        if len(self.rywak_xy) > 0:
-            series.append((np.asarray(self.rywak_xy, dtype=np.float32), "tab:purple", label_rywak, 1.0, 0.85))
+        if len(slam_baseline) > 0:
+            series.append((slam_baseline, "black", label_slam_baseline, 1.2, 0.8))
+        if len(robak_main) > 0:
+            series.append((robak_main, "tab:red", label_robak, 1.0, 0.85))
+        if len(rywak_main) > 0:
+            series.append((rywak_main, "tab:purple", label_rywak, 1.0, 0.85))
         if len(self.robak_no_slam_xy) > 0:
             series.append((np.asarray(self.robak_no_slam_xy, dtype=np.float32), "#ef4444", label_robak_no_slam, 1.0, 0.85))
         if len(self.rywak_no_slam_xy) > 0:
@@ -2079,7 +2921,24 @@ class EvalNode(Node):
         ):
             draw_reference(axis, label_bounds=(axis is ax_full))
             for arr, color, label, linewidth, alpha in series:
-                axis.plot(arr[:, 0], arr[:, 1], color=color, label=label if axis is ax_full else None, linewidth=linewidth, alpha=alpha)
+                linestyle = "-"
+                marker = None
+                markevery = None
+                if "bez SLAM" in label:
+                    linestyle = "--"
+                    marker = "."
+                    markevery = max(1, int(len(arr) / 90)) if len(arr) > 0 else None
+                axis.plot(
+                    arr[:, 0],
+                    arr[:, 1],
+                    color=color,
+                    label=label if axis is ax_full else None,
+                    linewidth=linewidth,
+                    alpha=alpha,
+                    linestyle=linestyle,
+                    marker=marker,
+                    markevery=markevery,
+                )
             axis.set_aspect("equal")
             axis.set_xlabel("x [m]")
             axis.set_ylabel("y [m]")
@@ -2101,7 +2960,7 @@ class EvalNode(Node):
             bbox_to_anchor=(1.02, 0.5),
             borderaxespad=0.0,
         )
-        fig.suptitle("Trajektorie (układ lokalny od spawnu)", fontsize=13)
+        fig.suptitle("Trajektorie: GT, odometria, klasyczny SLAM oraz tory Robak/Rywak (z i bez SLAM)", fontsize=13)
         fig.tight_layout(rect=[0.0, 0.0, 0.84, 0.96])
         fig.savefig(path, dpi=150)
         plt.close()
@@ -2122,10 +2981,32 @@ class EvalNode(Node):
 
         fig, (ax_pos, ax_theta) = plt.subplots(2, 1, figsize=(12, 7.2), sharex=True)
 
-        ax_pos.plot(t, np.sqrt(err[:, 0] ** 2 + err[:, 1] ** 2), label="baseline", linewidth=1.6)
-        ax_theta.plot(t, np.abs(eth), label="baseline", linewidth=1.6)
+        ax_pos.plot(t, np.sqrt(err[:, 0] ** 2 + err[:, 1] ** 2), label="odometria (/odom)", linewidth=1.6)
+        ax_theta.plot(t, np.abs(eth), label="odometria (/odom)", linewidth=1.6)
+        if len(self.ts_slam_baseline) > 0 and len(self.err_xy_slam_baseline) > 0:
+            ts_sb = np.asarray(self.ts_slam_baseline, dtype=np.float32)
+            err_sb = np.asarray(self.err_xy_slam_baseline, dtype=np.float32)
+            eth_sb = np.asarray(self.err_th_slam_baseline, dtype=np.float32)
+            n_sb = min(ts_sb.shape[0], err_sb.shape[0], eth_sb.shape[0])
+            if n_sb > 0:
+                ax_pos.plot(
+                    ts_sb[:n_sb],
+                    np.sqrt(err_sb[:n_sb, 0] ** 2 + err_sb[:n_sb, 1] ** 2),
+                    label="klasyczny SLAM (/map)",
+                    linewidth=1.4,
+                    alpha=0.85,
+                    color="black",
+                )
+                ax_theta.plot(
+                    ts_sb[:n_sb],
+                    np.abs(eth_sb[:n_sb]),
+                    label="klasyczny SLAM (/map)",
+                    linewidth=1.4,
+                    alpha=0.85,
+                    color="black",
+                )
 
-        def _plot_series(ts_list, err_xy_list, err_th_list, label_prefix, alpha=0.7):
+        def _plot_series(ts_list, err_xy_list, err_th_list, label_prefix, alpha=0.7, linestyle="-", marker=None):
             if len(ts_list) == 0 or len(err_xy_list) == 0:
                 return
             tt = np.asarray(ts_list, dtype=np.float32)
@@ -2134,24 +3015,52 @@ class EvalNode(Node):
             n = min(tt.shape[0], e_xy.shape[0], e_th.shape[0])
             if n <= 0:
                 return
-            ax_pos.plot(tt[:n], np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2), label=label_prefix, alpha=alpha)
-            ax_theta.plot(tt[:n], np.abs(e_th[:n]), label=label_prefix, alpha=alpha)
+            ax_pos.plot(
+                tt[:n],
+                np.sqrt(e_xy[:n, 0] ** 2 + e_xy[:n, 1] ** 2),
+                label=label_prefix,
+                alpha=alpha,
+                linestyle=linestyle,
+                marker=marker,
+                markevery=max(1, int(n / 90)) if marker else None,
+            )
+            ax_theta.plot(
+                tt[:n],
+                np.abs(e_th[:n]),
+                label=label_prefix,
+                alpha=alpha,
+                linestyle=linestyle,
+                marker=marker,
+                markevery=max(1, int(n / 90)) if marker else None,
+            )
 
         _plot_series(self.ts_sm, self.err_xy_sm, self.err_th_sm, "scanmatch")
         _plot_series(self.ts_bf, self.err_xy_bf, self.err_th_bf, "bruteforce")
-        _plot_series(self.ts_robak, self.err_xy_robak, self.err_th_robak, "robak")
-        _plot_series(self.ts_rywak, self.err_xy_rywak, self.err_th_rywak, "rywak")
+        if len(self.ts_robak_slam) > 0:
+            _plot_series(self.ts_robak_slam, self.err_xy_robak_slam, self.err_th_robak_slam, "robak + SLAM", alpha=0.8)
+        else:
+            _plot_series(self.ts_robak, self.err_xy_robak, self.err_th_robak, "robak + SLAM (fallback raw)", alpha=0.8)
+        if len(self.ts_rywak_slam) > 0:
+            _plot_series(self.ts_rywak_slam, self.err_xy_rywak_slam, self.err_th_rywak_slam, "rywak + SLAM", alpha=0.8)
+        else:
+            _plot_series(self.ts_rywak, self.err_xy_rywak, self.err_th_rywak, "rywak + SLAM (fallback raw)", alpha=0.8)
         _plot_series(
             self.ts_robak_no_slam,
             self.err_xy_robak_no_slam,
             self.err_th_robak_no_slam,
-            "robak_no_slam",
+            "robak bez SLAM",
+            alpha=0.9,
+            linestyle="--",
+            marker=".",
         )
         _plot_series(
             self.ts_rywak_no_slam,
             self.err_xy_rywak_no_slam,
             self.err_th_rywak_no_slam,
-            "rywak_no_slam",
+            "rywak bez SLAM",
+            alpha=0.9,
+            linestyle="--",
+            marker=".",
         )
 
         ax_pos.set_title("Błąd pozycji")
@@ -2169,14 +3078,33 @@ class EvalNode(Node):
         fig.savefig(path, dpi=150)
         plt.close(fig)
 
+    def _series_display_name(self, key: str) -> str:
+        names = {
+            "baseline": "odometria (/odom)",
+            "classic_slam": "klasyczny SLAM (/map)",
+            "ai": "AI",
+            "scanmatch": "scanmatch",
+            "bruteforce": "bruteforce",
+            "robak": "robak + SLAM",
+            "rywak": "rywak + SLAM",
+            "robak_no_slam": "robak bez SLAM",
+            "rywak_no_slam": "rywak bez SLAM",
+        }
+        return names.get(key, key)
+
     def _error_series_specs(self):
+        robak_err_xy = self.err_xy_robak_slam if len(self.err_xy_robak_slam) > 0 else self.err_xy_robak
+        robak_err_th = self.err_th_robak_slam if len(self.err_th_robak_slam) > 0 else self.err_th_robak
+        rywak_err_xy = self.err_xy_rywak_slam if len(self.err_xy_rywak_slam) > 0 else self.err_xy_rywak
+        rywak_err_th = self.err_th_rywak_slam if len(self.err_th_rywak_slam) > 0 else self.err_th_rywak
         return [
             ("baseline", self.err_xy, self.err_th, "#c2410c"),
+            ("classic_slam", self.err_xy_slam_baseline, self.err_th_slam_baseline, "#111827"),
             ("ai", self.err_xy_ai, self.err_th_ai, "#0f766e"),
             ("scanmatch", self.err_xy_sm, self.err_th_sm, "#2563eb"),
             ("bruteforce", self.err_xy_bf, self.err_th_bf, "#7c3aed"),
-            ("robak", self.err_xy_robak, self.err_th_robak, "#b91c1c"),
-            ("rywak", self.err_xy_rywak, self.err_th_rywak, "#4d7c0f"),
+            ("robak", robak_err_xy, robak_err_th, "#b91c1c"),
+            ("rywak", rywak_err_xy, rywak_err_th, "#4d7c0f"),
             ("robak_no_slam", self.err_xy_robak_no_slam, self.err_th_robak_no_slam, "#ef4444"),
             ("rywak_no_slam", self.err_xy_rywak_no_slam, self.err_th_rywak_no_slam, "#84cc16"),
         ]
@@ -2195,25 +3123,27 @@ class EvalNode(Node):
         if n <= 0:
             return False
 
+        display_name = self._series_display_name(label)
         fig, axes = plt.subplots(1, 3, figsize=(13.8, 4.6))
         bins = 40
         axes[0].hist(e_xy[:n, 0], bins=bins, color=color, alpha=0.85)
         axes[1].hist(e_xy[:n, 1], bins=bins, color=color, alpha=0.85)
         axes[2].hist(e_th[:n], bins=bins, color=color, alpha=0.85)
 
-        axes[0].set_title(f"{label}: ex")
+        axes[0].set_title(f"{display_name}: ex")
         axes[0].set_xlabel("ex [m]")
         axes[0].set_ylabel("Liczność")
-        axes[1].set_title(f"{label}: ey")
+        axes[1].set_title(f"{display_name}: ey")
         axes[1].set_xlabel("ey [m]")
         axes[1].set_ylabel("Liczność")
-        axes[2].set_title(f"{label}: eθ")
+        axes[2].set_title(f"{display_name}: eθ")
         axes[2].set_xlabel("eθ [rad]")
         axes[2].set_ylabel("Liczność")
         for ax in axes:
             ax.grid(True, alpha=0.25)
         tor_hint = {
-            "baseline": "Tor: odom (GT − /odom)",
+            "baseline": "Tor: odometria (GT − /odom)",
+            "classic_slam": "Tor: klasyczny SLAM (trajektoria z TF map->odom + /odom)",
             "ai": "Tor: AI SLAM",
             "scanmatch": "Tor: scan-matcher lokalny",
             "bruteforce": "Tor: scan-matcher bruteforce",
@@ -2223,7 +3153,7 @@ class EvalNode(Node):
             "rywak_no_slam": "Tor: Rywak bez SLAM",
         }.get(label, "")
         fig.suptitle(
-            f"Histogram błędu (ex, ey, eθ względem GT): {label}\n{tor_hint}",
+            f"Histogram błędu (ex, ey, eθ względem GT): {display_name}\n{tor_hint}",
             fontsize=11,
         )
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.92])
@@ -2259,9 +3189,10 @@ class EvalNode(Node):
             n = min(e_xy.shape[0], e_th.shape[0])
             if n <= 0:
                 continue
-            axes[0].hist(e_xy[:n, 0], bins=bins, histtype="step", linewidth=1.2, color=color, label=label)
-            axes[1].hist(e_xy[:n, 1], bins=bins, histtype="step", linewidth=1.2, color=color, label=label)
-            axes[2].hist(e_th[:n], bins=bins, histtype="step", linewidth=1.2, color=color, label=label)
+            display_name = self._series_display_name(label)
+            axes[0].hist(e_xy[:n, 0], bins=bins, histtype="step", linewidth=1.2, color=color, label=display_name)
+            axes[1].hist(e_xy[:n, 1], bins=bins, histtype="step", linewidth=1.2, color=color, label=display_name)
+            axes[2].hist(e_th[:n], bins=bins, histtype="step", linewidth=1.2, color=color, label=display_name)
 
         axes[0].set_title("Histogram błędu: ex")
         axes[0].set_xlabel("ex [m]")
@@ -2281,8 +3212,14 @@ class EvalNode(Node):
 
     def _plot_error_histograms_per_method(self):
         out = {}
+        label_out_map = {
+            "baseline": "odometry",
+            "robak": "robak_slam",
+            "rywak": "rywak_slam",
+        }
         for label, err_xy_list, err_th_list, color in self._error_series_specs():
-            path = os.path.join(self.artifact_dir, f"eval_error_histogram_{label}.png")
+            label_out = label_out_map.get(label, label)
+            path = os.path.join(self.artifact_dir, f"eval_error_histogram_{label_out}.png")
             ok = self._plot_error_histogram_for_series(
                 label=label,
                 err_xy_list=err_xy_list,
@@ -2291,7 +3228,7 @@ class EvalNode(Node):
                 path=path,
             )
             if ok:
-                out[f"errors_histogram_{label}_png"] = path
+                out[f"errors_histogram_{label_out}_png"] = path
         return out
 
     def _plot_hist_components(self, values, labels, title, path):
@@ -2424,43 +3361,88 @@ class EvalNode(Node):
 
         return out
 
+    @staticmethod
+    def _dilate_binary_for_display(data: np.ndarray, radius: int = 1) -> np.ndarray:
+        arr = np.asarray(data, dtype=np.float32)
+        if arr.size == 0:
+            return arr
+        out = (arr > 0.5).astype(np.float32)
+        if radius <= 0:
+            return out
+        for _ in range(radius):
+            padded = np.pad(out, ((1, 1), (1, 1)), mode="constant", constant_values=0.0)
+            out = np.maximum.reduce(
+                [
+                    padded[:-2, :-2],
+                    padded[:-2, 1:-1],
+                    padded[:-2, 2:],
+                    padded[1:-1, :-2],
+                    padded[1:-1, 1:-1],
+                    padded[1:-1, 2:],
+                    padded[2:, :-2],
+                    padded[2:, 1:-1],
+                    padded[2:, 2:],
+                ]
+            )
+        return out.astype(np.float32)
+
     def _collect_map_layers(self):
         if self.ref_occ is None:
             return []
 
-        ref_info_cmp = self._ref_info_for_map_comparison()
-        layers = [{"key": "ref", "title": "GT reference", "data": self.ref_occ.astype(np.float32)}]
+        # Uwaga: w artefaktach wizualnych chcemy spójny układ z trajektoriami/punktami
+        # (lokalny układ od spawnu). Metryki IoU dla /map nadal liczymy osobno na
+        # ref_info_for_map_comparison() w finish(), więc ta zmiana dotyczy wyłącznie
+        # rysowania eval_maps/eval_map_layers.
+        ref_info_cmp = dict(self.ref_info) if isinstance(self.ref_info, dict) else self._ref_info_for_map_comparison()
+        layers = [{"key": "ref", "title": "GT reference", "data": self.ref_occ.astype(np.float32), "kind": "map"}]
+        empty = np.zeros_like(self.ref_occ, dtype=np.float32)
 
-        def _append_occ(key, title, msg):
+        def _append_occ(key, title, msg, required: bool = False):
             if msg is None:
-                return
+                if required:
+                    layers.append({"key": key, "title": f"{title} (brak danych)", "data": empty, "kind": "missing"})
+                return False
             occ, _known = project_map_to_ref_grid(ref_info_cmp, self.ref_occ.shape, msg)
-            layers.append({"key": key, "title": title, "data": occ.astype(np.float32)})
+            layers.append({"key": key, "title": title, "data": occ.astype(np.float32), "kind": "map"})
+            return True
 
-        def _append_points(key, title):
-            occ, known, _prob = self._points_occ_known(key)
+        def _append_points(state_key, title, required: bool = False, out_key: str | None = None):
+            occ, known, _prob = self._points_occ_known(state_key)
             if occ is not None and known is not None and np.count_nonzero(known) > 0:
-                layers.append({"key": key, "title": title, "data": occ.astype(np.float32)})
+                layers.append(
+                    {
+                        "key": out_key or state_key,
+                        "title": title,
+                        "data": occ.astype(np.float32),
+                        "kind": "points",
+                    }
+                )
+                return True
+            if required:
+                layers.append(
+                    {
+                        "key": out_key or state_key,
+                        "title": f"{title} (brak punktów)",
+                        "data": empty,
+                        "kind": "missing",
+                    }
+                )
+            return False
 
-        _append_points("gt", "GT points")
-        _append_points("odom", "Odom points")
-        _append_occ("baseline_slam", "baseline_slam", self.map_baseline)
-        _append_occ("ai_slam", "ai_slam", self.map_ai)
+        _append_points("gt", "GT points", required=True)
+        _append_points("odom", "odometria points (/odom)", required=True)
+        _append_occ("classic_slam", "klasyczny_slam (/map)", self.map_baseline, required=True)
+        _append_occ("ai_slam", "ai_slam (/map_ai)", self.map_ai, required=False)
 
-        if getattr(self, "map_robak", None) is not None:
-            mr, _known = project_map_to_ref_grid(ref_info_cmp, self.ref_occ.shape, self.map_robak)
-            layers.append({"key": "robak_slam", "title": "robak_slam", "data": mr.astype(np.float32)})
-        else:
-            _append_points("robak", "robak_points_fallback")
+        if not _append_occ("robak_slam", "robak_slam (/map_robak)", self.map_robak, required=False):
+            _append_points("robak", "robak_slam (fallback points)", required=True, out_key="robak_slam")
 
-        if getattr(self, "map_rywak", None) is not None:
-            my, _known = project_map_to_ref_grid(ref_info_cmp, self.ref_occ.shape, self.map_rywak)
-            layers.append({"key": "rywak_slam", "title": "rywak_slam", "data": my.astype(np.float32)})
-        else:
-            _append_points("rywak", "rywak_points_fallback")
+        if not _append_occ("rywak_slam", "rywak_slam (/map_rywak)", self.map_rywak, required=False):
+            _append_points("rywak", "rywak_slam (fallback points)", required=True, out_key="rywak_slam")
 
-        _append_points("robak_no_slam", "robak_no_slam")
-        _append_points("rywak_no_slam", "rywak_no_slam")
+        _append_points("robak_no_slam", "robak_no_slam (points)", required=True)
+        _append_points("rywak_no_slam", "rywak_no_slam (points)", required=True)
 
         return layers
 
@@ -2476,6 +3458,90 @@ class EvalNode(Node):
             payload[str(item["key"])] = np.asarray(item["data"], dtype=np.float32)
         np.savez_compressed(path, **payload)
 
+    def _map_layer_palette(self):
+        return {
+            "ref": (0.08, 0.08, 0.08),
+            "gt": (0.22, 0.45, 0.95),
+            "odom": (0.95, 0.45, 0.10),
+            "classic_slam": (0.15, 0.15, 0.15),
+            "ai_slam": (0.10, 0.65, 0.70),
+            "robak_slam": (0.80, 0.10, 0.10),
+            "rywak_slam": (0.45, 0.65, 0.10),
+            "robak_no_slam": (0.95, 0.35, 0.35),
+            "rywak_no_slam": (0.70, 0.85, 0.20),
+        }
+
+    def _render_map_layer_rgb(self, item):
+        data_raw = np.asarray(item["data"], dtype=np.float32)
+        kind = str(item.get("kind", "map"))
+        key = str(item.get("key", "unknown"))
+
+        disp = data_raw
+        if kind == "points":
+            # Uwydatnij rzadkie punkty tylko do wizualizacji.
+            disp = self._dilate_binary_for_display(disp, radius=1)
+
+        if self.maps_rotate_180:
+            disp = np.rot90(disp, 2)
+        ref_bg = self.ref_occ.astype(np.float32)
+        if self.maps_rotate_180:
+            ref_bg = np.rot90(ref_bg, 2)
+
+        ref_occ = ref_bg > 0.5
+        layer_occ = disp > 0.5
+        overlap = ref_occ & layer_occ
+        only_ref = ref_occ & (~layer_occ)
+        only_layer = layer_occ & (~ref_occ)
+
+        h, w = disp.shape
+        rgb = np.full((h, w, 3), 0.97, dtype=np.float32)
+
+        if key == "ref":
+            rgb[ref_occ] = np.asarray(self._map_layer_palette()["ref"], dtype=np.float32)
+        elif kind == "missing":
+            rgb[ref_occ] = np.asarray((0.72, 0.72, 0.72), dtype=np.float32)
+        else:
+            base_ref = np.asarray((0.72, 0.72, 0.72), dtype=np.float32)
+            layer_color = np.asarray(self._map_layer_palette().get(key, (0.55, 0.35, 0.95)), dtype=np.float32)
+            rgb[only_ref] = base_ref
+            rgb[only_layer] = layer_color
+            rgb[overlap] = np.asarray((0.08, 0.72, 0.24), dtype=np.float32)
+
+        stats = {
+            "occ_cells": int(np.count_nonzero(data_raw > 0.5)),
+            "overlap_cells": int(np.count_nonzero(overlap)),
+            "only_ref_cells": int(np.count_nonzero(only_ref)),
+            "only_layer_cells": int(np.count_nonzero(only_layer)),
+        }
+        return rgb, stats
+
+    def _plot_maps_directory(self, out_dir: str):
+        layers = self._collect_map_layers()
+        if not layers:
+            return {}
+
+        os.makedirs(out_dir, exist_ok=True)
+        out = {}
+        for item in layers:
+            key = str(item["key"])
+            path = os.path.join(out_dir, f"eval_map_{key}.png")
+            rgb, stats = self._render_map_layer_rgb(item)
+
+            fig, ax = plt.subplots(1, 1, figsize=(7.0, 7.0))
+            ax.imshow(rgb, origin="lower", interpolation="nearest")
+            ax.set_title(
+                f"{str(item['title'])}\n"
+                f"occ={stats['occ_cells']} overlap={stats['overlap_cells']} "
+                f"only_layer={stats['only_layer_cells']}"
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            fig.tight_layout()
+            fig.savefig(path, dpi=160)
+            plt.close(fig)
+            out[f"map_layer_{key}_png"] = path
+        return out
+
     def _plot_maps(self, path):
         layers = self._collect_map_layers()
         if not layers:
@@ -2488,30 +3554,31 @@ class EvalNode(Node):
             return
 
         n_maps = len(layers)
-        if n_maps <= self.maps_max_cols:
-            nrows = 1
-            ncols = n_maps
-        else:
-            nrows = 2
-            ncols = int(math.ceil(n_maps / 2.0))
+        ncols = min(self.maps_max_cols, n_maps)
+        nrows = int(math.ceil(float(n_maps) / float(max(1, ncols))))
 
         fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 4.2 * nrows), squeeze=False)
         axes_flat = axes.ravel()
 
         for i, item in enumerate(layers):
             ax = axes_flat[i]
-            disp = np.asarray(item["data"], dtype=np.float32)
-            if self.maps_rotate_180:
-                disp = np.rot90(disp, 2)
-            ax.imshow(disp, origin="lower", cmap="gray", vmin=0, vmax=1, interpolation="nearest")
-            ax.set_title(str(item["title"]))
+            rgb, stats = self._render_map_layer_rgb(item)
+            ax.imshow(rgb, origin="lower", interpolation="nearest")
+            ax.set_title(
+                f"{str(item['title'])}\n"
+                f"occ={stats['occ_cells']} overlap={stats['overlap_cells']} "
+                f"only_layer={stats['only_layer_cells']}"
+            )
             ax.set_xticks([])
             ax.set_yticks([])
 
         for j in range(n_maps, len(axes_flat)):
             axes_flat[j].axis("off")
 
-        fig.suptitle("Porownanie map", fontsize=12)
+        fig.suptitle(
+            "Porownanie map (szary=ref, zielony=overlap, kolor=tylko warstwa toru)",
+            fontsize=12,
+        )
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
         fig.savefig(path, dpi=150)
         plt.close(fig)

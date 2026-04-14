@@ -26,20 +26,13 @@ def _deduplicate(
     x: np.ndarray,
     y: np.ndarray,
     p: np.ndarray | None,
-    *,
-    use_pose_key: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, int, str]:
     if x.shape[0] == 0:
-        return x, y, p, 0, "X+Y+P" if use_pose_key and p is not None else "X+Y"
+        return x, y, p, 0, "X+Y"
     flat_x = np.ascontiguousarray(x.reshape((x.shape[0], -1)))
     flat_y = np.ascontiguousarray(y.reshape((y.shape[0], -1)))
-    if use_pose_key and p is not None:
-        flat_p = np.ascontiguousarray(p.reshape((p.shape[0], -1)))
-        merged = np.concatenate([flat_x, flat_y, flat_p], axis=1)
-        dedup_key = "X+Y+P"
-    else:
-        merged = np.concatenate([flat_x, flat_y], axis=1)
-        dedup_key = "X+Y"
+    merged = np.concatenate([flat_x, flat_y], axis=1)
+    dedup_key = "X+Y"
     merged_view = np.ascontiguousarray(merged).view(
         np.dtype((np.void, merged.dtype.itemsize * merged.shape[1]))
     )
@@ -56,7 +49,6 @@ def _merge_group(
     feature_key: str,
     out_path: Path,
     deduplicate: bool,
-    dedup_use_pose_key: bool,
     group_name: str,
 ) -> dict:
     xs: list[np.ndarray] = []
@@ -76,18 +68,9 @@ def _merge_group(
     n_before = int(y_cat.shape[0]) if y_cat.ndim >= 1 else 0
     removed = 0
     dedup_key_used = "X+Y"
-    pose_key_requested = bool(dedup_use_pose_key)
     pose_key_available = p_cat is not None
-    pose_key_fallback_reason = ""
     if deduplicate and n_before > 0:
-        if pose_key_requested and not pose_key_available:
-            if pose_sources == 0:
-                pose_key_fallback_reason = "pose_key_not_present_in_sources"
-            else:
-                pose_key_fallback_reason = "pose_key_missing_in_some_sources"
-        x_cat, y_cat, p_cat, removed, dedup_key_used = _deduplicate(
-            x_cat, y_cat, p_cat, use_pose_key=pose_key_requested and pose_key_available
-        )
+        x_cat, y_cat, p_cat, removed, dedup_key_used = _deduplicate(x_cat, y_cat, p_cat)
     n_after = int(y_cat.shape[0]) if y_cat.ndim >= 1 else 0
 
     meta = {
@@ -98,13 +81,11 @@ def _merge_group(
         "n_after_dedup": np.int64(n_after),
         "deduplicate_enabled": np.int64(1 if deduplicate else 0),
         "dedup_key_used": np.asarray([dedup_key_used], dtype=object),
-        "dedup_use_pose_key_requested": np.int64(1 if pose_key_requested else 0),
+        "dedup_use_pose_key_requested": np.int64(0),
         "dedup_use_pose_key_available": np.int64(1 if pose_key_available else 0),
         "pose_key_sources_count": np.int64(pose_sources),
         "duplicates_removed": np.int64(removed),
     }
-    if pose_key_fallback_reason:
-        meta["dedup_pose_key_fallback_reason"] = np.asarray([pose_key_fallback_reason], dtype=object)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_payload: dict[str, object] = {feature_key: x_cat, "Y": y_cat, "meta": meta}
     if p_cat is not None:
@@ -120,8 +101,8 @@ def _merge_group(
         "n_before_dedup": n_before,
         "n_after_dedup": n_after,
         "dedup_key_used": dedup_key_used,
-        "dedup_use_pose_key_requested": pose_key_requested,
-        "dedup_pose_key_fallback_reason": pose_key_fallback_reason,
+        "dedup_use_pose_key_requested": False,
+        "dedup_pose_key_fallback_reason": "",
         "duplicates_removed": removed,
     }
 
@@ -178,7 +159,7 @@ def main() -> int:
     ap.add_argument(
         "--dedup-use-pose-key",
         action="store_true",
-        help="When deduplicating, use X+Y+P key if P (pose_prev/curr) exists in all input sources.",
+        help="DEPRECATED (ignored). Deduplication is always performed on X+Y only.",
     )
     ap.add_argument(
         "--summary-name",
@@ -198,7 +179,6 @@ def main() -> int:
             feature_key="X",
             out_path=out_dir / args.rywak_out_name,
             deduplicate=bool(args.deduplicate),
-            dedup_use_pose_key=bool(args.dedup_use_pose_key),
             group_name="rywak_component_merge",
         )
 
@@ -209,7 +189,6 @@ def main() -> int:
             feature_key="X_pairs",
             out_path=out_dir / args.robak_out_name,
             deduplicate=bool(args.deduplicate),
-            dedup_use_pose_key=bool(args.dedup_use_pose_key),
             group_name="robak_component_merge",
         )
 

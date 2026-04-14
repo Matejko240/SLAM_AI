@@ -56,13 +56,6 @@
         </visual>
       </link>
     </model>
-    <model name="clinic_floor_base_1">
-      <include>
-        <uri>model://clinic_floor_base</uri>
-        <static>true</static>
-        <pose>-0.001425 -0.014447 0 0 -0 0</pose>
-      </include>
-    </model>
     <!-- Ściany wewnętrzne z reference_map_hospital.pgm (1:1 z mapą eval / A*) -->
     <model name="clinic_interior_walls_1">
       <include>
