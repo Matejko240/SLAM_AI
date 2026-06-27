@@ -53,7 +53,7 @@ training:
   learning_rate: 0.001
   batch_size: 64
   validation_ratio: 0.2
-  skip_if_model_exists: true
+  skip_if_model_exists: false
 
 inference:
   model_wait_timeout: 0

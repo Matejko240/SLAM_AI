@@ -1,0 +1,11 @@
+extends: experiment_config.yaml
+
+experiment:
+  phase: test
+  robak_model_source_experiment_id: exp_robak_o1_dw5
+  rywak_model_source_experiment_id: exp_combined_robak_rywak
+
+test_scenarios:
+  - label: test_primary
+    world: world_hospital.sdf
+    reference_map_yaml: reference_map_hospital.yaml

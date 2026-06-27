@@ -1,0 +1,2 @@
+Przejazd mieszany praktycznie bez cofania
+pomiar wykonany z 3 punktami na robocie który został umieszczony na lidar, zderzak przod, zderzak tyl

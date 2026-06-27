@@ -8,8 +8,9 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import JointState, LaserScan
 from std_msgs.msg import Bool
 
 from .common import (
@@ -21,8 +22,10 @@ from .common import (
     scan_delta_rms,
     seed_all,
     uniform_histogram_sample_indices,
+    velocity_label_from_poses,
     wrap,
     xytheta_from_odom,
+    xytheta_from_pose_stamped,
 )
 from .experiment_logger import ExperimentLogger
 
@@ -97,6 +100,8 @@ class DatasetRecorderRywak(Node):
         self.declare_parameter("gt_topic", "/ground_truth_pose")
         self.declare_parameter("dataset_name", "dataset_rywak.npz")
         self.declare_parameter("write_experiment_metadata", False)
+        self.declare_parameter("label_source", "gt_local")
+        self.declare_parameter("label_fallback_to_odom", True)
         self.declare_parameter("sync_tolerance_sec", 0.08)
         self.declare_parameter("interpolate_odom", True)
         self.declare_parameter("interpolate_gt", True)
@@ -148,6 +153,8 @@ class DatasetRecorderRywak(Node):
         self.gt_topic = str(self.get_parameter("gt_topic").value)
         self.dataset_path = os.path.join(self.out_dir, str(self.get_parameter("dataset_name").value))
         self.write_experiment_metadata = bool(self.get_parameter("write_experiment_metadata").value)
+        self.label_source = str(self.get_parameter("label_source").value).strip().lower()
+        self.label_fallback_to_odom = bool(self.get_parameter("label_fallback_to_odom").value)
         self.sync_tolerance_sec = float(self.get_parameter("sync_tolerance_sec").value)
         self.interpolate_odom = bool(self.get_parameter("interpolate_odom").value)
         self.interpolate_gt = bool(self.get_parameter("interpolate_gt").value)
@@ -194,18 +201,27 @@ class DatasetRecorderRywak(Node):
 
         # (stamp_sec, x, y, theta, v_lin, w_ang)
         self.odom_buf = deque(maxlen=2000)
+        self.gt_buf = deque(maxlen=2000)
+        # (stamp_sec, vel_left, vel_right) — wheel angular velocities from /joint_states
+        self.js_buf = deque(maxlen=2000)
+        self.js_count = 0
+        self.js_miss_count = 0
         self.odom_count = 0
         self.odom_miss_count = 0
         self.odom_interp_count = 0
         self.odom_nearest_count = 0
+        self.gt_count = 0
+        self.gt_miss_count = 0
+        self.gt_interp_count = 0
+        self.gt_nearest_count = 0
         self.sample_accept_count = 0
         self.sample_filter_reject_count = 0
         self.trajectory_reject_count = 0
         self.trajectory_repeat_hits = 0
         self.trajectory_visited_cells = set()
-        self.theta_hist = deque(maxlen=3)
         self.prev_scan = None
         self.prev_pose = None
+        self.prev_gt_pose = None
         self.prev_scan_time_sec = None
 
         self.X = []
@@ -219,6 +235,8 @@ class DatasetRecorderRywak(Node):
         self.stop_reason = "duration_sec_reached_or_max_samples"
 
         self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 50)
+        self.sub_gt = self.create_subscription(PoseStamped, self.gt_topic, self.on_gt, 50)
+        self.sub_js = self.create_subscription(JointState, '/joint_states', self.on_joint_state, 50)
         self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
         self.sub_path_done = None
         if self.stop_on_planned_path_done:
@@ -268,6 +286,35 @@ class DatasetRecorderRywak(Node):
         v = float(msg.twist.twist.linear.x)
         w = float(msg.twist.twist.angular.z)
         self.odom_buf.append((t, float(x), float(y), float(th), v, w))
+
+    def on_gt(self, msg: PoseStamped):
+        self.gt_count += 1
+        t = _stamp_to_sec(msg.header.stamp)
+        x, y, th = xytheta_from_pose_stamped(msg)
+        self.gt_buf.append((t, float(x), float(y), float(th)))
+
+    def on_joint_state(self, msg: JointState):
+        self.js_count += 1
+        t = _stamp_to_sec(msg.header.stamp)
+        vel_left = 0.0
+        vel_right = 0.0
+        for i, name in enumerate(msg.name):
+            if name == 'left_wheel_joint' and i < len(msg.velocity):
+                vel_left = float(msg.velocity[i])
+            elif name == 'right_wheel_joint' and i < len(msg.velocity):
+                vel_right = float(msg.velocity[i])
+        self.js_buf.append((t, vel_left, vel_right))
+
+    def _js_at(self, t_scan: float):
+        """Find nearest joint state within sync tolerance."""
+        if not self.js_buf:
+            return None
+        while len(self.js_buf) > 2 and self.js_buf[1][0] < (t_scan - 1.0):
+            self.js_buf.popleft()
+        t_best, vl_best, vr_best = min(self.js_buf, key=lambda x: abs(x[0] - t_scan))
+        if abs(t_best - t_scan) > self.sync_tolerance_sec:
+            return None
+        return float(vl_best), float(vr_best)
 
     def _nearest_odom(self, t_scan: float):
         if not self.odom_buf:
@@ -333,6 +380,68 @@ class DatasetRecorderRywak(Node):
             self.odom_nearest_count += 1
         return nearest
 
+    def _nearest_gt(self, t_scan: float):
+        if not self.gt_buf:
+            return None
+
+        while len(self.gt_buf) > 2 and self.gt_buf[1][0] < (t_scan - 1.0):
+            self.gt_buf.popleft()
+
+        t_best, x_best, y_best, th_best = min(
+            self.gt_buf, key=lambda x: abs(x[0] - t_scan)
+        )
+        if abs(t_best - t_scan) > self.sync_tolerance_sec:
+            return None
+        return float(x_best), float(y_best), float(th_best)
+
+    def _interpolated_gt(self, t_scan: float):
+        if len(self.gt_buf) < 2:
+            return None
+
+        prev = None
+        for cur in self.gt_buf:
+            if cur[0] < t_scan:
+                prev = cur
+                continue
+
+            if prev is None:
+                return None
+
+            t0, x0, y0, th0 = prev
+            t1, x1, y1, th1 = cur
+            gap = float(t1 - t0)
+            if gap < 1e-6:
+                if abs(t_scan - t0) <= self.sync_tolerance_sec:
+                    return float(x0), float(y0), float(th0)
+                return None
+
+            if gap > self.sync_pair_gap_sec:
+                return None
+            if (t_scan - t0) > self.sync_tolerance_sec:
+                return None
+            if (t1 - t_scan) > self.sync_tolerance_sec:
+                return None
+
+            alpha = (t_scan - t0) / gap
+            x = float(x0 + alpha * (x1 - x0))
+            y = float(y0 + alpha * (y1 - y0))
+            th = _interp_angle(th0, th1, alpha)
+            return x, y, th
+
+        return None
+
+    def _gt_at(self, t_scan: float):
+        if self.interpolate_gt:
+            interp = self._interpolated_gt(t_scan)
+            if interp is not None:
+                self.gt_interp_count += 1
+                return interp
+
+        nearest = self._nearest_gt(t_scan)
+        if nearest is not None:
+            self.gt_nearest_count += 1
+        return nearest
+
     def wait_for_topics(self):
         if self.topics_ready:
             return
@@ -364,13 +473,21 @@ class DatasetRecorderRywak(Node):
             self.odom_miss_count += 1
             return
         x_odom, y_odom, th_odom, v_odom, w_odom = odom_match
+
+        js_match = self._js_at(t_scan)
+        if js_match is None:
+            self.js_miss_count += 1
+            return
+        vel_left, vel_right = js_match
+
         curr_pose = (float(x_odom), float(y_odom), float(th_odom))
+        gt_pose = self._gt_at(t_scan) if self.label_source != "odom" else None
 
         if self.prev_scan is None:
             self.prev_scan = scan
             self.prev_pose = curr_pose
+            self.prev_gt_pose = gt_pose
             self.prev_scan_time_sec = t_scan
-            self.theta_hist.append(float(th_odom))
             return
 
         scan_rms = scan_delta_rms(self.prev_scan, scan)
@@ -402,22 +519,36 @@ class DatasetRecorderRywak(Node):
         delta_scan = (scan - self.prev_scan).astype(np.float32)
         if self.delta_scan_clip > 0.0:
             delta_scan = np.clip(delta_scan, -self.delta_scan_clip, self.delta_scan_clip).astype(np.float32)
-        self.theta_hist.append(float(th_odom))
-        if len(self.theta_hist) < 3:
-            self.prev_scan = scan
-            self.prev_pose = curr_pose
-            self.prev_scan_time_sec = t_scan
-            return
 
-        d_theta1 = wrap(float(self.theta_hist[-1] - self.theta_hist[-2]))
-        d_theta2 = wrap(float(self.theta_hist[-2] - self.theta_hist[-3]))
-
-        # Legacy Rywak format (as in niemoje): [dtheta1, dtheta2, delta_scan(360)] => 362
+        # Rywak features: [delta_scan(360), encoder_left_vel, encoder_right_vel] = 362
+        # Raw wheel angular velocities from /joint_states — faithful to original thesis
         x = np.concatenate(
-            [np.asarray([d_theta1, d_theta2], dtype=np.float32), delta_scan],
+            [delta_scan, np.asarray([vel_left, vel_right], dtype=np.float32)],
             axis=0,
         ).astype(np.float32)
-        y = np.asarray([float(v_odom), float(w_odom)], dtype=np.float32)
+        v_label = float(v_odom)
+        w_label = float(w_odom)
+        if self.label_source != "odom":
+            dt_label = None if self.prev_scan_time_sec is None else max(0.0, float(t_scan - self.prev_scan_time_sec))
+            if self.prev_gt_pose is not None and gt_pose is not None and dt_label is not None and dt_label > 1e-6:
+                v_label, w_label = velocity_label_from_poses(
+                    self.prev_gt_pose,
+                    gt_pose,
+                    dt_label,
+                    frame="local",
+                )
+                if self.label_source == "residual":
+                    v_label -= float(v_odom)
+                    w_label -= float(w_odom)
+            else:
+                self.gt_miss_count += 1
+                if not self.label_fallback_to_odom:
+                    self.prev_scan = scan
+                    self.prev_pose = curr_pose
+                    self.prev_gt_pose = gt_pose
+                    self.prev_scan_time_sec = t_scan
+                    return
+        y = np.asarray([float(v_label), float(w_label)], dtype=np.float32)
         p = np.asarray(
             [
                 self.prev_pose[0],
@@ -436,6 +567,7 @@ class DatasetRecorderRywak(Node):
 
         self.prev_scan = scan
         self.prev_pose = curr_pose
+        self.prev_gt_pose = gt_pose
         self.prev_scan_time_sec = t_scan
         self.sample_accept_count += 1
 
@@ -476,7 +608,7 @@ class DatasetRecorderRywak(Node):
             rclpy.shutdown()
             return
 
-        X = np.stack(self.X).astype(np.float32)  # (N,362) => dtheta1,dtheta2,delta_scan
+        X = np.stack(self.X).astype(np.float32)  # (N,362) => delta_scan(360),encoder_left_vel,encoder_right_vel
         Y = np.stack(self.Y).astype(np.float32)  # (N,2) => v,w from odom
         P = np.stack(self.P).astype(np.float32)  # (N,6) = prev(x,y,th), curr(x,y,th)
         raw_count = int(Y.shape[0])
@@ -620,9 +752,9 @@ class DatasetRecorderRywak(Node):
             "n": np.int64(Y.shape[0]),
             "in_dim": np.int64(X.shape[1]),
             "out_dim": np.int64(2),
-            "label_mode": np.asarray(["odom_twist_vw"], dtype=object),
+            "label_mode": np.asarray([self.label_source], dtype=object),
             "stop_reason": np.asarray([self.stop_reason], dtype=object),
-            "feature_mode": np.asarray(["dtheta12_delta_scan"], dtype=object),
+            "feature_mode": np.asarray(["delta_scan_encoders"], dtype=object),
             "sync_tolerance_sec": np.float32(self.sync_tolerance_sec),
             "interpolate_odom": np.int64(1 if self.interpolate_odom else 0),
             "interpolate_gt": np.int64(1 if self.interpolate_gt else 0),
@@ -636,10 +768,9 @@ class DatasetRecorderRywak(Node):
             "odom_sync_miss_count": np.int64(self.odom_miss_count),
             "odom_sync_interp_count": np.int64(self.odom_interp_count),
             "odom_sync_nearest_count": np.int64(self.odom_nearest_count),
-            # Legacy aliases kept for backwards compatibility in old reports/scripts.
-            "gt_sync_miss_count": np.int64(self.odom_miss_count),
-            "gt_sync_interp_count": np.int64(self.odom_interp_count),
-            "gt_sync_nearest_count": np.int64(self.odom_nearest_count),
+            "gt_sync_miss_count": np.int64(self.gt_miss_count),
+            "gt_sync_interp_count": np.int64(self.gt_interp_count),
+            "gt_sync_nearest_count": np.int64(self.gt_nearest_count),
             "sample_accept_count": np.int64(self.sample_accept_count),
             "sample_filter_reject_count": np.int64(self.sample_filter_reject_count),
             "trajectory_mode": np.asarray([self.trajectory_mode], dtype=object),
@@ -753,6 +884,14 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        # Save collected data even when shutdown is triggered externally
+        # (e.g. motion watchdog abort, launch SIGTERM).
+        try:
+            if not node.is_finishing and len(node.Y) > 0:
+                node.stop_reason = "external_shutdown"
+                node.save_and_exit()
+        except Exception:
+            pass
         try:
             node.destroy_node()
         except Exception:

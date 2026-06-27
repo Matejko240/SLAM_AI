@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WS_DIR="${ROOT_DIR}/ai_slam_ws"
 OUT_DIR="${ROOT_DIR}/out"
-DEFAULT_CONFIG="${WS_DIR}/src/ai_slam_bringup/config/experiment_config_office_acyclic_dataset.yaml"
+DEFAULT_CONFIG="${WS_DIR}/src/ai_slam_bringup/config/experiment_config.yaml"
 
 CONFIG_PATH="${DEFAULT_CONFIG}"
 CONFIG_SEQUENCE_CSV=""
@@ -25,6 +25,8 @@ FOCUS_SEQUENCE_CSV=""
 APPEND_FROM_MERGE_EXP_ID=""
 RUN_MODE="all" # all | dataset_only | train_only
 TRAIN_ONLY_EXP_ID=""
+DELETE_INTERMEDIATE_DATASETS=false
+MIRROR_AUGMENT=false
 RYWAK_V_MIN=0.0
 RYWAK_V_MAX=1.2
 RYWAK_W_MIN=0.0
@@ -32,7 +34,7 @@ RYWAK_W_MAX=3.0
 ROBAK_T_MIN=0.0
 ROBAK_T_MAX=1.0
 ROBAK_R_MIN=0.0
-ROBAK_R_MAX=150.0
+ROBAK_R_MAX=180.0
 
 usage() {
   cat <<EOF
@@ -60,6 +62,13 @@ Options:
   --dataset-only              Tylko zbieranie datasetów + merge + strict rebalance (bez treningu).
   --train-only <exp_id>       Tylko trening na istniejącym out/<exp_id> (musi mieć dataset_robak.npz i dataset_rywak.npz).
   --skip-build                Pomiń colcon build
+  --delete-intermediate       Po udanym rebalansie usuwa pliki pośrednie:
+                              dataset_robak_merged.npz, dataset_rywak_merged.npz,
+                              oraz wszystkie _balanced.npz z eksperymentów datasetu.
+                              Oszczędza kilka GB dysku przy dużych merge'ach.
+  --mirror-augment            Włącza augmentację lustrzaną przed rebalansem (domyślnie: włączona).
+                              Podwaja unikalne próbki przez odbicie lustrzane skanów.
+  --no-mirror-augment         Wyłącza augmentację lustrzaną.
   -h, --help                  Pomoc
 
 Opis:
@@ -640,9 +649,7 @@ min_target_rywak = int(sys.argv[4])
 min_target_robak = int(sys.argv[5])
 prev_hist_dir = sys.argv[6].strip()
 
-if focus_override in {"linear", "translation"}:
-    # Translation focus jest obecnie niestabilny (częste watchdog/incomplete_artifacts),
-    # więc mapujemy go na bezpieczniejszy balanced.
+if focus_override == "linear":
     focus_override = "balanced"
 if focus_override == "slalom":
     # Slalom też ma niski yield; zastępujemy go serpentine.
@@ -655,7 +662,7 @@ if focus_override in valid:
     print(focus_override)
     raise SystemExit(0)
 
-cycle = ["balanced", "serpentine", "rotation"]
+cycle = ["balanced", "serpentine", "rotation", "translation"]
 
 if not prev_summary:
     print(cycle[(run_idx - 1) % len(cycle)])
@@ -707,16 +714,45 @@ def _weak_component_count(csv_path: Path) -> int | None:
 
 weak_lin = None
 weak_ang = None
+weak_lin_idx_fm = None
 if prev_hist_dir:
     hd = Path(prev_hist_dir)
     weak_lin = _weak_component_count(hd / "rywak_linear_bins.csv")
     weak_ang = _weak_component_count(hd / "rywak_angular_bins.csv")
+    # Dodatkowa detekcja INDEKSU najsłabszego liniowego koszyka,
+    # aby adaptacyjnie wybrać translation dla szybkich binów.
+    lin_csv = hd / "rywak_linear_bins.csv"
+    if lin_csv.is_file():
+        try:
+            with lin_csv.open("r", encoding="utf-8", newline="") as f:
+                rd2 = csv.DictReader(f)
+                cols2 = set(rd2.fieldnames or [])
+                key2 = "component_count" if "component_count" in cols2 else ("raw_count" if "raw_count" in cols2 else "")
+                if key2:
+                    vals2 = []
+                    for row2 in rd2:
+                        try:
+                            vals2.append(int(float(str(row2.get(key2, "")).strip())))
+                        except Exception:
+                            vals2.append(999999999)
+                    if vals2:
+                        weak_lin_idx_fm = int(min(range(len(vals2)), key=lambda i: vals2[i]))
+        except Exception:
+            pass
 
 # Jeśli target/bin nadal za niski, priorytet: Rywak (zgodnie z celem dobijania jego słabych koszyków).
 if ry_tgt > 0 and ry_tgt < min_target_rywak:
     if weak_lin is not None and weak_ang is not None:
         if weak_lin <= weak_ang:
-            print("balanced")
+            # Liniowy jest słabszy. Dla koszyków szybkości >= ~1.3 m/s (idx>=15)
+            # translation mode jest efektywniejszy niż balanced (v_max 2.3 vs 1.95).
+            if weak_lin_idx_fm is not None and weak_lin_idx_fm >= 15:
+                if run_idx % 3 != 0:
+                    print("translation")
+                else:
+                    print("balanced")
+            else:
+                print("balanced")
         else:
             print("serpentine")
     elif ry_row_min <= ry_col_min:
@@ -860,6 +896,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-build)
       SKIP_BUILD=true
+      shift
+      ;;
+    --delete-intermediate)
+      DELETE_INTERMEDIATE_DATASETS=true
+      shift
+      ;;
+    --mirror-augment)
+      MIRROR_AUGMENT=true
+      shift
+      ;;
+    --no-mirror-augment)
+      MIRROR_AUGMENT=false
       shift
       ;;
     -h|--help)
@@ -1021,7 +1069,7 @@ print(
 print(f"ROBAK_T_MIN={fv(rb, 'balance_translation_hist_min_m', 0.0):.12g}")
 print(f"ROBAK_T_MAX={fv(rb, 'balance_translation_hist_max_m', 1.0):.12g}")
 print(f"ROBAK_R_MIN={fv(rb, 'balance_rotation_hist_min_deg', 0.0):.12g}")
-print(f"ROBAK_R_MAX={fv(rb, 'balance_rotation_hist_max_deg', 150.0):.12g}")
+print(f"ROBAK_R_MAX={fv(rb, 'balance_rotation_hist_max_deg', 180.0):.12g}")
 PY
 )"
 
@@ -1305,7 +1353,8 @@ experiment["adaptive_dataset_seed"] = dataset_seed
 experiment["adaptive_focus_enabled"] = bool(adaptive_cfg)
 experiment["adaptive_path_enabled"] = bool(adaptive_path)
 experiment["adaptive_safe_mode_active"] = bool(run_safe_mode)
-# Wyłączamy tor AI-SLAM; zbieramy datasety tylko baseline/Robak/Rywak.
+# Wyłączamy baseline AI dataset oraz AI-SLAM; zbieramy tylko datasety Robaka i Rywaka.
+tracks["tor1_baseline"] = False
 tracks["tor2_ai_slam"] = False
 
 def _default_spec_for_world(world_name: str) -> str:
@@ -1498,7 +1547,7 @@ experiment["adaptive_velocity_explore_cap_vmax_mps"] = float(lin_explore_cap)
 experiment["adaptive_velocity_explore_cap_wmax_radps"] = float(ang_explore_cap)
 
 mode = focus_mode.strip().lower()
-if mode in {"linear", "translation"}:
+if mode == "linear":
     mode = "balanced"
 if mode == "slalom":
     mode = "serpentine"
@@ -1552,29 +1601,41 @@ if mode == "rotation":
         experiment["adaptive_rywak_weak_angular_bin_center_radps"] = float(weak_ang_center)
         experiment["adaptive_rywak_weak_angular_bin_count"] = int(weak_ang_count)
 elif mode == "translation":
+    # ──────────────────────────────────────────────────────────────────────
+    # TRANSLATION MODE — wysokie v_max, niski exc_v_max_scale.
+    #
+    # Reguła nadrzędna: v_max * exc_v_max_scale ≤ 2.2 m/s (rywak clip=2.0,
+    # headroom na inercję).  Bezpieczeństwo zapewnia duży lookahead (robot
+    # widzi zakręt 0.8-1.2m wcześniej) i alignment_cos_power ≥ 2.0
+    # (hamuje agresywnie na łukach).  Bazowa prędkość wysoka (1.70-2.00),
+    # żeby robot większość czasu jechał w górnych binach histogramu.
+    # ──────────────────────────────────────────────────────────────────────
     t_phase = (run_idx - 1) % 6
-    lin_targets = [1.85, 1.98, 2.12, 2.24, 2.05, 1.92]
-    period_targets = [1.45, 1.75, 2.05, 2.30, 1.60, 2.20]
-    vmin_targets = [0.03, 0.10, 0.18, 0.26, 0.06, 0.14]
-    vmax_targets = [1.45, 1.70, 1.95, 2.20, 1.55, 1.85]
+    #                    peak_eff:  1.87  1.98  2.10  2.20  1.93  2.04
+    lin_targets =         [1.70, 1.80, 1.90, 2.00, 1.75, 1.85]
+    period_targets =      [1.45, 1.75, 2.05, 2.30, 1.60, 2.20]
+    vmin_targets =        [0.55, 0.55, 0.55, 0.55, 0.55, 0.55]
+    vmax_targets =        [1.10, 1.10, 1.10, 1.10, 1.10, 1.10]
     heading_bias_targets = [1.0, 3.0, 0.0, 5.0, 2.0, 4.0]
     lin_target = float(lin_targets[t_phase])
-    pp["linear_vel_max"] = clamp(max(float(pp.get("linear_vel_max", lin_target)), lin_target), 1.8, 2.3)
+    pp["linear_vel_max"] = clamp(max(float(pp.get("linear_vel_max", lin_target)), lin_target), 1.65, 2.05)
     # Ogranicz ekstremalną rotację, która powoduje długie okresy v~0.
     pp["angular_vel_max"] = clamp(float(pp.get("angular_vel_max", 1.7)), 1.3, 2.0)
-    pp["lookahead_m"] = clamp(float(pp.get("lookahead_m", 0.46)), 0.38, 0.64)
-    pp["heading_gain"] = clamp(float(pp.get("heading_gain", 1.2)), 0.9, 1.6)
-    # W translation-focus unikamy turn-in-place: podnosimy progi histerezy.
-    pp["heading_stop_deg"] = clamp(float(pp.get("heading_stop_deg", 82.0)), 72.0, 89.0)
-    pp["heading_resume_deg"] = clamp(float(pp.get("heading_resume_deg", 60.0)), 48.0, 75.0)
-    pp["turn_in_place_max_duration_sec"] = 0.0
-    pp["turn_in_place_escape_v_ratio"] = 0.0
-    pp["turn_in_place_escape_v_min_mps"] = 0.0
-    pp["post_turn_forward_boost_sec"] = 0.0
-    pp["post_turn_forward_min_v_ratio"] = 0.0
-    pp["post_turn_forward_min_v_mps"] = 0.0
-    pp["alignment_cos_power"] = clamp(float(pp.get("alignment_cos_power", 1.1)), 1.0, 1.5)
-    # Zmieniamy profil excitation między rundami, żeby uzupełniać różne biny v.
+    pp["lookahead_m"] = clamp(float(pp.get("lookahead_m", 1.0)), 0.80, 1.20)
+    pp["heading_gain"] = clamp(float(pp.get("heading_gain", 1.4)), 1.1, 1.8)
+    # TIP: krótki (1.2s) + escape velocity → robot przejdzie zakręt bez długiego postoju.
+    pp["heading_stop_deg"] = clamp(float(pp.get("heading_stop_deg", 68.0)), 60.0, 72.0)
+    pp["heading_resume_deg"] = clamp(float(pp.get("heading_resume_deg", 45.0)), 35.0, 55.0)
+    pp["turn_in_place_max_duration_sec"] = 1.2
+    pp["turn_in_place_escape_v_ratio"] = 0.35
+    pp["turn_in_place_escape_v_min_mps"] = 0.6
+    pp["post_turn_forward_boost_sec"] = 0.8
+    pp["post_turn_forward_min_v_ratio"] = 0.30
+    pp["post_turn_forward_min_v_mps"] = 0.5
+    # Agresywne hamowanie na łukach: cos(45°)^2.2 ≈ 0.44 → robot zwalnia do <50% v na zakrętach.
+    pp["alignment_cos_power"] = clamp(float(pp.get("alignment_cos_power", 2.2)), 2.0, 2.8)
+    # Excitation: niski mnożnik — modulacja prędkości w wąskim zakresie [55%-110%] v_max.
+    # Robot spędza większość czasu blisko v_max, nie odjeżdża w kosmos.
     pp["excitation_period_sec"] = float(period_targets[t_phase])
     pp["excitation_v_min_scale"] = float(vmin_targets[t_phase])
     pp["excitation_v_max_scale"] = float(vmax_targets[t_phase])
@@ -1587,30 +1648,31 @@ elif mode == "translation":
     rywak["sample_filter_mode"] = "any"
     if weak_lin_norm is not None and weak_lin_count >= 0:
         if weak_lin_norm < 0.20:
-            lin_target = 1.28
-            pp["excitation_v_min_scale"] = 0.00
-            pp["excitation_v_max_scale"] = 0.60
+            lin_target = 1.40
+            pp["excitation_v_min_scale"] = 0.30
+            pp["excitation_v_max_scale"] = 0.75
             pp["excitation_period_sec"] = 1.35
-            pp["excitation_heading_bias_deg"] = 26.0
+            pp["excitation_heading_bias_deg"] = 20.0
         elif weak_lin_norm < 0.45:
-            lin_target = 1.58
-            pp["excitation_v_min_scale"] = 0.10
-            pp["excitation_v_max_scale"] = 1.00
+            lin_target = 1.65
+            pp["excitation_v_min_scale"] = 0.40
+            pp["excitation_v_max_scale"] = 0.95
             pp["excitation_period_sec"] = 1.60
-            pp["excitation_heading_bias_deg"] = 18.0
+            pp["excitation_heading_bias_deg"] = 14.0
         elif weak_lin_norm < 0.75:
-            lin_target = 1.95
-            pp["excitation_v_min_scale"] = 0.28
-            pp["excitation_v_max_scale"] = 1.45
+            lin_target = 1.85
+            pp["excitation_v_min_scale"] = 0.50
+            pp["excitation_v_max_scale"] = 1.08
             pp["excitation_period_sec"] = 1.85
-            pp["excitation_heading_bias_deg"] = 10.0
+            pp["excitation_heading_bias_deg"] = 8.0
         else:
-            lin_target = 2.28
-            pp["excitation_v_min_scale"] = 0.45
-            pp["excitation_v_max_scale"] = 2.10
+            # Najwyższe biny — peak eff = 2.00 * 1.10 = 2.20 m/s (pokrywa bin22-23).
+            lin_target = 2.00
+            pp["excitation_v_min_scale"] = 0.55
+            pp["excitation_v_max_scale"] = 1.10
             pp["excitation_period_sec"] = 2.10
             pp["excitation_heading_bias_deg"] = 2.0
-        pp["linear_vel_max"] = clamp(max(float(pp.get("linear_vel_max", lin_target)), lin_target), 1.2, 2.4)
+        pp["linear_vel_max"] = clamp(max(float(pp.get("linear_vel_max", lin_target)), lin_target), 1.35, 2.05)
         experiment["adaptive_rywak_weak_linear_bin_index"] = int(weak_lin_idx)
         experiment["adaptive_rywak_weak_linear_bin_center_mps"] = float(weak_lin_center)
         experiment["adaptive_rywak_weak_linear_bin_count"] = int(weak_lin_count)
@@ -1705,7 +1767,7 @@ base_lin_vmax = float(pp.get("linear_vel_max", rywak_v_interest_max))
 base_ang_vmax = float(pp.get("angular_vel_max", rywak_w_interest_max))
 lin_floor = rywak_v_interest_max
 ang_floor = rywak_w_interest_max
-if mode in {"balanced", "serpentine"}:
+if mode in {"balanced", "serpentine", "translation"}:
     lin_floor = rywak_v_interest_max * lin_explore_mult
 if mode in {"rotation", "serpentine", "balanced"}:
     ang_floor = rywak_w_interest_max * ang_explore_mult
@@ -1806,6 +1868,11 @@ PY
       SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
     fi
     SAFE_MODE_REASON="launch_rc_${launch_rc}"
+    # Persist run config for diagnostics even on failure
+    if [[ -f "${run_cfg}" ]]; then
+      mkdir -p "${OUT_DIR}/${dataset_exp_id}"
+      cp "${run_cfg}" "${OUT_DIR}/${dataset_exp_id}/run_config.yaml"
+    fi
     continue
   fi
 
@@ -1843,7 +1910,16 @@ PY
       SAFE_MODE_RUNS_LEFT="${SAFE_MODE_AFTER_BAD_RUNS}"
     fi
     SAFE_MODE_REASON="incomplete_artifacts"
+    # Persist run config for diagnostics even on incomplete artifacts
+    if [[ -f "${run_cfg}" && -d "${exp_dir}" ]]; then
+      cp "${run_cfg}" "${exp_dir}/run_config.yaml"
+    fi
     continue
+  fi
+
+  # Persist run config alongside experiment artifacts
+  if [[ -f "${run_cfg}" && -d "${exp_dir}" ]]; then
+    cp "${run_cfg}" "${exp_dir}/run_config.yaml"
   fi
 
   run_health_line="$(
@@ -1909,6 +1985,13 @@ PY
   fi
 
   rebalance_summary="${MERGE_DIR}/rebalance_unique_summary.json"
+
+  mirror_flag=""
+  if [[ "${MIRROR_AUGMENT}" == "true" ]]; then
+    mirror_flag="--mirror-augment"
+    log "Mirror augmentation enabled (inline in rebalance)"
+  fi
+
   log "Strict rebalance (equal+unique) -> ${rebalance_summary}"
   if python3 "${ROOT_DIR}/scripts/rebalance_unique_histograms.py" \
     --rywak-npz "${MERGE_DIR}/dataset_rywak_merged.npz" \
@@ -1926,7 +2009,8 @@ PY
     --robak-t-min "${ROBAK_T_MIN}" \
     --robak-t-max "${ROBAK_T_MAX}" \
     --robak-r-min "${ROBAK_R_MIN}" \
-    --robak-r-max "${ROBAK_R_MAX}"; then
+    --robak-r-max "${ROBAK_R_MAX}" \
+    ${mirror_flag}; then
     strict_ok=true
   else
     strict_ok=false
@@ -1974,6 +2058,32 @@ PY
 
   BINS_OK=true
   log "Target bins osiągnięty po rundzie ${run_idx}."
+
+  # Opcjonalne usunięcie plików pośrednich po udanym rebalansie.
+  if [[ "${DELETE_INTERMEDIATE_DATASETS}" == "true" ]]; then
+    log "DELETE_INTERMEDIATE_DATASETS=true: usuwam pliki pośrednie..."
+    # Pliki merged (przed rebalansem) - duże, nie potrzebne po rebalansie
+    for _f in \
+      "${MERGE_DIR}/dataset_robak_merged.npz" \
+      "${MERGE_DIR}/dataset_rywak_merged.npz"; do
+      if [[ -f "${_f}" ]]; then
+        rm -f "${_f}"
+        log "  Usunięto: ${_f}"
+      fi
+    done
+    # Pliki składowe _balanced.npz ze wszystkich rund datasetu
+    for _exp_id in "${dataset_experiment_ids[@]+"${dataset_experiment_ids[@]}"}"; do
+      _exp_dir="${OUT_DIR}/${_exp_id}"
+      if [[ -d "${_exp_dir}" ]]; then
+        while IFS= read -r -d '' _f; do
+          rm -f "${_f}"
+          log "  Usunięto składową: ${_f}"
+        done < <(find "${_exp_dir}" -maxdepth 1 -name "*_balanced.npz" -print0 2>/dev/null)
+      fi
+    done
+    log "Usuwanie plików pośrednich zakończone."
+  fi
+
   break
 done
 fi

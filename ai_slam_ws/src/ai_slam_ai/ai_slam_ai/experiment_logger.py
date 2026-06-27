@@ -237,7 +237,11 @@ class EvaluationMetadata:
                    rmse_xy_ai: Optional[float], rmse_theta_ai: Optional[float],
                    iou_map_baseline: Optional[float], iou_map_ai: Optional[float],
                    n_samples: int, iou_map_robak: Optional[float] = None,
-                   iou_map_rywak: Optional[float] = None):
+                   iou_map_rywak: Optional[float] = None,
+                   rmse_xy_odom_only: Optional[float] = None,
+                   rmse_xy_odom_only_no_slam: Optional[float] = None,
+                   iou_map_odom_only: Optional[float] = None,
+                   iou_map_odom_only_no_slam: Optional[float] = None):
         self.metrics = {
             "rmse_xy_odom_topic": rmse_xy_odom_topic,
             "rmse_theta_odom_topic": rmse_theta_odom_topic,
@@ -249,6 +253,11 @@ class EvaluationMetadata:
             "iou_map_ai": iou_map_ai,
             "iou_map_robak": iou_map_robak,
             "iou_map_rywak": iou_map_rywak,
+            # tor9: odometry-only custom SLAM track.
+            "rmse_xy_odom_only": rmse_xy_odom_only,
+            "rmse_xy_odom_only_no_slam": rmse_xy_odom_only_no_slam,
+            "iou_map_odom_only": iou_map_odom_only,
+            "iou_map_odom_only_no_slam": iou_map_odom_only_no_slam,
             "n_evaluation_samples": n_samples,
         }
         
@@ -663,7 +672,11 @@ class ExperimentLogger:
                        iou_map_baseline: Optional[float], iou_map_ai: Optional[float],
                        n_samples: int, artifacts: Dict[str, str],
                        iou_map_robak: Optional[float] = None,
-                       iou_map_rywak: Optional[float] = None):
+                       iou_map_rywak: Optional[float] = None,
+                       rmse_xy_odom_only: Optional[float] = None,
+                       rmse_xy_odom_only_no_slam: Optional[float] = None,
+                       iou_map_odom_only: Optional[float] = None,
+                       iou_map_odom_only_no_slam: Optional[float] = None):
         """Kończy logowanie ewaluacji."""
         self._mark_section_dirty("evaluation")
         self.log.evaluation.timing.end()
@@ -674,6 +687,10 @@ class ExperimentLogger:
             n_samples=n_samples,
             iou_map_robak=iou_map_robak,
             iou_map_rywak=iou_map_rywak,
+            rmse_xy_odom_only=rmse_xy_odom_only,
+            rmse_xy_odom_only_no_slam=rmse_xy_odom_only_no_slam,
+            iou_map_odom_only=iou_map_odom_only,
+            iou_map_odom_only_no_slam=iou_map_odom_only_no_slam,
         )
         self.log.evaluation.artifacts = artifacts
         self.log.add_note("Evaluation completed")
@@ -893,6 +910,31 @@ class ExperimentLogger:
                 lines.append(f"   RMSE XY (AI): {m.get('rmse_xy_ai'):.4f}m")
                 if m.get('rmse_xy_improvement_percent') is not None:
                     lines.append(f"   Improvement: {m.get('rmse_xy_improvement_percent'):+.1f}%")
+            # tor9: odometry-only custom SLAM track (and its no-SLAM control).
+            if m.get('rmse_xy_odom_only') is not None:
+                try:
+                    lines.append(
+                        f"   RMSE XY (tor9 odom-only + SLAM): "
+                        f"{float(m.get('rmse_xy_odom_only')):.4f}m"
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if m.get('rmse_xy_odom_only_no_slam') is not None:
+                try:
+                    lines.append(
+                        f"   RMSE XY (tor9 odom-only no SLAM): "
+                        f"{float(m.get('rmse_xy_odom_only_no_slam')):.4f}m"
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if m.get('iou_map_odom_only') is not None:
+                try:
+                    lines.append(
+                        f"   IoU map (tor9 odom-only + SLAM): "
+                        f"{float(m.get('iou_map_odom_only')):.4f}"
+                    )
+                except (TypeError, ValueError):
+                    pass
             lines.append("")
         
         # Total time
@@ -967,6 +1009,12 @@ class ExperimentLogger:
             "eval_iou_ai": eval_metrics.get("iou_map_ai"),
             "eval_iou_robak": eval_metrics.get("iou_map_robak"),
             "eval_iou_rywak": eval_metrics.get("iou_map_rywak"),
+            # tor9: odometry-only custom SLAM track headline metrics for thesis
+            # cross-experiment summary CSV.
+            "eval_rmse_xy_odom_only": eval_metrics.get("rmse_xy_odom_only"),
+            "eval_rmse_xy_odom_only_no_slam": eval_metrics.get("rmse_xy_odom_only_no_slam"),
+            "eval_iou_odom_only": eval_metrics.get("iou_map_odom_only"),
+            "eval_iou_odom_only_no_slam": eval_metrics.get("iou_map_odom_only_no_slam"),
             "eval_xy_improvement_pct": eval_metrics.get("rmse_xy_improvement_percent"),
             "eval_theta_improvement_pct": eval_metrics.get("rmse_theta_improvement_percent"),
             "eval_n_samples": eval_metrics.get("n_evaluation_samples"),

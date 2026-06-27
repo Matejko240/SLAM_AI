@@ -1,0 +1,43 @@
+extends: thesis_strict_no_anchor.yaml
+experiment:
+  phase: test
+  notes_for_thesis: JetRacer online strict no-anchor pipeline.
+simulation:
+  train_world: world_hospital.sdf
+  test_world: world_hospital.sdf
+tracks:
+  tor1_baseline: false
+  tor2_ai_slam: false
+  tor3_local: false
+  tor4_bruteforce: false
+  tor5_robak: true
+  tor6_rywak: true
+  tor7_robak_no_slam: true
+  tor8_rywak_no_slam: true
+inference:
+  scan_topic: /scan_jetracer_ai
+  odom_topic: /odom
+  output_pose_topic: /pose_ai_jetracer
+  output_odom_topic: /odom_ai_jetracer
+  tf_parent_frame: odom_ai_jetracer
+  tf_child_frame: base_link_ai_jetracer
+robak:
+  infer_odom_topic: /odom
+  pose_topic: /pose_robak_jetracer
+  pose_topic_no_slam: /pose_robak_no_slam_jetracer
+  tf_parent_no_slam: odom_robak_no_slam_jetracer
+  tf_child_no_slam: base_link_robak_no_slam_jetracer
+rywak:
+  infer_odom_topic: /odom
+  infer_init_from_odom_topic: /odom
+  pose_topic: /pose_rywak_jetracer
+  pose_topic_no_slam: /pose_rywak_no_slam_jetracer
+  tf_parent_no_slam: odom_rywak_no_slam_jetracer
+  tf_child_no_slam: base_link_rywak_no_slam_jetracer
+  relay_scan_topic: /scan_jetracer_ai
+evaluation:
+  warmup_sec: 2.0
+jetracer_scan:
+  scan_reverse: true
+  # 0° = bezpieczniejszy default; optymalne przesunięcie zależy od montażu i nagrania (offline: notes w out/jetracer_validation).
+  scan_shift_deg: 0.0

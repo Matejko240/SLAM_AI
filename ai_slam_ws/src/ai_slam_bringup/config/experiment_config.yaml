@@ -27,7 +27,7 @@ simulation:
       z: 0.1
       yaw: 0
 tracks:
-  tor1_baseline: true
+  tor1_baseline: false
   tor2_ai_slam: false
   tor3_local: false
   tor4_bruteforce: false
@@ -35,6 +35,11 @@ tracks:
   tor6_rywak: true
   tor7_robak_no_slam: true
   tor8_rywak_no_slam: true
+  # tor9: custom SLAM driven only by odometry (no model, no scan-match overlay).
+  # Reuses the model-track pipeline (relayed scan + dedicated slam_toolbox + own
+  # TF/map). Used to quantify the improvement that the model-based tracks bring
+  # over a SLAM pipeline whose only motion source is odometry.
+  tor9_odom_only: false
 scan_matcher:
   tor3:
     method: localmap
@@ -81,20 +86,21 @@ robak:
   balance_rotation_hist_max_deg: 180.0
   balance_target_quantile: 0.35
   balance_target_min_per_bin: 8
-  balance_upsample_sparse_bins: true
+  balance_upsample_sparse_bins: false
   save_balanced_component_datasets: true
   balanced_translation_dataset_name: dataset_robak_translation_balanced.npz
   balanced_rotation_dataset_name: dataset_robak_rotation_balanced.npz
   sync_tolerance_sec: 0.08
   sync_pair_gap_sec: 0.2
   interpolate_gt: true
-  label_frame: world
-  augment_noise_std_scale: 0.01
-  augment_cut_fraction: 0.15
+  label_frame: local
+  target_mode: se2_local
+  augment_noise_std_scale: 0.0
+  augment_cut_fraction: 0.0
   augment_cut_max_points: 20
-  infer_max_step_trans: 0.055
-  infer_max_step_yaw: 0.25
-  infer_delta_ema_alpha: 0.7
+  infer_scan_offset: 1
+  infer_max_step_trans: 0.08
+  infer_max_step_yaw: 0.15
   infer_odom_heading_alpha: 0.0
   infer_odom_heading_gain: 0.0
   infer_odom_sync_tolerance_sec: 0.08
@@ -117,7 +123,47 @@ robak:
   use_odom_corrections: false
   odom_fallback_before_model_ready: true
   force_odom_pose: false
+  relay_only_on_inference_step: true
+  relay_min_scan_confidence: 0.0
+  dth_deadzone: 0.015
+  dx_bias_correction: -0.026
+  dy_bias_correction: 0.0
+  dth_bias_correction: -0.0001
   split_strategy: tail_holdout_no_shuffle
+  normalization: zscore
+  weight_decay: 0.0001
+  loss_type: mse
+  huber_delta: 1.0
+  lr_schedule: none
+  loss_dx_weight: 1.0
+  loss_dy_weight: 1.0
+  loss_dtheta_weight: 1.0
+  input_noise_std: 0.01
+  clip_grad_norm: 1.0
+  train_repeat_factor: 1
+  train_cutout_enabled: false
+  train_cutout_prob: 0.0
+  train_cutout_min_len: 20
+  train_cutout_max_len: 80
+  train_cutout_fill_value: 0.0
+  train_filter_scan_offset: 5
+  train_filter_max_step_trans: 1.0
+  train_filter_max_step_yaw: 2.0
+  selection_metric: val_loss
+  selection_min_delta: 1.0e-5
+  val_rollout_horizons:
+  - 2
+  - 3
+  - 4
+  rollout_eval_scan_offset: 0
+  rollout_eval_position_tol_m: 0.001
+  rollout_eval_yaw_tol_rad: 0.001
+  train_rollout_weight: 0.0
+  train_rollout_horizon: 0
+  train_rollout_windows_per_epoch: 0
+  train_rollout_batch_size: 64
+  train_rollout_xy_weight: 1.0
+  train_rollout_yaw_weight: 0.25
   torch_deterministic: true
   relay_scan_topic: /scan_slam_robak_relay
   pose_topic_no_slam: /pose_robak_no_slam
@@ -146,6 +192,10 @@ robak_no_slam:
   use_odom_corrections: false
   odom_fallback_before_model_ready: true
   force_odom_pose: false
+  dth_deadzone: 0.015
+  dx_bias_correction: -0.026
+  dy_bias_correction: 0.0
+  dth_bias_correction: -0.0001
 rywak:
   odom_label_topic: /odom_raw
   gt_topic: /ground_truth_pose
@@ -171,46 +221,53 @@ rywak:
   balance_angular_hist_max_radps: 3.0
   balance_target_quantile: 0.35
   balance_target_min_per_bin: 8
-  balance_upsample_sparse_bins: true
+  balance_upsample_sparse_bins: false
   save_balanced_component_datasets: true
   balanced_linear_dataset_name: dataset_rywak_linear_balanced.npz
   balanced_angular_dataset_name: dataset_rywak_angular_balanced.npz
   trajectory_mode: any
   trajectory_cell_size_m: 0.2
   cycle_min_repeat_hits: 1
-  hidden_dims:
-  - 192
-  - 96
-  - 48
-  dropout: 0.1
-  weight_decay: 0.0001
+  model_type: cnn
+  sequence_length: 1
+  dropout: 0.25
+  weight_decay: 0.001
+  batch_size: 512
+  max_epochs: 300
+  patience: 25
   huber_delta: 1
-  input_noise_std: 0.02
+  input_noise_std: 0.0
   clip_grad_norm: 1
+  target_scaling: zscore
+  target_tanh_gamma: 0.6
+  target_tanh_v_min: -2.0
+  target_tanh_v_max: 2.0
+  target_tanh_w_min: -3.0
+  target_tanh_w_max: 3.0
   loss_dx_weight: 1.0
   loss_dy_weight: 1.0
   loss_dtheta_weight: 1.4
   loss_v_weight: 1
   loss_w_weight: 1.5
-  v_clip_abs: 0.9
-  w_clip_abs: 1.8
-  fuse_odom_v_weight: 0.0
-  fuse_odom_w_weight: 0.0
-  fuse_odom_v_gain: 0.0
-  fuse_odom_w_gain: 0.0
-  vel_ema_alpha: 0.6
-  anchor_yaw_to_odom: 0.0
-  anchor_yaw_to_odom_gain: 0.0
+  v_clip_abs: 2.0
+  w_clip_abs: 3.0
+  fuse_odom_v_weight: 0.5
+  fuse_odom_w_weight: 0.5
+  fuse_odom_v_gain: 0.3
+  fuse_odom_w_gain: 0.3
+  vel_ema_alpha: 0.0
+  anchor_yaw_to_odom: 0.5
+  anchor_yaw_to_odom_gain: 0.5
   anchor_xy_to_odom: 0.0
   anchor_xy_to_odom_gain: 0.0
   heading_for_xy_odom_weight: 0.0
-  xy_step_odom_weight: 0.0
-  xy_step_odom_gain: 0.0
-  max_step_trans: 0.06
-  max_step_yaw: 0.1
+  xy_step_odom_weight: 0.4
+  xy_step_odom_gain: 0.3
+  max_step_trans: 0.15
+  max_step_yaw: 0.35
   max_integration_dt: 0.2
   odom_rebase_to_local_origin: false
-  use_odom_corrections: false
+  use_odom_corrections: true
   odom_fallback_before_model_ready: true
   odom_guard_enabled: false
   odom_guard_fuse_weight: 0.0
@@ -227,11 +284,54 @@ rywak:
   odom_guard_yaw_anchor_gain: 0.0
   split_strategy: tail_holdout_no_shuffle
   torch_deterministic: true
+  selection_metric: val_loss
+  selection_min_delta: 1.0e-5
+  val_rollout_horizons:
+  - 2
+  - 3
+  - 5
+  rollout_eval_position_tol_m: 0.001
+  rollout_eval_yaw_tol_rad: 0.001
+  train_rollout_weight: 0.0
+  train_rollout_horizon: 0
+  train_rollout_windows_per_epoch: 0
+  train_rollout_batch_size: 64
+  train_rollout_xy_weight: 1.0
+  train_rollout_yaw_weight: 0.25
   force_odom_pose: false
+  v_bias_correction: 0.024
+  w_bias_correction: -0.015
   relay_scan_topic: /scan_slam_rywak_relay
   pose_topic_no_slam: /pose_rywak_no_slam
   tf_parent_no_slam: odom_rywak_no_slam
   tf_child_no_slam: base_link_rywak_no_slam
+# =====================================================================
+# Odometry-only custom SLAM track (tor9_odom_only).
+# Reuses the same node-level structure as the model-based variants:
+#   odom_only_node ---> /pose_odom_only (+ TF) ---> slam_toolbox_odom_only
+#                  \--> /pose_odom_only_no_slam   (raw integrated odom, no SLAM)
+#                  \--> /scan_slam_odom_only_relay (lidar relay for SLAM)
+# But the motion source is exclusively /odom_raw — there is no model.
+# =====================================================================
+odom_only:
+  # The node never reads /ground_truth_pose (no GT subscription is created at
+  # all — see odom_only_node.py), so there is no init_from or gt_topic to set.
+  # The integrated pose is exactly the latest /odom_raw sample (optionally
+  # rebased to a local origin), which is what slam_toolbox uses as its TF
+  # prediction. This is the same convention as Robak/Rywak with
+  # use_odom_corrections / force_odom_pose disabled.
+  infer_odom_topic: /odom_raw
+  odom_rebase_to_local_origin: false
+  publish_no_slam_pose: true
+  publish_rate_hz: 20.0
+  # Topics / frames produced by this track. They are kept distinct from the
+  # other tracks so eval results, maps and TFs can be compared 1:1.
+  pose_topic: /pose_odom_only
+  pose_topic_no_slam: /pose_odom_only_no_slam
+  relay_scan_topic: /scan_slam_odom_only_relay
+  scan_topic: /scan_slam_odom_only
+  tf_parent: odom_odom_only
+  tf_child: base_link_odom_only
 rywak_no_slam:
   infer_odom_topic: /odom_raw
   infer_init_from_odom_topic: /odom_raw
@@ -239,9 +339,9 @@ rywak_no_slam:
   interpolate_odom: true
   sync_pair_gap_sec: 0.25
   delta_scan_clip: 2.0
-  v_clip_abs: 1.1
-  w_clip_abs: 2.0
-  vel_ema_alpha: 0.42
+  v_clip_abs: 2.0
+  w_clip_abs: 3.0
+  vel_ema_alpha: 0.0
   max_integration_dt: 0.22
   odom_rebase_to_local_origin: false
   use_odom_corrections: false
@@ -257,8 +357,8 @@ rywak_no_slam:
   heading_for_xy_odom_weight: 0.0
   xy_step_odom_weight: 0.0
   xy_step_odom_gain: 0.0
-  max_step_trans: 0.09
-  max_step_yaw: 0.26
+  max_step_trans: 0.15
+  max_step_yaw: 0.35
   odom_guard_enabled: false
   odom_guard_fuse_weight: 0.0
   odom_guard_v_abs_diff: 0.0
@@ -273,6 +373,8 @@ rywak_no_slam:
   odom_guard_yaw_anchor_base: 0.0
   odom_guard_yaw_anchor_gain: 0.0
   force_odom_pose: false
+  v_bias_correction: 0.0
+  w_bias_correction: 0.0
 timing:
   dataset_duration: 2000.0
   dataset_start_delay: 5
@@ -310,20 +412,16 @@ ground_truth:
   ignore_tf_world_after_gz_pose: true
   debug_every_n: 0
 training:
-  architecture: mlp
-  hidden_layers:
-  - 256
-  - 128
-  - 64
+  architecture: cnn
   max_epochs: 200
   patience: 20
   min_delta: 1.0e-05
   learning_rate: 0.001
-  batch_size: 128
+  batch_size: 4096
   validation_ratio: 0.2
   split_strategy: tail_holdout_no_shuffle
   torch_deterministic: true
-  skip_if_model_exists: true
+  skip_if_model_exists: false
 inference:
   scan_topic: /scan_slam_ai
   odom_topic: /odom
@@ -369,6 +467,16 @@ slam:
     base_frame: base_link_rywak
     odom_frame: odom_rywak
     map_frame: map_rywak
+  # Dedicated slam_toolbox instance for the odometry-only custom SLAM track (tor9).
+  # The relayed scan and the TF chain (odom_odom_only -> base_link_odom_only) are
+  # produced by ``odom_only_node`` from /odom_raw alone, with no model in the loop.
+  odom_only:
+    scan_topic: /scan_slam_odom_only_relay
+    base_frame: base_link_odom_only
+    odom_frame: odom_odom_only
+    map_frame: map_odom_only
+    minimum_travel_heading: 0.08
+    map_update_interval: 3.0
 evaluation:
   reference_map_yaml: reference_map_hospital.yaml
   warmup_sec: 2.0

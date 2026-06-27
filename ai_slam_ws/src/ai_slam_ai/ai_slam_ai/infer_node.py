@@ -1,7 +1,6 @@
 import os
 import time
 import math
-import json
 import numpy as np
 
 import rclpy
@@ -27,27 +26,6 @@ from .experiment_logger import ExperimentLogger
 
 import torch
 import torch.nn as nn
-
-DEBUG_LOG_PATH = "/home/matejko/SLAM_AI/.cursor/debug-a69755.log"
-DEBUG_SESSION_ID = "a69755"
-
-
-def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    payload = {
-        "sessionId": DEBUG_SESSION_ID,
-        "runId": str(run_id),
-        "hypothesisId": str(hypothesis_id),
-        "location": str(location),
-        "message": str(message),
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
 
 class MLP(nn.Module):
     def __init__(self, in_dim: int, out_dim: int):
@@ -171,7 +149,6 @@ class InferNode(Node):
         self.inference_count = 0
         self.inference_times = []
         self.infer_start = None
-        self._debug_step = 0
 
     def periodic_save_stats(self):
         """Okresowo zapisuje statystyki inferencji do metadata.json."""
@@ -338,35 +315,6 @@ class InferNode(Node):
         tfm.transform.rotation.w = qw
         self.tf_br.sendTransform(tfm)
 
-        self._debug_step += 1
-        if self._debug_step % 400 == 0:
-            # region agent log
-            _debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H12",
-                location="infer_node.py:on_scan",
-                message="ai correction snapshot",
-                data={
-                    "step": int(self._debug_step),
-                    "dx_pred": float(dx),
-                    "dy_pred": float(dy),
-                    "dth_pred": float(dth),
-                    "dx_pred_raw": float(dx_raw),
-                    "dy_pred_raw": float(dy_raw),
-                    "dth_pred_raw": float(dth_raw),
-                    "pred_corr_norm_xy_m": float(math.hypot(dx, dy)),
-                    "pred_corr_norm_xy_raw_m": float(math.hypot(dx_raw, dy_raw)),
-                    "odom_x": float(ox),
-                    "odom_y": float(oy),
-                    "odom_th": float(oth),
-                    "ai_x": float(cx),
-                    "ai_y": float(cy),
-                    "ai_th": float(cth),
-                    "pose_frame_id": str(ps.header.frame_id),
-                    "tf_parent": str(self.tf_parent),
-                },
-            )
-            # endregion
     
     def log_inference_stats(self):
         """Loguje statystyki inferencji przy zamykaniu node'a."""

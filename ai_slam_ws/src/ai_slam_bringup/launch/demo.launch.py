@@ -28,6 +28,7 @@ import os
 import yaml
 import math
 import re
+import json
 import copy
 import tempfile
 import xml.etree.ElementTree as ET
@@ -179,6 +180,63 @@ def parse_bool(value, default=False):
     if isinstance(value, (int, float)):
         return bool(value)
     return default
+
+
+def _is_nonzero(value) -> bool:
+    try:
+        return abs(float(value)) > 1e-12
+    except (TypeError, ValueError):
+        return parse_bool(value, default=False)
+
+
+def collect_anchor_risks(track_name: str, params: dict) -> list[str]:
+    bool_keys = (
+        "use_odom_corrections",
+        "odom_guard_enabled",
+        "force_odom_pose",
+    )
+    zero_keys = (
+        "infer_odom_heading_alpha",
+        "infer_odom_heading_gain",
+        "infer_odom_delta_xy_alpha",
+        "infer_odom_delta_xy_gain",
+        "infer_odom_delta_yaw_alpha",
+        "infer_odom_delta_yaw_gain",
+        "infer_odom_pose_xy_alpha",
+        "infer_odom_pose_xy_gain",
+        "infer_odom_pose_xy_alpha_max",
+        "fuse_odom_v_weight",
+        "fuse_odom_w_weight",
+        "fuse_odom_v_gain",
+        "fuse_odom_w_gain",
+        "anchor_yaw_to_odom",
+        "anchor_yaw_to_odom_gain",
+        "anchor_xy_to_odom",
+        "anchor_xy_to_odom_gain",
+        "heading_for_xy_odom_weight",
+        "xy_step_odom_weight",
+        "xy_step_odom_gain",
+        "odom_guard_fuse_weight",
+        "odom_guard_v_abs_diff",
+        "odom_guard_v_rel_diff",
+        "odom_guard_w_abs_diff",
+        "odom_guard_w_rel_diff",
+        "odom_guard_sign_conflict_speed",
+        "odom_guard_xy_error_m",
+        "odom_guard_xy_anchor_base",
+        "odom_guard_xy_anchor_gain",
+        "odom_guard_yaw_error_rad",
+        "odom_guard_yaw_anchor_base",
+        "odom_guard_yaw_anchor_gain",
+    )
+    risks = []
+    for key in bool_keys:
+        if parse_bool(params.get(key, False), default=False):
+            risks.append(f"{track_name}.{key}={params.get(key)!r}")
+    for key in zero_keys:
+        if key in params and _is_nonzero(params.get(key)):
+            risks.append(f"{track_name}.{key}={params.get(key)!r}")
+    return risks
 
 
 def normalize_dataset_trajectory_mode(value: str) -> str:
@@ -830,16 +888,18 @@ def launch_setup(context, *args, **kwargs):
     robak_balanced_rotation_dataset_name = str(
         robak_cfg.get("balanced_rotation_dataset_name", "dataset_robak_rotation_balanced.npz")
     )
-    robak_label_frame = str(robak_cfg.get("label_frame", "world"))
+    robak_label_frame = str(robak_cfg.get("label_frame", "local"))
+    robak_target_mode = str(robak_cfg.get("target_mode", "se2_local"))
+    robak_dataset_odom_topic = str(robak_cfg.get("dataset_odom_topic", "")).strip()
     robak_sync_tolerance = float(robak_cfg.get("sync_tolerance_sec", 0.08))
     robak_sync_pair_gap = float(robak_cfg.get("sync_pair_gap_sec", dataset_sync_pair_gap_sec))
     robak_interpolate_gt = parse_bool(robak_cfg.get("interpolate_gt", True), default=True)
-    robak_aug_noise_std_scale = float(robak_cfg.get("augment_noise_std_scale", 0.1))
-    robak_aug_cut_fraction = float(robak_cfg.get("augment_cut_fraction", 0.1))
+    robak_aug_noise_std_scale = float(robak_cfg.get("augment_noise_std_scale", 0.0))
+    robak_aug_cut_fraction = float(robak_cfg.get("augment_cut_fraction", 0.0))
     robak_aug_cut_max_points = int(robak_cfg.get("augment_cut_max_points", 20))
+    robak_infer_scan_offset = int(robak_cfg.get("infer_scan_offset", 1))
     robak_infer_max_step_trans = float(robak_cfg.get("infer_max_step_trans", 0.10))
     robak_infer_max_step_yaw = float(robak_cfg.get("infer_max_step_yaw", 0.30))
-    robak_infer_delta_ema_alpha = float(robak_cfg.get("infer_delta_ema_alpha", 0.65))
     robak_infer_odom_heading_alpha = float(robak_cfg.get("infer_odom_heading_alpha", 0.30))
     robak_infer_odom_heading_gain = float(robak_cfg.get("infer_odom_heading_gain", 0.75))
     robak_infer_odom_sync_tolerance = float(robak_cfg.get("infer_odom_sync_tolerance_sec", 0.08))
@@ -871,12 +931,91 @@ def launch_setup(context, *args, **kwargs):
     robak_val_ratio = float(robak_cfg.get("val_ratio", validation_ratio))
     robak_split_strategy = str(robak_cfg.get("split_strategy", split_strategy))
     robak_batch = int(robak_cfg.get("batch_size", batch_size))
+    robak_normalization = str(robak_cfg.get("normalization", "zscore"))
+    robak_weight_decay = float(robak_cfg.get("weight_decay", 1e-4))
+    robak_loss_type = str(robak_cfg.get("loss_type", "mse"))
+    robak_huber_delta = float(robak_cfg.get("huber_delta", 1.0))
+    robak_lr_schedule = str(robak_cfg.get("lr_schedule", "none"))
+    robak_loss_dx_weight = float(robak_cfg.get("loss_dx_weight", 1.0))
+    robak_loss_dy_weight = float(robak_cfg.get("loss_dy_weight", 1.0))
+    robak_loss_dtheta_weight = float(robak_cfg.get("loss_dtheta_weight", 1.0))
+    robak_input_noise_std = float(robak_cfg.get("input_noise_std", 0.01))
+    robak_clip_grad_norm = float(robak_cfg.get("clip_grad_norm", 1.0))
+    robak_train_repeat_factor = max(1, int(robak_cfg.get("train_repeat_factor", 1)))
+    robak_train_cutout_enabled = parse_bool(
+        robak_cfg.get("train_cutout_enabled", False),
+        default=False,
+    )
+    robak_train_cutout_prob = float(robak_cfg.get("train_cutout_prob", 0.0))
+    robak_train_cutout_min_len = int(robak_cfg.get("train_cutout_min_len", 20))
+    robak_train_cutout_max_len = int(robak_cfg.get("train_cutout_max_len", 80))
+    robak_train_cutout_fill_value = float(robak_cfg.get("train_cutout_fill_value", 0.0))
+    robak_train_filter_max_step_trans = float(
+        robak_cfg.get("train_filter_max_step_trans", robak_infer_max_step_trans)
+    )
+    robak_train_filter_max_step_yaw = float(
+        robak_cfg.get("train_filter_max_step_yaw", robak_infer_max_step_yaw)
+    )
+    robak_train_filter_scan_offset = int(
+        robak_cfg.get("train_filter_scan_offset", robak_infer_scan_offset)
+    )
+    raw_robak_train_filter_scan_offsets = robak_cfg.get("train_filter_scan_offsets", [-1])
+    if isinstance(raw_robak_train_filter_scan_offsets, (int, float)):
+        robak_train_filter_scan_offsets = [int(raw_robak_train_filter_scan_offsets)]
+    else:
+        robak_train_filter_scan_offsets = [
+            int(v) for v in raw_robak_train_filter_scan_offsets if int(v) > 0
+        ]
+    if not robak_train_filter_scan_offsets:
+        robak_train_filter_scan_offsets = [-1]
+    robak_label_source = str(robak_cfg.get("label_source", "gt_delta")).strip().lower()
+    robak_selection_metric = str(robak_cfg.get("selection_metric", "val_loss"))
+    robak_selection_min_delta = float(robak_cfg.get("selection_min_delta", min_delta))
+    raw_robak_val_rollout_horizons = robak_cfg.get("val_rollout_horizons", [2, 3, 4])
+    if isinstance(raw_robak_val_rollout_horizons, (int, float)):
+        robak_val_rollout_horizons = [int(raw_robak_val_rollout_horizons)]
+    else:
+        robak_val_rollout_horizons = [
+            int(v) for v in raw_robak_val_rollout_horizons if int(v) >= 1
+        ]
+    if not robak_val_rollout_horizons:
+        robak_val_rollout_horizons = [2, 3, 4]
+    robak_rollout_eval_scan_offset = int(robak_cfg.get("rollout_eval_scan_offset", 0))
+    robak_rollout_eval_position_tol_m = float(
+        robak_cfg.get("rollout_eval_position_tol_m", 1e-3)
+    )
+    robak_rollout_eval_yaw_tol_rad = float(
+        robak_cfg.get("rollout_eval_yaw_tol_rad", 1e-3)
+    )
+    robak_train_rollout_weight = float(robak_cfg.get("train_rollout_weight", 0.0))
+    robak_train_rollout_horizon = int(robak_cfg.get("train_rollout_horizon", 0))
+    robak_train_rollout_windows_per_epoch = int(
+        robak_cfg.get("train_rollout_windows_per_epoch", 0)
+    )
+    robak_train_rollout_batch_size = int(robak_cfg.get("train_rollout_batch_size", 64))
+    robak_train_rollout_xy_weight = float(robak_cfg.get("train_rollout_xy_weight", 1.0))
+    robak_train_rollout_yaw_weight = float(robak_cfg.get("train_rollout_yaw_weight", 0.25))
     robak_torch_deterministic = parse_bool(
         robak_cfg.get("torch_deterministic", torch_deterministic),
         default=torch_deterministic,
     )
     robak_pose_topic = str(robak_cfg.get("pose_topic", "/pose_robak"))
     robak_relay_scan_topic = str(robak_cfg.get("relay_scan_topic", ""))
+    robak_relay_only_on_inference_step = parse_bool(
+        robak_cfg.get("relay_only_on_inference_step", False),
+        default=False,
+    )
+    robak_relay_min_scan_confidence = float(robak_cfg.get("relay_min_scan_confidence", 0.0))
+    robak_dth_deadzone = float(robak_cfg.get("dth_deadzone", 0.0))
+    robak_dth_ema_alpha = float(robak_cfg.get("dth_ema_alpha", 0.0))
+    robak_dth_median_window = int(robak_cfg.get("dth_median_window", 0))
+    robak_dx_bias_correction = float(robak_cfg.get("dx_bias_correction", 0.0))
+    robak_dy_bias_correction = float(robak_cfg.get("dy_bias_correction", 0.0))
+    robak_dth_bias_correction = float(robak_cfg.get("dth_bias_correction", 0.0))
+    robak_interpolate_between_steps = parse_bool(
+        robak_cfg.get("interpolate_between_steps", False),
+        default=False,
+    )
     robak_force_odom_pose = parse_bool(
         robak_cfg.get("force_odom_pose", False),
         default=False,
@@ -886,9 +1025,16 @@ def launch_setup(context, *args, **kwargs):
         default=False,
     )
     robak_use_odom_corrections = parse_bool(
-        robak_cfg.get("use_odom_corrections", True),
-        default=True,
+        robak_cfg.get("use_odom_corrections", False),
+        default=False,
     )
+    robak_use_residual_odom_delta_base = parse_bool(
+        robak_cfg.get("use_residual_odom_delta_base", False),
+        default=False,
+    )
+    robak_residual_dx_clip_abs = float(robak_cfg.get("residual_dx_clip_abs", 0.0))
+    robak_residual_dy_clip_abs = float(robak_cfg.get("residual_dy_clip_abs", 0.0))
+    robak_residual_dtheta_clip_abs = float(robak_cfg.get("residual_dtheta_clip_abs", 0.0))
     robak_odom_fallback_before_model_ready = parse_bool(
         robak_cfg.get("odom_fallback_before_model_ready", True),
         default=True,
@@ -898,20 +1044,28 @@ def launch_setup(context, *args, **kwargs):
     robak_tf_child_no_slam = str(robak_cfg.get("tf_child_no_slam", "base_link_robak_no_slam"))
     # Optional per-track overrides for Robak no-SLAM infer node.
     robak_no_slam_cfg = get_config_value(cfg, "robak_no_slam", default={})
+    robak_no_slam_infer_scan_offset = int(
+        robak_no_slam_cfg.get("infer_scan_offset", robak_infer_scan_offset)
+    )
+    robak_no_slam_interpolate_between_steps = parse_bool(
+        robak_no_slam_cfg.get("interpolate_between_steps", robak_interpolate_between_steps),
+        default=robak_interpolate_between_steps,
+    )
     robak_no_slam_infer_max_step_trans = float(
         robak_no_slam_cfg.get("infer_max_step_trans", robak_infer_max_step_trans)
     )
     robak_no_slam_infer_max_step_yaw = float(
         robak_no_slam_cfg.get("infer_max_step_yaw", robak_infer_max_step_yaw)
     )
-    robak_no_slam_infer_delta_ema_alpha = float(
-        robak_no_slam_cfg.get("infer_delta_ema_alpha", robak_infer_delta_ema_alpha)
-    )
     robak_no_slam_infer_odom_heading_alpha = float(
         robak_no_slam_cfg.get("infer_odom_heading_alpha", robak_infer_odom_heading_alpha)
     )
     robak_no_slam_infer_odom_heading_gain = float(
         robak_no_slam_cfg.get("infer_odom_heading_gain", robak_infer_odom_heading_gain)
+    )
+    robak_no_slam_use_primary_infer_pose = parse_bool(
+        robak_no_slam_cfg.get("use_primary_infer_pose", False),
+        default=False,
     )
     robak_no_slam_infer_odom_sync_tolerance = float(
         robak_no_slam_cfg.get("infer_odom_sync_tolerance_sec", robak_infer_odom_sync_tolerance)
@@ -974,6 +1128,19 @@ def launch_setup(context, *args, **kwargs):
         robak_no_slam_cfg.get("use_odom_corrections", robak_use_odom_corrections),
         default=robak_use_odom_corrections,
     )
+    robak_no_slam_use_residual_odom_delta_base = parse_bool(
+        robak_no_slam_cfg.get("use_residual_odom_delta_base", robak_use_residual_odom_delta_base),
+        default=robak_use_residual_odom_delta_base,
+    )
+    robak_no_slam_residual_dx_clip_abs = float(
+        robak_no_slam_cfg.get("residual_dx_clip_abs", robak_residual_dx_clip_abs)
+    )
+    robak_no_slam_residual_dy_clip_abs = float(
+        robak_no_slam_cfg.get("residual_dy_clip_abs", robak_residual_dy_clip_abs)
+    )
+    robak_no_slam_residual_dtheta_clip_abs = float(
+        robak_no_slam_cfg.get("residual_dtheta_clip_abs", robak_residual_dtheta_clip_abs)
+    )
     robak_no_slam_odom_fallback_before_model_ready = parse_bool(
         robak_no_slam_cfg.get(
             "odom_fallback_before_model_ready",
@@ -990,6 +1157,18 @@ def launch_setup(context, *args, **kwargs):
             "falling back to Robak infer_init_from."
         )
         robak_no_slam_infer_init_from = robak_infer_init_from
+    robak_no_slam_dth_deadzone = float(
+        robak_no_slam_cfg.get("dth_deadzone", robak_dth_deadzone)
+    )
+    robak_no_slam_dx_bias_correction = float(
+        robak_no_slam_cfg.get("dx_bias_correction", robak_dx_bias_correction)
+    )
+    robak_no_slam_dy_bias_correction = float(
+        robak_no_slam_cfg.get("dy_bias_correction", robak_dy_bias_correction)
+    )
+    robak_no_slam_dth_bias_correction = float(
+        robak_no_slam_cfg.get("dth_bias_correction", robak_dth_bias_correction)
+    )
 
     # === RYWAK ===
     rywak_cfg = get_config_value(cfg, "rywak", default={})
@@ -1057,6 +1236,7 @@ def launch_setup(context, *args, **kwargs):
     rywak_huber_delta = float(rywak_cfg.get("huber_delta", 1.0))
     rywak_input_noise_std = float(rywak_cfg.get("input_noise_std", 0.02))
     rywak_clip_grad_norm = float(rywak_cfg.get("clip_grad_norm", 1.0))
+    rywak_lr_schedule = str(rywak_cfg.get("lr_schedule", "cosine"))
     rywak_loss_dx_weight = float(rywak_cfg.get("loss_dx_weight", 1.0))
     rywak_loss_dy_weight = float(rywak_cfg.get("loss_dy_weight", 1.0))
     rywak_loss_dtheta_weight = float(rywak_cfg.get("loss_dtheta_weight", 1.5))
@@ -1079,6 +1259,8 @@ def launch_setup(context, *args, **kwargs):
     rywak_max_integration_dt = float(rywak_cfg.get("max_integration_dt", 0.20))
     rywak_max_step_trans = float(rywak_cfg.get("max_step_trans", 0.0))
     rywak_max_step_yaw = float(rywak_cfg.get("max_step_yaw", 0.0))
+    rywak_v_bias_correction = float(rywak_cfg.get("v_bias_correction", 0.0))
+    rywak_w_bias_correction = float(rywak_cfg.get("w_bias_correction", 0.0))
     rywak_infer_odom_topic = str(rywak_cfg.get("infer_odom_topic", rywak_odom_label_topic))
     rywak_infer_init_from_odom_topic = str(
         rywak_cfg.get("infer_init_from_odom_topic", odom_in_topic)
@@ -1089,12 +1271,48 @@ def launch_setup(context, *args, **kwargs):
     rywak_val_ratio = float(rywak_cfg.get("val_ratio", validation_ratio))
     rywak_split_strategy = str(rywak_cfg.get("split_strategy", split_strategy))
     rywak_batch = int(rywak_cfg.get("batch_size", batch_size))
+    rywak_model_type = str(rywak_cfg.get("model_type", "cnn"))
+    rywak_sequence_length = int(rywak_cfg.get("sequence_length", 1))
+    rywak_target_scaling = str(rywak_cfg.get("target_scaling", "zscore"))
+    rywak_target_tanh_gamma = float(rywak_cfg.get("target_tanh_gamma", 0.6))
+    rywak_target_tanh_v_min = float(rywak_cfg.get("target_tanh_v_min", -2.0))
+    rywak_target_tanh_v_max = float(rywak_cfg.get("target_tanh_v_max", 2.0))
+    rywak_target_tanh_w_min = float(rywak_cfg.get("target_tanh_w_min", -3.0))
+    rywak_target_tanh_w_max = float(rywak_cfg.get("target_tanh_w_max", 3.0))
     rywak_torch_deterministic = parse_bool(
         rywak_cfg.get("torch_deterministic", torch_deterministic),
         default=torch_deterministic,
     )
+    rywak_selection_metric = str(rywak_cfg.get("selection_metric", "val_loss"))
+    rywak_selection_min_delta = float(rywak_cfg.get("selection_min_delta", min_delta))
+    raw_rywak_val_rollout_horizons = rywak_cfg.get("val_rollout_horizons", [2, 3, 5])
+    if isinstance(raw_rywak_val_rollout_horizons, (int, float)):
+        rywak_val_rollout_horizons = [int(raw_rywak_val_rollout_horizons)]
+    else:
+        rywak_val_rollout_horizons = [
+            int(v) for v in raw_rywak_val_rollout_horizons if int(v) >= 1
+        ]
+    if not rywak_val_rollout_horizons:
+        rywak_val_rollout_horizons = [2, 3, 5]
+    rywak_rollout_eval_position_tol_m = float(
+        rywak_cfg.get("rollout_eval_position_tol_m", 1e-3)
+    )
+    rywak_rollout_eval_yaw_tol_rad = float(
+        rywak_cfg.get("rollout_eval_yaw_tol_rad", 1e-3)
+    )
+    rywak_train_rollout_weight = float(rywak_cfg.get("train_rollout_weight", 0.0))
+    rywak_train_rollout_horizon = int(rywak_cfg.get("train_rollout_horizon", 0))
+    rywak_train_rollout_windows_per_epoch = int(
+        rywak_cfg.get("train_rollout_windows_per_epoch", 0)
+    )
+    rywak_train_rollout_batch_size = int(rywak_cfg.get("train_rollout_batch_size", 64))
+    rywak_train_rollout_xy_weight = float(rywak_cfg.get("train_rollout_xy_weight", 1.0))
+    rywak_train_rollout_yaw_weight = float(rywak_cfg.get("train_rollout_yaw_weight", 0.25))
     rywak_pose_topic = str(rywak_cfg.get("pose_topic", "/pose_rywak"))
     rywak_relay_scan_topic = str(rywak_cfg.get("relay_scan_topic", ""))
+    rywak_relay_min_scan_confidence = float(
+        rywak_cfg.get("relay_min_scan_confidence", 0.0)
+    )
     rywak_force_odom_pose = parse_bool(
         rywak_cfg.get("force_odom_pose", False),
         default=False,
@@ -1129,6 +1347,13 @@ def launch_setup(context, *args, **kwargs):
     rywak_odom_guard_yaw_error_rad = float(rywak_cfg.get("odom_guard_yaw_error_rad", 0.35))
     rywak_odom_guard_yaw_anchor_base = float(rywak_cfg.get("odom_guard_yaw_anchor_base", 0.75))
     rywak_odom_guard_yaw_anchor_gain = float(rywak_cfg.get("odom_guard_yaw_anchor_gain", 0.50))
+    rywak_label_source = str(rywak_cfg.get("label_source", "gt_local")).strip().lower()
+    rywak_use_residual_odom_base = parse_bool(
+        rywak_cfg.get("use_residual_odom_base", False),
+        default=False,
+    )
+    rywak_residual_v_clip_abs = float(rywak_cfg.get("residual_v_clip_abs", 0.0))
+    rywak_residual_w_clip_abs = float(rywak_cfg.get("residual_w_clip_abs", 0.0))
     rywak_pose_topic_no_slam = str(rywak_cfg.get("pose_topic_no_slam", "/pose_rywak_no_slam"))
     rywak_tf_parent_no_slam = str(rywak_cfg.get("tf_parent_no_slam", "odom_rywak_no_slam"))
     rywak_tf_child_no_slam = str(rywak_cfg.get("tf_child_no_slam", "base_link_rywak_no_slam"))
@@ -1198,6 +1423,12 @@ def launch_setup(context, *args, **kwargs):
     rywak_no_slam_max_step_yaw = float(
         rywak_no_slam_cfg.get("max_step_yaw", rywak_max_step_yaw)
     )
+    rywak_no_slam_v_bias_correction = float(
+        rywak_no_slam_cfg.get("v_bias_correction", rywak_v_bias_correction)
+    )
+    rywak_no_slam_w_bias_correction = float(
+        rywak_no_slam_cfg.get("w_bias_correction", rywak_w_bias_correction)
+    )
     rywak_no_slam_infer_odom_topic = str(
         rywak_no_slam_cfg.get("infer_odom_topic", rywak_infer_odom_topic)
     )
@@ -1263,9 +1494,138 @@ def launch_setup(context, *args, **kwargs):
     rywak_no_slam_odom_guard_yaw_anchor_gain = float(
         rywak_no_slam_cfg.get("odom_guard_yaw_anchor_gain", rywak_odom_guard_yaw_anchor_gain)
     )
+    rywak_no_slam_use_residual_odom_base = parse_bool(
+        rywak_no_slam_cfg.get("use_residual_odom_base", rywak_use_residual_odom_base),
+        default=rywak_use_residual_odom_base,
+    )
+    rywak_no_slam_residual_v_clip_abs = float(
+        rywak_no_slam_cfg.get("residual_v_clip_abs", rywak_residual_v_clip_abs)
+    )
+    rywak_no_slam_residual_w_clip_abs = float(
+        rywak_no_slam_cfg.get("residual_w_clip_abs", rywak_residual_w_clip_abs)
+    )
     rywak_no_slam_infer_init_from_odom_topic = str(
         rywak_no_slam_cfg.get("infer_init_from_odom_topic", rywak_infer_init_from_odom_topic)
     )
+
+    # === ODOM-ONLY (tor9) =================================================
+    # Pure-odom variant of the model-based SLAM tracks: same node-level pipeline
+    # (relayed scan + dedicated slam_toolbox + own TF/map) but no model. The
+    # node intentionally does not subscribe to GT — see odom_only_node.py.
+    odom_only_cfg = get_config_value(cfg, "odom_only", default={})
+    odom_only_infer_odom_topic = str(odom_only_cfg.get("infer_odom_topic", "/odom_raw"))
+    odom_only_rebase = parse_bool(
+        odom_only_cfg.get("odom_rebase_to_local_origin", False),
+        default=False,
+    )
+    odom_only_publish_no_slam_pose = parse_bool(
+        odom_only_cfg.get("publish_no_slam_pose", True),
+        default=True,
+    )
+    odom_only_publish_rate_hz = float(odom_only_cfg.get("publish_rate_hz", 20.0))
+    odom_only_pose_topic = str(odom_only_cfg.get("pose_topic", "/pose_odom_only"))
+    odom_only_pose_topic_no_slam = str(
+        odom_only_cfg.get("pose_topic_no_slam", "/pose_odom_only_no_slam")
+    )
+    odom_only_relay_scan_topic = str(
+        odom_only_cfg.get("relay_scan_topic", "/scan_slam_odom_only_relay")
+    )
+    odom_only_scan_topic = str(
+        odom_only_cfg.get("scan_topic", "/scan_slam_odom_only")
+    )
+    odom_only_tf_parent = str(odom_only_cfg.get("tf_parent", "odom_odom_only"))
+    odom_only_tf_child = str(odom_only_cfg.get("tf_child", "base_link_odom_only"))
+
+    # === NAIVE ODOM SLAM (tor10) ==========================================
+    # Fully hand-written scan-to-map SLAM node: no slam_toolbox, no external
+    # SLAM library. Motion prediction from odometry; candidate search over a
+    # small (dx,dy,dtheta) grid; Bresenham ray tracing for map update.
+    naive_slam_cfg = get_config_value(cfg, "naive_odom_slam", default={})
+    naive_slam_scan_topic  = str(naive_slam_cfg.get("scan_topic", "/scan"))
+    naive_slam_odom_topic  = str(naive_slam_cfg.get("odom_topic", "/odom_raw"))
+    naive_slam_pose_topic  = str(naive_slam_cfg.get("pose_topic", "/pose_naive_odom_slam"))
+    naive_slam_map_topic   = str(naive_slam_cfg.get("map_topic", "/map_naive_odom_slam"))
+    naive_slam_tf_parent   = str(naive_slam_cfg.get("tf_parent", "map_naive_odom_slam"))
+    naive_slam_tf_child    = str(naive_slam_cfg.get("tf_child", "base_link_naive_odom_slam"))
+    naive_slam_map_res     = float(naive_slam_cfg.get("map_resolution", 0.05))
+    naive_slam_map_w       = float(naive_slam_cfg.get("map_width_m", 60.0))
+    naive_slam_map_h       = float(naive_slam_cfg.get("map_height_m", 60.0))
+    naive_slam_xy_range    = float(naive_slam_cfg.get("search_xy_range", 0.10))
+    naive_slam_xy_step     = float(naive_slam_cfg.get("search_xy_step", 0.02))
+    naive_slam_th_range    = float(naive_slam_cfg.get("search_theta_range", 0.15))
+    naive_slam_th_step     = float(naive_slam_cfg.get("search_theta_step", 0.03))
+    # Thesis-readable parameter names (degrees / metres).  -1 = not set.
+    naive_slam_xy_range_m    = float(naive_slam_cfg.get("search_xy_range_m", -1.0))
+    naive_slam_xy_step_m     = float(naive_slam_cfg.get("search_xy_step_m", -1.0))
+    naive_slam_th_range_deg  = float(naive_slam_cfg.get("search_theta_range_deg", -1.0))
+    naive_slam_th_step_deg   = float(naive_slam_cfg.get("search_theta_step_deg", -1.0))
+    naive_slam_motion_prior  = str(naive_slam_cfg.get("motion_prior", "odometry_centered"))
+    naive_slam_use_exhaustive = bool(naive_slam_cfg.get("use_exhaustive_search", True))
+    naive_slam_max_range   = float(naive_slam_cfg.get("max_scan_range", 8.0))
+    naive_slam_min_range   = float(naive_slam_cfg.get("min_scan_range", 0.15))
+    naive_slam_map_sub     = int(naive_slam_cfg.get("map_update_beam_subsample", 3))
+    naive_slam_score_sub   = int(naive_slam_cfg.get("score_beam_subsample", 1))
+    naive_slam_every_n     = int(naive_slam_cfg.get("update_every_n_scans", 1))
+    naive_slam_pub_map_n   = int(naive_slam_cfg.get("publish_map_every_n", 5))
+    naive_slam_lo_occ      = float(naive_slam_cfg.get("logodds_occ", 0.85))
+    naive_slam_lo_free     = float(naive_slam_cfg.get("logodds_free", -0.40))
+    naive_slam_lo_min      = float(naive_slam_cfg.get("logodds_min", -3.0))
+    naive_slam_lo_max      = float(naive_slam_cfg.get("logodds_max", 3.5))
+    naive_slam_prior_xy_w  = float(naive_slam_cfg.get("odom_prior_xy_weight", 0.0))
+    naive_slam_prior_th_w  = float(naive_slam_cfg.get("odom_prior_theta_weight", 0.0))
+
+    # === NAIVE ROBAK SLAM (tor11) ==========================================
+    # Naive scan-to-map SLAM using Robak CNN output as motion prior.
+    # Identical search grid to tor10 but driven by model predictions instead of /odom_raw.
+    naive_robak_slam_cfg = get_config_value(cfg, "naive_robak_slam", default={})
+    naive_robak_slam_pose_topic  = str(naive_robak_slam_cfg.get("pose_topic", "/pose_naive_robak_slam"))
+    naive_robak_slam_map_topic   = str(naive_robak_slam_cfg.get("map_topic", "/map_naive_robak_slam"))
+    naive_robak_slam_tf_parent   = str(naive_robak_slam_cfg.get("tf_parent", "map_naive_robak_slam"))
+    naive_robak_slam_tf_child    = str(naive_robak_slam_cfg.get("tf_child", "base_link_naive_robak_slam"))
+    naive_robak_slam_prior_topic = str(naive_robak_slam_cfg.get("motion_prior_pose_topic", "/pose_robak_naive_slam_prior"))
+    # Hybrid alpha: 1.0 = pure Robak prior (original), 0<alpha<1 = blend with odom.
+    naive_robak_slam_alpha = float(naive_robak_slam_cfg.get("motion_prior_alpha", 1.0))
+    # Robak inference node dedicated to tor11 (no slam_toolbox).
+    naive_robak_infer_pose_topic = str(naive_robak_slam_cfg.get("infer_pose_topic", "/pose_robak_naive_slam_prior"))
+    naive_robak_infer_tf_parent  = str(naive_robak_slam_cfg.get("infer_tf_parent", "odom_robak_naive_slam"))
+    naive_robak_infer_tf_child   = str(naive_robak_slam_cfg.get("infer_tf_child", "base_link_robak_naive_slam"))
+
+    # === NAIVE RYWAK SLAM (tor12) ==========================================
+    # Naive scan-to-map SLAM using Rywak CNN output as motion prior.
+    naive_rywak_slam_cfg = get_config_value(cfg, "naive_rywak_slam", default={})
+    naive_rywak_slam_pose_topic  = str(naive_rywak_slam_cfg.get("pose_topic", "/pose_naive_rywak_slam"))
+    naive_rywak_slam_map_topic   = str(naive_rywak_slam_cfg.get("map_topic", "/map_naive_rywak_slam"))
+    naive_rywak_slam_tf_parent   = str(naive_rywak_slam_cfg.get("tf_parent", "map_naive_rywak_slam"))
+    naive_rywak_slam_tf_child    = str(naive_rywak_slam_cfg.get("tf_child", "base_link_naive_rywak_slam"))
+    naive_rywak_slam_prior_topic = str(naive_rywak_slam_cfg.get("motion_prior_pose_topic", "/pose_rywak_naive_slam_prior"))
+    # Hybrid alpha: 1.0 = pure Rywak prior (original), 0<alpha<1 = blend with odom.
+    naive_rywak_slam_alpha = float(naive_rywak_slam_cfg.get("motion_prior_alpha", 1.0))
+    # Rywak inference node dedicated to tor12 (no slam_toolbox).
+    naive_rywak_infer_pose_topic = str(naive_rywak_slam_cfg.get("infer_pose_topic", "/pose_rywak_naive_slam_prior"))
+    naive_rywak_infer_tf_parent  = str(naive_rywak_slam_cfg.get("infer_tf_parent", "odom_rywak_naive_slam"))
+    naive_rywak_infer_tf_child   = str(naive_rywak_slam_cfg.get("infer_tf_child", "base_link_rywak_naive_slam"))
+
+    thesis_anchor_risks = []
+    thesis_anchor_risks.extend(collect_anchor_risks("robak", robak_cfg))
+    thesis_anchor_risks.extend(collect_anchor_risks("robak_no_slam", robak_no_slam_cfg))
+    thesis_anchor_risks.extend(collect_anchor_risks("rywak", rywak_cfg))
+    thesis_anchor_risks.extend(collect_anchor_risks("rywak_no_slam", rywak_no_slam_cfg))
+    thesis_strict_no_anchor = len(thesis_anchor_risks) == 0
+    thesis_anchor_risk_detected = not thesis_strict_no_anchor
+    notes_for_thesis = str(get_config_value(cfg, "experiment", "notes_for_thesis", default="")).strip()
+    config_name = os.path.basename(resolved_config_path) if resolved_config_path else ""
+    train_filter_offsets_meta = (
+        list(robak_train_filter_scan_offsets)
+        if list(robak_train_filter_scan_offsets) != [-1]
+        else []
+    )
+    infer_scan_offset_meta = int(robak_no_slam_infer_scan_offset)
+    offset_match_meta = (
+        bool(train_filter_offsets_meta) and infer_scan_offset_meta in train_filter_offsets_meta
+    )
+    if not train_filter_offsets_meta:
+        offset_match_meta = None
+
     # === SLAM TOOLBOX ===
     slam_cfg_root = get_config_value(cfg, "slam", default={})
     slam_common_cfg = get_config_value(cfg, "slam", "common", default={})
@@ -1273,9 +1633,10 @@ def launch_setup(context, *args, **kwargs):
     slam_ai_cfg = get_config_value(cfg, "slam", "ai", default={})
     slam_robak_cfg = get_config_value(cfg, "slam", "robak", default={})
     slam_rywak_cfg = get_config_value(cfg, "slam", "rywak", default={})
+    slam_odom_only_cfg = get_config_value(cfg, "slam", "odom_only", default={})
 
     # Parametry na poziomie "slam" (np. max_laser_range, resolution) też stosujemy do wszystkich wariantów.
-    slam_variant_keys = {"common", "baseline", "ai", "robak", "rywak"}
+    slam_variant_keys = {"common", "baseline", "ai", "robak", "rywak", "odom_only"}
     slam_global_cfg = {}
     if isinstance(slam_cfg_root, dict):
         for key, value in slam_cfg_root.items():
@@ -1297,12 +1658,19 @@ def launch_setup(context, *args, **kwargs):
     slam_rywak_params = coerce_slam_param_types(
         merge_params(slam_global_cfg, slam_common_cfg, slam_rywak_cfg)
     )
+    slam_odom_only_params = coerce_slam_param_types(
+        merge_params(slam_global_cfg, slam_common_cfg, slam_odom_only_cfg)
+    )
     slam_baseline_map_frame = str(slam_baseline_params.get("map_frame", "map"))
     slam_baseline_odom_frame = str(slam_baseline_params.get("odom_frame", "odom"))
     slam_robak_map_frame = str(slam_robak_params.get("map_frame", "map_robak"))
     slam_robak_odom_frame = str(slam_robak_params.get("odom_frame", "odom_robak"))
     slam_rywak_map_frame = str(slam_rywak_params.get("map_frame", "map_rywak"))
     slam_rywak_odom_frame = str(slam_rywak_params.get("odom_frame", "odom_rywak"))
+    slam_odom_only_map_frame = str(slam_odom_only_params.get("map_frame", "map_odom_only"))
+    slam_odom_only_odom_frame = str(slam_odom_only_params.get("odom_frame", "odom_odom_only"))
+    slam_odom_only_base_frame = str(slam_odom_only_params.get("base_frame", "base_link_odom_only"))
+    slam_odom_only_scan_topic = str(slam_odom_only_params.get("scan_topic", "/scan_slam_odom_only_relay"))
         
     # === OUTPUT ===
     out_dir = str(get_param("out_dir", ["output", "base_dir"], "out"))
@@ -1321,6 +1689,8 @@ def launch_setup(context, *args, **kwargs):
         ).strip()
     else:
         model_source_experiment_id = str(_msrc_launch).strip()
+    _robak_msrc_launch = LaunchConfiguration("robak_model_source_experiment_id").perform(context)
+    _rywak_msrc_launch = LaunchConfiguration("rywak_model_source_experiment_id").perform(context)
     # Opcjonalnie: trenuj na datasetach *.npz z innego podfolderu out/<id>/.
     _dsrc_launch = LaunchConfiguration("dataset_source_experiment_id").perform(context)
     if _dsrc_launch == "__USE_CONFIG__":
@@ -1329,6 +1699,17 @@ def launch_setup(context, *args, **kwargs):
         ).strip()
     else:
         dataset_source_experiment_id = str(_dsrc_launch).strip()
+
+    # Strict external dataset handling must be resolved before the configuration
+    # summary below; the summary reports whether the source is strict.
+    _dataset_strict_launch = LaunchConfiguration("dataset_source_strict").perform(context)
+    if _dataset_strict_launch == "__USE_CONFIG__":
+        dataset_source_strict = parse_bool(
+            get_config_value(cfg, "experiment", "dataset_source_strict", default=False),
+            default=False,
+        )
+    else:
+        dataset_source_strict = parse_bool(_dataset_strict_launch, default=False)
 
     if not model_source_experiment_id and dataset_source_experiment_id and phase in ("full", "test"):
         # Priorytet: jeśli dla bieżącego experiment_id istnieją już wytrenowane modele,
@@ -1359,6 +1740,23 @@ def launch_setup(context, *args, **kwargs):
                     f"using dataset_source_experiment_id='{dataset_source_experiment_id}' "
                     "for test-time model loading."
                 )
+
+    if _robak_msrc_launch == "__USE_CONFIG__":
+        robak_model_source_experiment_id = str(
+            get_config_value(cfg, "experiment", "robak_model_source_experiment_id", default="")
+        ).strip()
+    else:
+        robak_model_source_experiment_id = str(_robak_msrc_launch).strip()
+    if _rywak_msrc_launch == "__USE_CONFIG__":
+        rywak_model_source_experiment_id = str(
+            get_config_value(cfg, "experiment", "rywak_model_source_experiment_id", default="")
+        ).strip()
+    else:
+        rywak_model_source_experiment_id = str(_rywak_msrc_launch).strip()
+    if not robak_model_source_experiment_id:
+        robak_model_source_experiment_id = model_source_experiment_id
+    if not rywak_model_source_experiment_id:
+        rywak_model_source_experiment_id = model_source_experiment_id
     
     # === ŚCIEŻKI ===
     gazebo_share = get_package_share_directory("ai_slam_gazebo")
@@ -1654,10 +2052,25 @@ def launch_setup(context, *args, **kwargs):
     print(f"  Output: {out_dir}/{experiment_id}")
     if model_source_experiment_id:
         print(f"  Model source (load *.pt from): {out_dir}/{model_source_experiment_id}")
+    if (
+        robak_model_source_experiment_id
+        and robak_model_source_experiment_id != model_source_experiment_id
+    ):
+        print(
+            f"  Robak model source: {out_dir}/{robak_model_source_experiment_id}"
+        )
+    if (
+        rywak_model_source_experiment_id
+        and rywak_model_source_experiment_id != model_source_experiment_id
+    ):
+        print(
+            f"  Rywak model source: {out_dir}/{rywak_model_source_experiment_id}"
+        )
     if dataset_source_experiment_id and phase in ("full", "train"):
         print(
             "  Dataset source (train *.npz from): "
             f"{out_dir}/{dataset_source_experiment_id}"
+            f"{' [STRICT]' if dataset_source_strict else ''}"
         )
     print("="*70 + "\n")
 
@@ -1684,6 +2097,26 @@ def launch_setup(context, *args, **kwargs):
         tracks_cfg.get("tor8_rywak_no_slam", False),
         default=False,
     )
+    # tor9: odometry-only custom SLAM (no model, dedicated slam_toolbox instance).
+    tor9_odom_only_enabled = parse_bool(
+        tracks_cfg.get("tor9_odom_only", False),
+        default=False,
+    )
+    # tor10: naive hand-written scan-to-map SLAM (no slam_toolbox, no library).
+    tor10_naive_slam_enabled = parse_bool(
+        tracks_cfg.get("tor10_naive_odom_slam", False),
+        default=False,
+    )
+    # tor11: naive SLAM + Robak motion prior (no slam_toolbox).
+    tor11_naive_robak_slam_enabled = parse_bool(
+        tracks_cfg.get("tor11_naive_robak_slam", False),
+        default=False,
+    )
+    # tor12: naive SLAM + Rywak motion prior (no slam_toolbox).
+    tor12_naive_rywak_slam_enabled = parse_bool(
+        tracks_cfg.get("tor12_naive_rywak_slam", False),
+        default=False,
+    )
 
     # fazy (zakładam, że zmienną `phase` już wcześniej wyliczysz z get_param)
     do_dataset_phase = is_ai_mode and (phase in ("full", "train", "dataset"))
@@ -1705,6 +2138,14 @@ def launch_setup(context, *args, **kwargs):
     rywak_train_enabled = tor6_rywak_enabled and do_train_phase
     rywak_test_enabled  = tor6_rywak_enabled and do_test_phase
     rywak_no_slam_test_enabled = tor8_rywak_no_slam_enabled and do_test_phase
+    # tor9 has no model and no training phase, so unlike Robak/Rywak it does not
+    # need is_ai_mode. Gate it on do_eval_phase so that a clean baseline-only
+    # comparison (classical SLAM vs. odom-only SLAM) is also possible without
+    # touching the AI tracks.
+    odom_only_test_enabled = tor9_odom_only_enabled and do_eval_phase
+    naive_slam_test_enabled = tor10_naive_slam_enabled and do_eval_phase
+    naive_robak_slam_test_enabled = tor11_naive_robak_slam_enabled and do_eval_phase
+    naive_rywak_slam_test_enabled = tor12_naive_rywak_slam_enabled and do_eval_phase
     ai_train_dataset_name = "dataset.npz"
     robak_train_dataset_name = robak_dataset_name
     rywak_train_dataset_name = rywak_dataset_name
@@ -1721,6 +2162,16 @@ def launch_setup(context, *args, **kwargs):
         if rywak_train_enabled and not os.path.isfile(source_rywak_dataset):
             missing.append(source_rywak_dataset)
         if missing:
+            if dataset_source_strict:
+                msg = (
+                    "[FATAL] dataset_source_strict=true but the external dataset is "
+                    "incomplete:\n  - " + "\n  - ".join(missing)
+                    + "\nRefusing to fall back to local dataset collection. "
+                    "Either populate the missing file(s) or unset "
+                    "experiment.dataset_source_strict."
+                )
+                print(msg)
+                raise FileNotFoundError(msg)
             print(
                 "[WARN] dataset_source_experiment_id ustawione, ale brakuje plików datasetu; "
                 "fallback do lokalnego zbierania:\n  - "
@@ -1737,6 +2188,11 @@ def launch_setup(context, *args, **kwargs):
                 f"[INFO] Training dataset source: out/{dataset_source_experiment_id} "
                 "(dataset recorders disabled for this run)."
             )
+            if dataset_source_strict:
+                print(
+                    "[INFO] dataset_source_strict=true — local dataset collection "
+                    "is permanently disabled for this launch."
+                )
     skip_simulation_for_external_train = bool(
         phase == "train"
         and dataset_source_experiment_id
@@ -1746,11 +2202,114 @@ def launch_setup(context, *args, **kwargs):
     )
     if skip_simulation_for_external_train:
         print("[INFO] Phase=train + external dataset source: simulator stack disabled (trainers only).")
+
+    # Pre-flight: verify model files exist when phase=test (no training will create them).
+    # For phase=full, training runs first and creates models in experiment_id — skip
+    # the check for those (only check externally-sourced models that must already exist).
+    if phase == "test" and do_test_phase:
+        _missing_models = []
+        if robak_test_enabled:
+            _robak_src = robak_model_source_experiment_id or experiment_id
+            _robak_model_path = os.path.join(out_dir, _robak_src, robak_model_name)
+            if not os.path.isfile(_robak_model_path):
+                _missing_models.append(f"Robak ({robak_model_name}) in '{_robak_src}': {_robak_model_path}")
+        if rywak_test_enabled:
+            _rywak_src = rywak_model_source_experiment_id or experiment_id
+            _rywak_model_path = os.path.join(out_dir, _rywak_src, rywak_model_name)
+            if not os.path.isfile(_rywak_model_path):
+                _missing_models.append(f"Rywak ({rywak_model_name}) in '{_rywak_src}': {_rywak_model_path}")
+        if _missing_models:
+            _msg = (
+                "[FATAL] Model files not found for test phase. "
+                "Set robak_model_source_experiment_id / rywak_model_source_experiment_id "
+                "to a directory that contains the trained .pt files.\nMissing:\n  "
+                + "\n  ".join(_missing_models)
+            )
+            print(_msg)
+            raise FileNotFoundError(_msg)
+
+    # ---- [SANITY] block — single, easy-to-grep summary of the resolved
+    # config decisions that matter for the thesis comparison. Print after
+    # every relevant variable is resolved.
+    print("\n" + "=" * 70)
+    print("[SANITY] Resolved launch configuration")
+    print("=" * 70)
+    print(f"  phase                     : {phase}")
+    print(f"  mode                      : {mode}")
+    print(f"  gui                       : {gui}")
+    print(
+        "  dataset_source_experiment_id : "
+        f"{dataset_source_experiment_id or '(none — would collect locally)'}"
+    )
+    print(f"  dataset_source_strict     : {dataset_source_strict}")
+    _recorders_list = []
+    if ai_dataset_enabled:
+        _recorders_list.append("ai")
+    if robak_dataset_enabled:
+        _recorders_list.append("robak")
+    if rywak_dataset_enabled:
+        _recorders_list.append("rywak")
+    print(
+        "  dataset recorders enabled : "
+        f"{', '.join(_recorders_list) if _recorders_list else 'NONE'}"
+    )
+    _trainers_list = []
+    if ai_train_enabled:
+        _trainers_list.append("ai")
+    if robak_train_enabled:
+        _trainers_list.append("robak")
+    if rywak_train_enabled:
+        _trainers_list.append("rywak")
+    print(
+        "  trainers enabled          : "
+        f"{', '.join(_trainers_list) if _trainers_list else 'NONE'}"
+    )
+    print(f"  simulator stack disabled  : {skip_simulation_for_external_train}")
+    print(f"  driver.use_planned_path   : {driver_use_planned_path}")
+    if driver_use_planned_path:
+        print(f"  planned_path spec yaml    : {planned_spec_path}")
+        print(f"  planned_path ref map      : {planned_ref_map}")
+        print(f"  planned_path loop_path    : {planned_loop}")
+        print("  auto_driver               : INACTIVE (UnlessCondition)")
+        print("  planned_path_driver       : ACTIVE   (IfCondition)")
+    else:
+        print("  auto_driver               : ACTIVE")
+        print("  planned_path_driver       : INACTIVE")
+    print(f"  evaluation.reference_map  : {reference_map_yaml}")
+    if model_source_experiment_id:
+        print(f"  model_source_experiment_id : {model_source_experiment_id}")
+    if (
+        robak_model_source_experiment_id
+        and robak_model_source_experiment_id != model_source_experiment_id
+    ):
+        print(f"  robak_model_source         : {robak_model_source_experiment_id}")
+    if (
+        rywak_model_source_experiment_id
+        and rywak_model_source_experiment_id != model_source_experiment_id
+    ):
+        print(f"  rywak_model_source         : {rywak_model_source_experiment_id}")
+    print(
+        "  tracks                    : "
+        f"tor1={tor1_baseline_enabled}, "
+        f"tor5={tor5_robak_enabled}, "
+        f"tor6={tor6_rywak_enabled}, "
+        f"tor7={tor7_robak_no_slam_enabled}, "
+        f"tor8={tor8_rywak_no_slam_enabled}, "
+        f"tor9={tor9_odom_only_enabled}, "
+        f"tor10={tor10_naive_slam_enabled}"
+    )
+    print("=" * 70 + "\n")
     # In trainers-only mode there is no /clock, so training nodes must use wall-time.
     train_nodes_use_sim_time = not skip_simulation_for_external_train
     # Izolacja: osobny scan_fix → /scan_slam_robak|rywak (ten sam łańcuch co SLAM danej metody).
-    robak_scan_chain_enabled = robak_dataset_enabled or robak_test_enabled or robak_no_slam_test_enabled
-    rywak_scan_chain_enabled = rywak_dataset_enabled or rywak_test_enabled or rywak_no_slam_test_enabled
+    robak_scan_chain_enabled = (
+        robak_dataset_enabled or robak_test_enabled or robak_no_slam_test_enabled
+        or naive_robak_slam_test_enabled
+    )
+    rywak_scan_chain_enabled = (
+        rywak_dataset_enabled or rywak_test_enabled or rywak_no_slam_test_enabled
+        or naive_rywak_slam_test_enabled
+    )
     robak_dataset_scan_topic = "/scan_slam_robak" if robak_scan_chain_enabled else dataset_scan_topic
     rywak_dataset_scan_topic = "/scan_slam_rywak" if rywak_scan_chain_enabled else dataset_scan_topic
 
@@ -1845,6 +2404,7 @@ def launch_setup(context, *args, **kwargs):
             "frame_id": "base_link",
         }],
         output="screen",
+        condition=IfCondition(str(tor1_baseline_enabled and do_eval_phase).lower()),
     )
 
     scan_fix_ai = Node(
@@ -1887,6 +2447,22 @@ def launch_setup(context, *args, **kwargs):
         }],
         output="screen",
         condition=IfCondition(str(rywak_scan_chain_enabled).lower()),
+    )
+    # Dedicated scan chain for the odometry-only custom SLAM track (tor9). Mirrors
+    # the robak/rywak chain so the relayed lidar (odom_only_node -> slam_toolbox)
+    # carries a track-specific frame_id and cannot collide with other tracks.
+    scan_fix_odom_only = Node(
+        package="ai_slam_bringup",
+        executable="scan_fix",
+        name="scan_fix_odom_only",
+        parameters=[{
+            "use_sim_time": True,
+            "in_topic": "/scan",
+            "out_topic": odom_only_scan_topic,
+            "frame_id": slam_odom_only_base_frame,
+        }],
+        output="screen",
+        condition=IfCondition(str(odom_only_test_enabled).lower()),
     )
     sm3_cfg = get_config_value(cfg, "scan_matcher", "tor3", default={})
     sm4_cfg = get_config_value(cfg, "scan_matcher", "tor4", default={})
@@ -2118,7 +2694,7 @@ def launch_setup(context, *args, **kwargs):
         arguments=["--ros-args", "--log-level", "warn"],
         # W fazie dataset SLAM baseline nie jest potrzebny (datasety idą z /scan_slam,/scan_slam_robak,/scan_slam_rywak).
         # Wyłączenie go znacząco poprawia real-time factor.
-        condition=IfCondition(str(do_eval_phase).lower()),
+        condition=IfCondition(str(tor1_baseline_enabled and do_eval_phase).lower()),
     )
 
     slam_ai = LifecycleNode(
@@ -2156,6 +2732,22 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(str(rywak_test_enabled).lower()),
     )
 
+    # Dedicated SLAM toolbox instance for the odometry-only custom SLAM track
+    # (tor9). It consumes the relayed scan published by ``odom_only_node`` and
+    # the TF chain odom_odom_only -> base_link_odom_only that the same node
+    # broadcasts, producing an isolated ``/map_odom_only`` for evaluation.
+    slam_odom_only = LifecycleNode(
+        package="slam_toolbox",
+        executable="sync_slam_toolbox_node",
+        name="slam_toolbox_odom_only",
+        namespace="",
+        parameters=[{"use_sim_time": True}, slam_odom_only_params],
+        arguments=["--ros-args", "--log-level", "warn"],
+        remappings=[("/map", "/map_odom_only")],
+        output="log",
+        condition=IfCondition(str(odom_only_test_enabled).lower()),
+    )
+
     # Lifecycle management
     configure_baseline = TimerAction(
         period=slam_configure_delay,
@@ -2165,7 +2757,7 @@ def launch_setup(context, *args, **kwargs):
                 transition_id=Transition.TRANSITION_CONFIGURE
             ))
         ],
-        condition=IfCondition(str(do_eval_phase).lower()),
+        condition=IfCondition(str(tor1_baseline_enabled and do_eval_phase).lower()),
     )
     
     activate_baseline = RegisterEventHandler(
@@ -2181,7 +2773,7 @@ def launch_setup(context, *args, **kwargs):
                 ))
             ]
         ),
-        condition=IfCondition(str(do_eval_phase).lower()),
+        condition=IfCondition(str(tor1_baseline_enabled and do_eval_phase).lower()),
     )
 
     configure_ai = TimerAction(
@@ -2246,6 +2838,33 @@ def launch_setup(context, *args, **kwargs):
             ))
         ],
         condition=IfCondition(str(rywak_test_enabled).lower()),
+    )
+
+    configure_odom_only = TimerAction(
+        period=slam_configure_delay,
+        actions=[
+            EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=matches_action(slam_odom_only),
+                transition_id=Transition.TRANSITION_CONFIGURE
+            ))
+        ],
+        condition=IfCondition(str(odom_only_test_enabled).lower()),
+    )
+
+    activate_odom_only = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=slam_odom_only,
+            start_state="configuring",
+            goal_state="inactive",
+            entities=[
+                LogInfo(msg="[LifecycleLaunch] slam_toolbox_odom_only is activating."),
+                EmitEvent(event=ChangeState(
+                    lifecycle_node_matcher=matches_action(slam_odom_only),
+                    transition_id=Transition.TRANSITION_ACTIVATE
+                ))
+            ]
+        ),
+        condition=IfCondition(str(odom_only_test_enabled).lower()),
     )
 
     activate_rywak = RegisterEventHandler(
@@ -2347,7 +2966,7 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed, 
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "model_source_experiment_id": model_source_experiment_id,
+            "model_source_experiment_id": robak_model_source_experiment_id,
             "model_wait_timeout": effective_model_wait_timeout,
             "scan_topic": infer_scan_topic,
             "odom_topic": infer_odom_topic,
@@ -2375,6 +2994,7 @@ def launch_setup(context, *args, **kwargs):
             "max_samples": robak_max_samples,
             "scan_topic": robak_dataset_scan_topic,
             "gt_topic": dataset_gt_topic,
+            "odom_topic": robak_dataset_odom_topic,
             "dataset_name": robak_dataset_name,
             "offsets": robak_offsets,
             "min_pair_dist": robak_min_pair_dist,
@@ -2437,7 +3057,41 @@ def launch_setup(context, *args, **kwargs):
             "batch_size": robak_batch,
             "val_ratio": robak_val_ratio,
             "split_strategy": robak_split_strategy,
+            "normalization": robak_normalization,
+            "target_mode": robak_target_mode,
+            "label_source": robak_label_source,
+            "weight_decay": robak_weight_decay,
+            "loss_type": robak_loss_type,
+            "huber_delta": robak_huber_delta,
+            "lr_schedule": robak_lr_schedule,
+            "loss_dx_weight": robak_loss_dx_weight,
+            "loss_dy_weight": robak_loss_dy_weight,
+            "loss_dtheta_weight": robak_loss_dtheta_weight,
             "torch_deterministic": robak_torch_deterministic,
+            "input_noise_std": robak_input_noise_std,
+            "clip_grad_norm": robak_clip_grad_norm,
+            "train_repeat_factor": robak_train_repeat_factor,
+            "train_cutout_enabled": robak_train_cutout_enabled,
+            "train_cutout_prob": robak_train_cutout_prob,
+            "train_cutout_min_len": robak_train_cutout_min_len,
+            "train_cutout_max_len": robak_train_cutout_max_len,
+            "train_cutout_fill_value": robak_train_cutout_fill_value,
+            "train_filter_max_step_trans": robak_train_filter_max_step_trans,
+            "train_filter_max_step_yaw": robak_train_filter_max_step_yaw,
+            "train_filter_scan_offset": robak_train_filter_scan_offset,
+            "train_filter_scan_offsets": robak_train_filter_scan_offsets,
+            "selection_metric": robak_selection_metric,
+            "selection_min_delta": robak_selection_min_delta,
+            "val_rollout_horizons": robak_val_rollout_horizons,
+            "rollout_eval_scan_offset": robak_rollout_eval_scan_offset,
+            "rollout_eval_position_tol_m": robak_rollout_eval_position_tol_m,
+            "rollout_eval_yaw_tol_rad": robak_rollout_eval_yaw_tol_rad,
+            "train_rollout_weight": robak_train_rollout_weight,
+            "train_rollout_horizon": robak_train_rollout_horizon,
+            "train_rollout_windows_per_epoch": robak_train_rollout_windows_per_epoch,
+            "train_rollout_batch_size": robak_train_rollout_batch_size,
+            "train_rollout_xy_weight": robak_train_rollout_xy_weight,
+            "train_rollout_yaw_weight": robak_train_rollout_yaw_weight,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -2452,17 +3106,31 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "model_source_experiment_id": model_source_experiment_id,
+            "model_source_experiment_id": robak_model_source_experiment_id,
             "model_name": robak_model_name,
             "scan_topic": "/scan_slam_robak",
             "relay_scan_topic": robak_relay_scan_topic,
+            "relay_only_on_inference_step": robak_relay_only_on_inference_step,
+            "relay_min_scan_confidence": robak_relay_min_scan_confidence,
+            "dth_deadzone": robak_dth_deadzone,
+            "dth_ema_alpha": robak_dth_ema_alpha,
+            "dth_median_window": robak_dth_median_window,
+            "dx_bias_correction": robak_dx_bias_correction,
+            "dy_bias_correction": robak_dy_bias_correction,
+            "dth_bias_correction": robak_dth_bias_correction,
+            "interpolate_between_steps": robak_interpolate_between_steps,
             "pose_topic": robak_pose_topic,
+            "pose_topic_secondary": (
+                robak_pose_topic_no_slam
+                if robak_no_slam_test_enabled and robak_no_slam_use_primary_infer_pose
+                else ""
+            ),
             "init_from": robak_infer_init_from,
             "gt_topic": dataset_gt_topic,
             "odom_topic": robak_infer_odom_topic,
+            "scan_offset": robak_infer_scan_offset,
             "max_step_trans": robak_infer_max_step_trans,
             "max_step_yaw": robak_infer_max_step_yaw,
-            "delta_ema_alpha": robak_infer_delta_ema_alpha,
             "odom_heading_alpha": robak_infer_odom_heading_alpha,
             "odom_heading_gain": robak_infer_odom_heading_gain,
             "odom_sync_tolerance_sec": robak_infer_odom_sync_tolerance,
@@ -2482,6 +3150,10 @@ def launch_setup(context, *args, **kwargs):
             "odom_guard_yaw_anchor_gain": robak_odom_guard_yaw_anchor_gain,
             "odom_rebase_to_local_origin": robak_odom_rebase_to_local_origin,
             "use_odom_corrections": robak_use_odom_corrections,
+            "use_residual_odom_delta_base": robak_use_residual_odom_delta_base,
+            "residual_dx_clip_abs": robak_residual_dx_clip_abs,
+            "residual_dy_clip_abs": robak_residual_dy_clip_abs,
+            "residual_dtheta_clip_abs": robak_residual_dtheta_clip_abs,
             "force_odom_pose": robak_force_odom_pose,
             "odom_fallback_before_model_ready": robak_odom_fallback_before_model_ready,
             "write_experiment_metadata": False,
@@ -2497,7 +3169,7 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "model_source_experiment_id": model_source_experiment_id,
+            "model_source_experiment_id": robak_model_source_experiment_id,
             "model_name": robak_model_name,
             # Ten sam tor skanu co Robak+SLAM (scan_fix_robak); różnica to brak mapy SLAM w pętli.
             "scan_topic": "/scan_slam_robak",
@@ -2507,9 +3179,10 @@ def launch_setup(context, *args, **kwargs):
             "init_from": robak_no_slam_infer_init_from,
             "gt_topic": dataset_gt_topic,
             "odom_topic": robak_no_slam_infer_odom_topic,
+            "scan_offset": robak_no_slam_infer_scan_offset,
+            "interpolate_between_steps": robak_no_slam_interpolate_between_steps,
             "max_step_trans": robak_no_slam_infer_max_step_trans,
             "max_step_yaw": robak_no_slam_infer_max_step_yaw,
-            "delta_ema_alpha": robak_no_slam_infer_delta_ema_alpha,
             "odom_heading_alpha": robak_no_slam_infer_odom_heading_alpha,
             "odom_heading_gain": robak_no_slam_infer_odom_heading_gain,
             "odom_sync_tolerance_sec": robak_no_slam_infer_odom_sync_tolerance,
@@ -2529,12 +3202,22 @@ def launch_setup(context, *args, **kwargs):
             "odom_guard_yaw_anchor_gain": robak_no_slam_odom_guard_yaw_anchor_gain,
             "odom_rebase_to_local_origin": robak_no_slam_odom_rebase_to_local_origin,
             "use_odom_corrections": robak_no_slam_use_odom_corrections,
+            "use_residual_odom_delta_base": robak_no_slam_use_residual_odom_delta_base,
+            "residual_dx_clip_abs": robak_no_slam_residual_dx_clip_abs,
+            "residual_dy_clip_abs": robak_no_slam_residual_dy_clip_abs,
+            "residual_dtheta_clip_abs": robak_no_slam_residual_dtheta_clip_abs,
             "force_odom_pose": robak_no_slam_force_odom_pose,
             "odom_fallback_before_model_ready": robak_no_slam_odom_fallback_before_model_ready,
+            "dth_deadzone": robak_no_slam_dth_deadzone,
+            "dx_bias_correction": robak_no_slam_dx_bias_correction,
+            "dy_bias_correction": robak_no_slam_dy_bias_correction,
+            "dth_bias_correction": robak_no_slam_dth_bias_correction,
             "write_experiment_metadata": False,
         }],
         output="screen",
-        condition=IfCondition(str(robak_no_slam_test_enabled).lower()),
+        condition=IfCondition(
+            str(robak_no_slam_test_enabled and (not robak_no_slam_use_primary_infer_pose)).lower()
+        ),
     )
 
     # --- PORÓWNANIA: Rywak (d_theta1 + d_theta2 + delta_scan -> v,w) ---
@@ -2583,6 +3266,7 @@ def launch_setup(context, *args, **kwargs):
             "trajectory_cell_size_m": rywak_trajectory_cell_size_m,
             "cycle_min_repeat_hits": rywak_cycle_min_repeat_hits,
             "dataset_name": rywak_dataset_name,
+            "label_source": rywak_label_source,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -2610,17 +3294,39 @@ def launch_setup(context, *args, **kwargs):
             "val_ratio": rywak_val_ratio,
             "split_strategy": rywak_split_strategy,
             "torch_deterministic": rywak_torch_deterministic,
+            "model_type": rywak_model_type,
+            "sequence_length": rywak_sequence_length,
             "hidden_dims": rywak_hidden_dims,
             "dropout": rywak_dropout,
             "weight_decay": rywak_weight_decay,
             "huber_delta": rywak_huber_delta,
             "input_noise_std": rywak_input_noise_std,
             "clip_grad_norm": rywak_clip_grad_norm,
+            "lr_schedule": rywak_lr_schedule,
             "loss_dx_weight": rywak_loss_dx_weight,
             "loss_dy_weight": rywak_loss_dy_weight,
             "loss_dtheta_weight": rywak_loss_dtheta_weight,
             "loss_v_weight": rywak_loss_v_weight,
             "loss_w_weight": rywak_loss_w_weight,
+            "v_clip_abs": rywak_v_clip_abs,
+            "w_clip_abs": rywak_w_clip_abs,
+            "selection_metric": rywak_selection_metric,
+            "selection_min_delta": rywak_selection_min_delta,
+            "val_rollout_horizons": rywak_val_rollout_horizons,
+            "rollout_eval_position_tol_m": rywak_rollout_eval_position_tol_m,
+            "rollout_eval_yaw_tol_rad": rywak_rollout_eval_yaw_tol_rad,
+            "target_scaling": rywak_target_scaling,
+            "target_tanh_gamma": rywak_target_tanh_gamma,
+            "target_tanh_v_min": rywak_target_tanh_v_min,
+            "target_tanh_v_max": rywak_target_tanh_v_max,
+            "target_tanh_w_min": rywak_target_tanh_w_min,
+            "target_tanh_w_max": rywak_target_tanh_w_max,
+            "train_rollout_weight": rywak_train_rollout_weight,
+            "train_rollout_horizon": rywak_train_rollout_horizon,
+            "train_rollout_windows_per_epoch": rywak_train_rollout_windows_per_epoch,
+            "train_rollout_batch_size": rywak_train_rollout_batch_size,
+            "train_rollout_xy_weight": rywak_train_rollout_xy_weight,
+            "train_rollout_yaw_weight": rywak_train_rollout_yaw_weight,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -2635,10 +3341,11 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "model_source_experiment_id": model_source_experiment_id,
+            "model_source_experiment_id": rywak_model_source_experiment_id,
             "model_name": rywak_model_name,
             "scan_topic": "/scan_slam_rywak",
             "relay_scan_topic": rywak_relay_scan_topic,
+            "relay_min_scan_confidence": rywak_relay_min_scan_confidence,
             "pose_topic": rywak_pose_topic,
             "odom_topic": rywak_infer_odom_topic,
             "init_from_odom_topic": rywak_infer_init_from_odom_topic,
@@ -2663,6 +3370,8 @@ def launch_setup(context, *args, **kwargs):
             "max_integration_dt": rywak_max_integration_dt,
             "max_step_trans": rywak_max_step_trans,
             "max_step_yaw": rywak_max_step_yaw,
+            "v_bias_correction": rywak_v_bias_correction,
+            "w_bias_correction": rywak_w_bias_correction,
             "odom_rebase_to_local_origin": rywak_odom_rebase_to_local_origin,
             "use_odom_corrections": rywak_use_odom_corrections,
             "force_odom_pose": rywak_force_odom_pose,
@@ -2680,6 +3389,9 @@ def launch_setup(context, *args, **kwargs):
             "odom_guard_yaw_error_rad": rywak_odom_guard_yaw_error_rad,
             "odom_guard_yaw_anchor_base": rywak_odom_guard_yaw_anchor_base,
             "odom_guard_yaw_anchor_gain": rywak_odom_guard_yaw_anchor_gain,
+            "use_residual_odom_base": rywak_use_residual_odom_base,
+            "residual_v_clip_abs": rywak_residual_v_clip_abs,
+            "residual_w_clip_abs": rywak_residual_w_clip_abs,
             "write_experiment_metadata": False,
         }],
         output="screen",
@@ -2693,7 +3405,7 @@ def launch_setup(context, *args, **kwargs):
             "seed": seed,
             "out_dir": out_dir,
             "experiment_id": experiment_id,
-            "model_source_experiment_id": model_source_experiment_id,
+            "model_source_experiment_id": rywak_model_source_experiment_id,
             "model_name": rywak_model_name,
             "scan_topic": "/scan_slam_rywak",
             "pose_topic": rywak_pose_topic_no_slam,
@@ -2722,6 +3434,8 @@ def launch_setup(context, *args, **kwargs):
             "max_integration_dt": rywak_no_slam_max_integration_dt,
             "max_step_trans": rywak_no_slam_max_step_trans,
             "max_step_yaw": rywak_no_slam_max_step_yaw,
+            "v_bias_correction": rywak_no_slam_v_bias_correction,
+            "w_bias_correction": rywak_no_slam_w_bias_correction,
             "odom_rebase_to_local_origin": rywak_no_slam_odom_rebase_to_local_origin,
             "use_odom_corrections": rywak_no_slam_use_odom_corrections,
             "force_odom_pose": rywak_no_slam_force_odom_pose,
@@ -2739,11 +3453,260 @@ def launch_setup(context, *args, **kwargs):
             "odom_guard_yaw_error_rad": rywak_no_slam_odom_guard_yaw_error_rad,
             "odom_guard_yaw_anchor_base": rywak_no_slam_odom_guard_yaw_anchor_base,
             "odom_guard_yaw_anchor_gain": rywak_no_slam_odom_guard_yaw_anchor_gain,
+            "use_residual_odom_base": rywak_no_slam_use_residual_odom_base,
+            "residual_v_clip_abs": rywak_no_slam_residual_v_clip_abs,
+            "residual_w_clip_abs": rywak_no_slam_residual_w_clip_abs,
             "write_experiment_metadata": False,
         }],
         output="screen",
         condition=IfCondition(str(rywak_no_slam_test_enabled).lower()),
     )
+
+    # tor9: odometry-only custom SLAM track. The node produces an integrated
+    # pose / TF from /odom_raw and relays the lidar to slam_toolbox_odom_only.
+    # This is the analogue of infer_robak_node / infer_rywak_node but with
+    # odometry as the only motion source (no neural model in the loop).
+    odom_only_node = Node(
+        package="ai_slam_ai",
+        executable="odom_only_node",
+        name="odom_only_node",
+        parameters=[{
+            "use_sim_time": True,
+            "scan_topic": odom_only_scan_topic,
+            "relay_scan_topic": odom_only_relay_scan_topic,
+            "odom_topic": odom_only_infer_odom_topic,
+            "pose_topic": odom_only_pose_topic,
+            "pose_topic_no_slam": odom_only_pose_topic_no_slam,
+            "tf_parent": odom_only_tf_parent,
+            "tf_child": odom_only_tf_child,
+            "publish_tf": True,
+            "odom_rebase_to_local_origin": odom_only_rebase,
+            "publish_no_slam_pose": odom_only_publish_no_slam_pose,
+            "publish_rate_hz": odom_only_publish_rate_hz,
+        }],
+        output="screen",
+        condition=IfCondition(str(odom_only_test_enabled).lower()),
+    )
+
+    # tor10: naive hand-written scan-to-map SLAM. Self-contained: no
+    # slam_toolbox, no scan_fix relay — the node subscribes to /scan and
+    # /odom_raw directly and publishes its own map, pose, and TF.
+    naive_odom_slam_node = Node(
+        package="ai_slam_ai",
+        executable="naive_odom_slam_node",
+        name="naive_odom_slam_node",
+        parameters=[{
+            "use_sim_time": True,
+            "scan_topic": naive_slam_scan_topic,
+            "odom_topic": naive_slam_odom_topic,
+            "pose_topic": naive_slam_pose_topic,
+            "odom_out_topic": "/odom_naive_slam",
+            "map_topic": naive_slam_map_topic,
+            "tf_parent": naive_slam_tf_parent,
+            "tf_child": naive_slam_tf_child,
+            "publish_tf": True,
+            "map_resolution": naive_slam_map_res,
+            "map_width_m": naive_slam_map_w,
+            "map_height_m": naive_slam_map_h,
+            "search_xy_range": naive_slam_xy_range,
+            "search_xy_step": naive_slam_xy_step,
+            "search_theta_range": naive_slam_th_range,
+            "search_theta_step": naive_slam_th_step,
+            "search_xy_range_m": naive_slam_xy_range_m,
+            "search_xy_step_m": naive_slam_xy_step_m,
+            "search_theta_range_deg": naive_slam_th_range_deg,
+            "search_theta_step_deg": naive_slam_th_step_deg,
+            "motion_prior": naive_slam_motion_prior,
+            "use_exhaustive_search": naive_slam_use_exhaustive,
+            "max_scan_range": naive_slam_max_range,
+            "min_scan_range": naive_slam_min_range,
+            "map_update_beam_subsample": naive_slam_map_sub,
+            "score_beam_subsample": naive_slam_score_sub,
+            "update_every_n_scans": naive_slam_every_n,
+            "publish_map_every_n": naive_slam_pub_map_n,
+            "logodds_occ": naive_slam_lo_occ,
+            "logodds_free": naive_slam_lo_free,
+            "logodds_min": naive_slam_lo_min,
+            "logodds_max": naive_slam_lo_max,
+            "odom_prior_xy_weight": naive_slam_prior_xy_w,
+            "odom_prior_theta_weight": naive_slam_prior_th_w,
+            "init_from_odom": True,
+        }],
+        output="screen",
+        condition=IfCondition(str(naive_slam_test_enabled).lower()),
+    )
+
+    # tor11: Robak inference node (motion-prior generator only — no slam_toolbox).
+    naive_robak_infer_node = Node(
+        package="ai_slam_ai",
+        executable="infer_robak_node",
+        name="infer_robak_naive_slam_node",
+        parameters=[{
+            "use_sim_time": True,
+            "seed": seed,
+            "out_dir": out_dir,
+            "experiment_id": experiment_id,
+            "model_source_experiment_id": robak_model_source_experiment_id,
+            "model_name": robak_model_name,
+            "scan_topic": "/scan_slam_robak",
+            "pose_topic": naive_robak_infer_pose_topic,
+            "tf_parent": naive_robak_infer_tf_parent,
+            "tf_child": naive_robak_infer_tf_child,
+            "publish_tf": False,
+            "init_from": "odom",
+            "odom_topic": robak_infer_odom_topic,
+            "force_odom_pose": False,
+            "odom_fallback_before_model_ready": False,
+            "dth_deadzone": robak_dth_deadzone,
+            "dx_bias_correction": robak_dx_bias_correction,
+            "dy_bias_correction": robak_dy_bias_correction,
+            "dth_bias_correction": robak_dth_bias_correction,
+            "scan_offset": robak_infer_scan_offset,
+            "max_step_trans": robak_infer_max_step_trans,
+            "max_step_yaw": robak_infer_max_step_yaw,
+            "use_odom_corrections": False,
+            "use_residual_odom_delta_base": False,
+            "odom_guard_enabled": False,
+            "write_experiment_metadata": False,
+        }],
+        output="screen",
+        condition=IfCondition(str(naive_robak_slam_test_enabled).lower()),
+    )
+    # tor11: naive SLAM node driven by Robak prior.
+    naive_robak_slam_node = Node(
+        package="ai_slam_ai",
+        executable="naive_odom_slam_node",
+        name="naive_robak_slam_node",
+        parameters=[{
+            "use_sim_time": True,
+            "scan_topic": naive_slam_scan_topic,
+            "motion_prior_pose_topic": naive_robak_slam_prior_topic,
+            "pose_topic": naive_robak_slam_pose_topic,
+            "odom_out_topic": "/odom_naive_robak_slam",
+            "map_topic": naive_robak_slam_map_topic,
+            "tf_parent": naive_robak_slam_tf_parent,
+            "tf_child": naive_robak_slam_tf_child,
+            "publish_tf": True,
+            "map_resolution": naive_slam_map_res,
+            "map_width_m": naive_slam_map_w,
+            "map_height_m": naive_slam_map_h,
+            "search_xy_range_m": naive_slam_xy_range_m,
+            "search_xy_step_m": naive_slam_xy_step_m,
+            "search_theta_range_deg": naive_slam_th_range_deg,
+            "search_theta_step_deg": naive_slam_th_step_deg,
+            "search_xy_range": naive_slam_xy_range,
+            "search_xy_step": naive_slam_xy_step,
+            "search_theta_range": naive_slam_th_range,
+            "search_theta_step": naive_slam_th_step,
+            "use_exhaustive_search": naive_slam_use_exhaustive,
+            "max_scan_range": naive_slam_max_range,
+            "min_scan_range": naive_slam_min_range,
+            "map_update_beam_subsample": naive_slam_map_sub,
+            "score_beam_subsample": naive_slam_score_sub,
+            "update_every_n_scans": naive_slam_every_n,
+            "publish_map_every_n": naive_slam_pub_map_n,
+            "logodds_occ": naive_slam_lo_occ,
+            "logodds_free": naive_slam_lo_free,
+            "logodds_min": naive_slam_lo_min,
+            "logodds_max": naive_slam_lo_max,
+            "odom_prior_xy_weight": naive_slam_prior_xy_w,
+            "odom_prior_theta_weight": naive_slam_prior_th_w,
+            "init_from_odom": False,
+            "odom_topic": robak_infer_odom_topic,
+            "motion_prior_alpha": naive_robak_slam_alpha,
+        }],
+        output="screen",
+        condition=IfCondition(str(naive_robak_slam_test_enabled).lower()),
+    )
+
+    # tor12: Rywak inference node (motion-prior generator only — no slam_toolbox).
+    naive_rywak_infer_node = Node(
+        package="ai_slam_ai",
+        executable="infer_rywak_node",
+        name="infer_rywak_naive_slam_node",
+        parameters=[{
+            "use_sim_time": True,
+            "seed": seed,
+            "out_dir": out_dir,
+            "experiment_id": experiment_id,
+            "model_source_experiment_id": rywak_model_source_experiment_id,
+            "model_name": rywak_model_name,
+            "scan_topic": "/scan_slam_rywak",
+            "pose_topic": naive_rywak_infer_pose_topic,
+            "tf_parent": naive_rywak_infer_tf_parent,
+            "tf_child": naive_rywak_infer_tf_child,
+            "publish_tf": False,
+            "odom_topic": rywak_infer_odom_topic,
+            "init_from_odom_topic": rywak_infer_odom_topic,
+            "force_odom_pose": False,
+            "odom_fallback_before_model_ready": False,
+            "use_odom_corrections": False,
+            "odom_guard_enabled": False,
+            "use_residual_odom_base": rywak_use_residual_odom_base,
+            "residual_v_clip_abs": rywak_residual_v_clip_abs,
+            "residual_w_clip_abs": rywak_residual_w_clip_abs,
+            "v_clip_abs": rywak_v_clip_abs,
+            "w_clip_abs": rywak_w_clip_abs,
+            "vel_ema_alpha": rywak_vel_ema_alpha,
+            "sync_tolerance_sec": rywak_sync_tolerance,
+            "interpolate_odom": rywak_interpolate_odom,
+            "sync_pair_gap_sec": rywak_sync_pair_gap,
+            "delta_scan_clip": rywak_delta_scan_clip,
+            "max_integration_dt": rywak_max_integration_dt,
+            "anchor_yaw_to_odom": 0.0,
+            "anchor_xy_to_odom": 0.0,
+            "write_experiment_metadata": False,
+        }],
+        output="screen",
+        condition=IfCondition(str(naive_rywak_slam_test_enabled).lower()),
+    )
+    # tor12: naive SLAM node driven by Rywak prior.
+    naive_rywak_slam_node = Node(
+        package="ai_slam_ai",
+        executable="naive_odom_slam_node",
+        name="naive_rywak_slam_node",
+        parameters=[{
+            "use_sim_time": True,
+            "scan_topic": naive_slam_scan_topic,
+            "motion_prior_pose_topic": naive_rywak_slam_prior_topic,
+            "pose_topic": naive_rywak_slam_pose_topic,
+            "odom_out_topic": "/odom_naive_rywak_slam",
+            "map_topic": naive_rywak_slam_map_topic,
+            "tf_parent": naive_rywak_slam_tf_parent,
+            "tf_child": naive_rywak_slam_tf_child,
+            "publish_tf": True,
+            "map_resolution": naive_slam_map_res,
+            "map_width_m": naive_slam_map_w,
+            "map_height_m": naive_slam_map_h,
+            "search_xy_range_m": naive_slam_xy_range_m,
+            "search_xy_step_m": naive_slam_xy_step_m,
+            "search_theta_range_deg": naive_slam_th_range_deg,
+            "search_theta_step_deg": naive_slam_th_step_deg,
+            "search_xy_range": naive_slam_xy_range,
+            "search_xy_step": naive_slam_xy_step,
+            "search_theta_range": naive_slam_th_range,
+            "search_theta_step": naive_slam_th_step,
+            "use_exhaustive_search": naive_slam_use_exhaustive,
+            "max_scan_range": naive_slam_max_range,
+            "min_scan_range": naive_slam_min_range,
+            "map_update_beam_subsample": naive_slam_map_sub,
+            "score_beam_subsample": naive_slam_score_sub,
+            "update_every_n_scans": naive_slam_every_n,
+            "publish_map_every_n": naive_slam_pub_map_n,
+            "logodds_occ": naive_slam_lo_occ,
+            "logodds_free": naive_slam_lo_free,
+            "logodds_min": naive_slam_lo_min,
+            "logodds_max": naive_slam_lo_max,
+            "odom_prior_xy_weight": naive_slam_prior_xy_w,
+            "odom_prior_theta_weight": naive_slam_prior_th_w,
+            "init_from_odom": False,
+            "odom_topic": robak_infer_odom_topic,
+            "motion_prior_alpha": naive_rywak_slam_alpha,
+        }],
+        output="screen",
+        condition=IfCondition(str(naive_rywak_slam_test_enabled).lower()),
+    )
+
     evaluator = Node(
         package="ai_slam_eval",
         executable="eval_node",
@@ -2787,6 +3750,18 @@ def launch_setup(context, *args, **kwargs):
             "pose_topic_rywak": rywak_pose_topic,
             "pose_topic_robak_no_slam": robak_pose_topic_no_slam,
             "pose_topic_rywak_no_slam": rywak_pose_topic_no_slam,
+            # tor9: odometry-only custom SLAM track.
+            "pose_topic_odom_only": odom_only_pose_topic,
+            "pose_topic_odom_only_no_slam": odom_only_pose_topic_no_slam,
+            # tor10: naive hand-written scan-to-map SLAM track.
+            "pose_topic_naive_odom_slam": naive_slam_pose_topic,
+            "map_topic_naive_odom_slam": naive_slam_map_topic,
+            # tor11: naive SLAM + Robak prior.
+            "pose_topic_naive_robak_slam": naive_robak_slam_pose_topic,
+            "map_topic_naive_robak_slam": naive_robak_slam_map_topic,
+            # tor12: naive SLAM + Rywak prior.
+            "pose_topic_naive_rywak_slam": naive_rywak_slam_pose_topic,
+            "map_topic_naive_rywak_slam": naive_rywak_slam_map_topic,
             "slam_baseline_tf_topic": "/tf",
             "slam_baseline_map_frame": slam_baseline_map_frame,
             "slam_baseline_odom_frame": slam_baseline_odom_frame,
@@ -2794,12 +3769,49 @@ def launch_setup(context, *args, **kwargs):
             "slam_robak_odom_frame": slam_robak_odom_frame,
             "slam_rywak_map_frame": slam_rywak_map_frame,
             "slam_rywak_odom_frame": slam_rywak_odom_frame,
+            "slam_odom_only_map_frame": slam_odom_only_map_frame,
+            "slam_odom_only_odom_frame": slam_odom_only_odom_frame,
             "robak_dataset_name": robak_train_dataset_name,
             "robak_model_name": robak_model_name,
             "robak_history_name": robak_history_name,
             "rywak_dataset_name": rywak_train_dataset_name,
             "rywak_model_name": rywak_model_name,
             "rywak_history_name": rywak_history_name,
+            "thesis_strict_no_anchor": thesis_strict_no_anchor,
+            "thesis_anchor_risk_detected": thesis_anchor_risk_detected,
+            "thesis_anchor_risk_parameters": json.dumps(thesis_anchor_risks, ensure_ascii=False),
+            "thesis_config_path": resolved_config_path,
+            "thesis_config_name": config_name,
+            "thesis_dataset_source_experiment_id": dataset_source_experiment_id,
+            "thesis_model_source_experiment_id": model_source_experiment_id,
+            "thesis_robak_model_source_experiment_id": robak_model_source_experiment_id,
+            "thesis_rywak_model_source_experiment_id": rywak_model_source_experiment_id,
+            "thesis_train_world": train_world_sdf,
+            "thesis_test_world": selected_world_sdf,
+            "thesis_seed": seed,
+            "thesis_split_strategy": split_strategy,
+            "thesis_normalization": robak_normalization,
+            "thesis_loss_type": robak_loss_type,
+            "thesis_lr_schedule": robak_lr_schedule,
+            "thesis_weight_decay": robak_weight_decay,
+            "thesis_input_noise_std": robak_input_noise_std,
+            "thesis_train_cutout_enabled": robak_train_cutout_enabled,
+            "thesis_train_cutout_prob": robak_train_cutout_prob,
+            "thesis_train_filter_scan_offset": robak_train_filter_scan_offset,
+            "thesis_train_filter_scan_offsets": json.dumps(train_filter_offsets_meta),
+            "thesis_infer_scan_offset": infer_scan_offset_meta,
+            # eval_node declares thesis_offset_match as a string parameter.
+            "thesis_offset_match": (
+                str(offset_match_meta).lower() if offset_match_meta is not None else ""
+            ),
+            "thesis_n_dataset_samples": dataset_max_samples,
+            "thesis_dataset_balance_mode": (
+                "balanced" if (robak_balance_histograms or rywak_balance_histograms) else "raw"
+            ),
+            "thesis_trajectory_mode": (
+                f"robak={robak_trajectory_mode},rywak={rywak_trajectory_mode}"
+            ),
+            "thesis_notes_for_thesis": notes_for_thesis,
         }],
         output="screen",
         condition=IfCondition(str(do_eval_phase).lower()),
@@ -3043,11 +4055,12 @@ def launch_setup(context, *args, **kwargs):
         gz_launch_gui,
         TimerAction(period=bridge_delay, actions=[bridge, bridge_tf_world]),
         robot_state_pub,
-        # 4x scan_fix (baseline + osobne tory)
+        # 5x scan_fix (baseline + osobne tory: ai/robak/rywak/odom_only)
         scan_fix_baseline,
         scan_fix_ai,
         scan_fix_robak,
         scan_fix_rywak,
+        scan_fix_odom_only,
         # scan-matcher tory
         scan_matcher_local,
         scan_matcher_bruteforce,
@@ -3059,6 +4072,7 @@ def launch_setup(context, *args, **kwargs):
         slam_ai,
         slam_robak,
         slam_rywak,
+        slam_odom_only,
         # lifecycle transitions
         configure_baseline,
         activate_baseline,
@@ -3068,6 +4082,8 @@ def launch_setup(context, *args, **kwargs):
         activate_robak,
         configure_rywak,
         activate_rywak,
+        configure_odom_only,
+        activate_odom_only,
         # pipeline nodes that depend on simulator
         dataset_motion_watchdog,
         dataset_rec,
@@ -3078,6 +4094,16 @@ def launch_setup(context, *args, **kwargs):
         dataset_rec_rywak,
         infer_rywak,
         infer_rywak_no_slam,
+        # tor9: pure-odom custom SLAM track (motion source = /odom_raw).
+        odom_only_node,
+        # tor10: naive hand-written scan-to-map SLAM baseline.
+        naive_odom_slam_node,
+        # tor11: naive SLAM + Robak motion prior (inference node + SLAM node).
+        naive_robak_infer_node,
+        naive_robak_slam_node,
+        # tor12: naive SLAM + Rywak motion prior (inference node + SLAM node).
+        naive_rywak_infer_node,
+        naive_rywak_slam_node,
         evaluator,
     ]
 
@@ -3122,9 +4148,28 @@ def generate_launch_description():
             description="Load *.pt from out/<this_id>/ (empty = same as experiment_id)",
         ),
         DeclareLaunchArgument(
+            "robak_model_source_experiment_id",
+            default_value="__USE_CONFIG__",
+            description="Load Robak *.pt from out/<this_id>/ (empty = use model_source_experiment_id/config)",
+        ),
+        DeclareLaunchArgument(
+            "rywak_model_source_experiment_id",
+            default_value="__USE_CONFIG__",
+            description="Load Rywak *.pt from out/<this_id>/ (empty = use model_source_experiment_id/config)",
+        ),
+        DeclareLaunchArgument(
             "dataset_source_experiment_id",
             default_value="__USE_CONFIG__",
             description="Train from out/<this_id>/dataset*.npz (empty = collect local dataset)",
+        ),
+        DeclareLaunchArgument(
+            "dataset_source_strict",
+            default_value="__USE_CONFIG__",
+            description=(
+                "If true, missing files in dataset_source_experiment_id "
+                "abort the launch instead of falling back to local "
+                "dataset collection. Defaults to experiment.dataset_source_strict."
+            ),
         ),
         OpaqueFunction(function=launch_setup),
     ])

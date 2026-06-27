@@ -2,10 +2,27 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASE_CONFIG="$ROOT_DIR/ai_slam_ws/src/ai_slam_bringup/config/experiment_config.yaml"
+BASE_CONFIG="$ROOT_DIR/ai_slam_ws/src/ai_slam_bringup/config/experiment_combined_split_sources_best.yaml"
 RUN_FULL_SCRIPT="$ROOT_DIR/scripts/run_full_cycle.sh"
 OUT_DIR="$ROOT_DIR/out"
 TMP_DIR="$(mktemp -d)"
+
+resolve_results_path() {
+  local exp_id="$1"
+  local direct="$OUT_DIR/$exp_id/results.json"
+  local prefixed="$OUT_DIR/exp_$exp_id/results.json"
+  local fallback="$ROOT_DIR/ai_slam_ws/out/$exp_id/results.json"
+
+  if [[ -f "$direct" ]]; then
+    echo "$direct"
+  elif [[ -f "$prefixed" ]]; then
+    echo "$prefixed"
+  elif [[ -f "$fallback" ]]; then
+    echo "$fallback"
+  else
+    return 1
+  fi
+}
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -302,9 +319,9 @@ for variant in "${VARIANTS[@]}"; do
   elapsed="$((t1 - t0))"
 
   if has_cmd rg; then
-    exp_id="$(rg -o 'out/exp_[0-9_]+' "$log_path" | tail -1 | sed 's|out/||' || true)"
+    exp_id="$(rg -o 'out/(exp_)?[A-Za-z0-9_\-]+' "$log_path" | tail -1 | sed 's|out/||' || true)"
   else
-    exp_id="$(grep -Eo 'out/exp_[0-9_]+' "$log_path" | tail -1 | sed 's|out/||' || true)"
+    exp_id="$(grep -Eo 'out/(exp_)?[A-Za-z0-9_\-]+' "$log_path" | tail -1 | sed 's|out/||' || true)"
   fi
   if [[ -z "$exp_id" ]]; then
     latest="$(ls -1dt "$OUT_DIR"/exp_* 2>/dev/null | head -1 || true)"
@@ -317,8 +334,7 @@ for variant in "${VARIANTS[@]}"; do
     continue
   fi
 
-  results_path="$OUT_DIR/$exp_id/results.json"
-  if [[ ! -f "$results_path" ]]; then
+  if ! results_path="$(resolve_results_path "$exp_id")"; then
     echo "WARN: missing results.json for $variant (exp=$exp_id)"
     echo "$variant,$exp_id,NO_RESULTS,$elapsed,,,,,,,,$cfg_path,$log_path" >> "$SUMMARY_CSV"
     continue

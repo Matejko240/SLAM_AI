@@ -2,30 +2,37 @@ import math
 import os
 import time
 from collections import deque
-from typing import List
 import numpy as np
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import JointState, LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from tf2_ros import TransformBroadcaster
 
 import torch
-import torch.nn as nn
 
 from .common import (
     seed_all,
     ensure_dir,
     quat_from_yaw,
+    scan_motion_confidence,
     select_torch_device,
     synchronize_torch_device,
     wrap,
     xytheta_from_odom,
 )
 from .experiment_logger import ExperimentLogger
+from .rywak_models import (
+    build_rywak_model,
+    model_type_from_payload,
+    normalize_target_scaling,
+    output_activation_for_target_scaling,
+    parse_hidden_dims,
+    unscale_targets_from_model_np,
+)
 
 
 def _stamp_to_sec(stamp) -> float:
@@ -75,35 +82,6 @@ def _rebase_pose(abs_xyth, origin_xyth):
     return float(x_l), float(y_l), float(th_l)
 
 
-def _parse_hidden_dims(value) -> List[int]:
-    if value is None:
-        return [256, 128, 64]
-    dims = [int(v) for v in list(value) if int(v) > 0]
-    return dims if dims else [256, 128, 64]
-
-
-class MLP2(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int = 2, hidden_dims: List[int] = None, dropout: float = 0.0):
-        super().__init__()
-        if hidden_dims is None:
-            hidden_dims = [192, 96, 48]
-
-        layers = []
-        prev = int(in_dim)
-        for h in hidden_dims:
-            h = int(h)
-            layers.append(nn.Linear(prev, h))
-            layers.append(nn.ReLU())
-            if dropout > 0.0:
-                layers.append(nn.Dropout(p=float(dropout)))
-            prev = h
-        layers.append(nn.Linear(prev, int(out_dim)))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.net(x)
-
-
 class InferRywakNode(Node):
     def __init__(self):
         super().__init__("infer_rywak_node")
@@ -121,6 +99,7 @@ class InferRywakNode(Node):
 
         self.declare_parameter("scan_topic", "/scan_slam_rywak")
         self.declare_parameter("relay_scan_topic", "")
+        self.declare_parameter("relay_min_scan_confidence", 0.0)
         self.declare_parameter("pose_topic", "/pose_rywak")
         self.declare_parameter("tf_parent", "odom_rywak")
         self.declare_parameter("tf_child", "base_link_rywak")
@@ -146,9 +125,14 @@ class InferRywakNode(Node):
         self.declare_parameter("heading_for_xy_odom_weight", 0.60)
         self.declare_parameter("xy_step_odom_weight", 0.35)
         self.declare_parameter("xy_step_odom_gain", 0.45)
+        self.declare_parameter("scan_confidence_low_rms", 0.02)
+        self.declare_parameter("scan_confidence_high_rms", 0.18)
+        self.declare_parameter("low_confidence_odom_gain", 0.30)
         self.declare_parameter("max_integration_dt", 0.20)
         self.declare_parameter("max_step_trans", 0.0)
         self.declare_parameter("max_step_yaw", 0.0)
+        self.declare_parameter("v_bias_correction", 0.0)
+        self.declare_parameter("w_bias_correction", 0.0)
         self.declare_parameter("odom_rebase_to_local_origin", False)
         self.declare_parameter("use_odom_corrections", True)
         self.declare_parameter("force_odom_pose", False)
@@ -166,6 +150,9 @@ class InferRywakNode(Node):
         self.declare_parameter("odom_guard_yaw_error_rad", 0.35)
         self.declare_parameter("odom_guard_yaw_anchor_base", 0.75)
         self.declare_parameter("odom_guard_yaw_anchor_gain", 0.50)
+        self.declare_parameter("use_residual_odom_base", False)
+        self.declare_parameter("residual_v_clip_abs", 0.0)
+        self.declare_parameter("residual_w_clip_abs", 0.0)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -198,6 +185,9 @@ class InferRywakNode(Node):
         self.device = torch.device(self.torch_device_info.resolved)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.relay_scan_topic = str(self.get_parameter("relay_scan_topic").value).strip()
+        self.relay_min_scan_confidence = float(
+            self.get_parameter("relay_min_scan_confidence").value
+        )
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
@@ -218,7 +208,8 @@ class InferRywakNode(Node):
         self.exp_logger.save()
 
         self.odom_topic = str(self.get_parameter("odom_topic").value)
-        self.init_odom_topic = str(self.get_parameter("init_from_odom_topic").value)
+        self.init_odom_topic = str(self.get_parameter("init_from_odom_topic").value).strip()
+        self.init_from_odom = bool(self.init_odom_topic)
         self.sync_tolerance_sec = float(self.get_parameter("sync_tolerance_sec").value)
         self.interpolate_odom = bool(self.get_parameter("interpolate_odom").value)
         self.sync_pair_gap_sec = float(self.get_parameter("sync_pair_gap_sec").value)
@@ -237,9 +228,14 @@ class InferRywakNode(Node):
         self.heading_for_xy_odom_weight = float(self.get_parameter("heading_for_xy_odom_weight").value)
         self.xy_step_odom_weight = float(self.get_parameter("xy_step_odom_weight").value)
         self.xy_step_odom_gain = float(self.get_parameter("xy_step_odom_gain").value)
+        self.scan_confidence_low_rms = float(self.get_parameter("scan_confidence_low_rms").value)
+        self.scan_confidence_high_rms = float(self.get_parameter("scan_confidence_high_rms").value)
+        self.low_confidence_odom_gain = float(self.get_parameter("low_confidence_odom_gain").value)
         self.max_integration_dt = float(self.get_parameter("max_integration_dt").value)
         self.max_step_trans = float(self.get_parameter("max_step_trans").value)
         self.max_step_yaw = float(self.get_parameter("max_step_yaw").value)
+        self.v_bias_correction = float(self.get_parameter("v_bias_correction").value)
+        self.w_bias_correction = float(self.get_parameter("w_bias_correction").value)
         self.odom_rebase_to_local_origin = bool(self.get_parameter("odom_rebase_to_local_origin").value)
         self.use_odom_corrections = bool(self.get_parameter("use_odom_corrections").value)
         self.force_odom_pose = bool(self.get_parameter("force_odom_pose").value)
@@ -261,8 +257,15 @@ class InferRywakNode(Node):
         self.odom_guard_yaw_error_rad = float(self.get_parameter("odom_guard_yaw_error_rad").value)
         self.odom_guard_yaw_anchor_base = float(self.get_parameter("odom_guard_yaw_anchor_base").value)
         self.odom_guard_yaw_anchor_gain = float(self.get_parameter("odom_guard_yaw_anchor_gain").value)
+        self.use_residual_odom_base = bool(self.get_parameter("use_residual_odom_base").value)
+        self.residual_v_clip_abs = float(self.get_parameter("residual_v_clip_abs").value)
+        self.residual_w_clip_abs = float(self.get_parameter("residual_w_clip_abs").value)
 
         self.model = None
+        self.model_type = "cnn"
+        self.sequence_length = 1
+        self.target_scaling = "zscore"
+        self.target_tanh_meta = None
         self.x_mean_t = None
         self.x_std_t = None
         self.y_mean_t = None
@@ -273,9 +276,13 @@ class InferRywakNode(Node):
 
         self.prev_scan = None
         self.prev_stamp_sec = None
-        self.theta_hist = deque(maxlen=3)
+        self.last_pub_stamp_ns = None
+        self.feature_history = deque(maxlen=1)
         # (stamp_sec, theta, v, w)
         self.odom_buf = deque(maxlen=2000)
+        # (stamp_sec, vel_left, vel_right) — raw wheel angular velocities
+        self.js_buf = deque(maxlen=2000)
+        self.js_miss_count = 0
         self.odom_origin_xyth = None
         self.odom_miss_count = 0
         self.odom_interp_count = 0
@@ -288,13 +295,14 @@ class InferRywakNode(Node):
         self.dy_filt = None
         self.dth_filt = None
 
-        self.pose_inited = False
+        self.pose_inited = not self.init_from_odom
         self._bootstrap_pose_done = False
         self.x = 0.0
         self.y = 0.0
         self.th = 0.0
 
         self.infer_start = None
+        self._model_wait_start = time.time()
         self.inference_count = 0
         self.inference_times_ms = []
 
@@ -306,8 +314,9 @@ class InferRywakNode(Node):
 
         self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
         self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 50)
+        self.sub_js = self.create_subscription(JointState, '/joint_states', self.on_joint_state, 50)
         self.sub_init_odom = None
-        if self.init_odom_topic != self.odom_topic:
+        if self.init_from_odom and self.init_odom_topic != self.odom_topic:
             self.sub_init_odom = self.create_subscription(Odometry, self.init_odom_topic, self.on_init_odom, 50)
 
         self.timer = self.create_timer(0.5, self.try_load_model)
@@ -323,9 +332,13 @@ class InferRywakNode(Node):
             f"xy_anchor={self.anchor_xy_to_odom}+{self.anchor_xy_to_odom_gain}*err, "
             f"xy_heading_odom_w={self.heading_for_xy_odom_weight}, "
             f"xy_step_odom_w={self.xy_step_odom_weight}+{self.xy_step_odom_gain}*err, "
+            f"scan_conf=[{self.scan_confidence_low_rms},{self.scan_confidence_high_rms}], "
+            f"low_conf_odom_gain={self.low_confidence_odom_gain}, "
             f"max_dt={self.max_integration_dt}, "
             f"max_step_trans={self.max_step_trans}, "
             f"max_step_yaw={self.max_step_yaw}, "
+            f"bias_correction(v={self.v_bias_correction:.5f}, w={self.w_bias_correction:.5f}), "
+            f"init_from_odom={self.init_from_odom}, "
             f"odom_rebase_to_local_origin={self.odom_rebase_to_local_origin}, "
             f"use_odom_corrections={self.use_odom_corrections}, "
             f"force_odom_pose={self.force_odom_pose}, "
@@ -334,7 +347,8 @@ class InferRywakNode(Node):
             f"fuse={self.odom_guard_fuse_weight}, "
             f"xy_err={self.odom_guard_xy_error_m}, "
             f"yaw_err={self.odom_guard_yaw_error_rad}), "
-            f"relay_scan_topic={self.relay_scan_topic or '(disabled)'}"
+            f"relay_scan_topic={self.relay_scan_topic or '(disabled)'}, "
+            f"relay_min_scan_confidence={self.relay_min_scan_confidence:.2f}"
         )
 
     def _rebase_odom_pose(self, x: float, y: float, th: float):
@@ -345,6 +359,8 @@ class InferRywakNode(Node):
         return _rebase_pose((x, y, th), self.odom_origin_xyth)
 
     def on_init_odom(self, msg: Odometry):
+        if not self.init_from_odom:
+            return
         self.latest_init_odom_msg = msg
         if self.pose_inited:
             self._try_publish_bootstrap_pose()
@@ -362,7 +378,7 @@ class InferRywakNode(Node):
         v = float(msg.twist.twist.linear.x)
         w = float(msg.twist.twist.angular.z)
         self.odom_buf.append((t, x, y, th, v, w))
-        if self.init_odom_topic == self.odom_topic and not self.pose_inited:
+        if self.init_from_odom and self.init_odom_topic == self.odom_topic and not self.pose_inited:
             self.x, self.y, self.th = x, y, th
             self.pose_inited = True
         self._try_publish_bootstrap_pose()
@@ -370,7 +386,40 @@ class InferRywakNode(Node):
             self.x, self.y, self.th = x, y, th
             self._publish_pose_stamped(msg.header.stamp)
 
+    def on_joint_state(self, msg: JointState):
+        t = _stamp_to_sec(msg.header.stamp)
+        vel_left = 0.0
+        vel_right = 0.0
+        for i, name in enumerate(msg.name):
+            if name == 'left_wheel_joint' and i < len(msg.velocity):
+                vel_left = float(msg.velocity[i])
+            elif name == 'right_wheel_joint' and i < len(msg.velocity):
+                vel_right = float(msg.velocity[i])
+        self.js_buf.append((t, vel_left, vel_right))
+
+    def _js_at(self, t_scan: float):
+        """Find nearest joint state within sync tolerance."""
+        if not self.js_buf:
+            return None
+        while len(self.js_buf) > 2 and self.js_buf[1][0] < (t_scan - 1.0):
+            self.js_buf.popleft()
+        t_best, vl_best, vr_best = min(self.js_buf, key=lambda x: abs(x[0] - t_scan))
+        if abs(t_best - t_scan) > self.sync_tolerance_sec:
+            return None
+        return float(vl_best), float(vr_best)
+
+    def _make_monotonic_stamp(self, stamp):
+        stamp_ns = int(getattr(stamp, "sec", 0)) * 1_000_000_000 + int(getattr(stamp, "nanosec", 0))
+        if self.last_pub_stamp_ns is not None and stamp_ns <= self.last_pub_stamp_ns:
+            stamp_ns = self.last_pub_stamp_ns + 1
+        self.last_pub_stamp_ns = stamp_ns
+        out = type(stamp)()
+        out.sec = int(stamp_ns // 1_000_000_000)
+        out.nanosec = int(stamp_ns % 1_000_000_000)
+        return out
+
     def _publish_pose_stamped(self, stamp) -> None:
+        stamp = self._make_monotonic_stamp(stamp)
         qx, qy, qz, qw = quat_from_yaw(self.th)
         ps = PoseStamped()
         ps.header.stamp = stamp
@@ -400,6 +449,15 @@ class InferRywakNode(Node):
 
     def _relay_scan(self, scan_msg: LaserScan) -> None:
         if self.pub_scan_relay is not None:
+            self.pub_scan_relay.publish(scan_msg)
+
+    def _maybe_relay_scan(self, scan_msg: LaserScan, scan_confidence: float | None) -> None:
+        if self.pub_scan_relay is None:
+            return
+        if scan_confidence is None:
+            self.pub_scan_relay.publish(scan_msg)
+            return
+        if float(scan_confidence) >= self.relay_min_scan_confidence:
             self.pub_scan_relay.publish(scan_msg)
 
     def _try_publish_bootstrap_pose(self) -> None:
@@ -476,21 +534,70 @@ class InferRywakNode(Node):
             self.odom_nearest_count += 1
         return od
 
+    def _reset_feature_history(self) -> None:
+        self.feature_history = deque(maxlen=max(1, int(self.sequence_length)))
+
+    def _model_predict_raw(self, xt: torch.Tensor) -> np.ndarray:
+        t0 = time.perf_counter()
+        synchronize_torch_device(self.device)
+        with torch.inference_mode():
+            if xt.dim() == 2:
+                xn = (xt - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
+            else:
+                xn = (xt - self.x_mean_t.view(1, 1, -1)) / torch.clamp(
+                    self.x_std_t.view(1, 1, -1), min=1e-6
+                )
+            yn = self.model(xn)
+            y_model = yn.detach().cpu().numpy().astype(np.float32).reshape(1, -1)
+            y_raw = unscale_targets_from_model_np(
+                y_model,
+                target_scaling=self.target_scaling,
+                y_mean=self.y_mean_t.detach().cpu().numpy().astype(np.float32),
+                y_std=self.y_std_t.detach().cpu().numpy().astype(np.float32),
+                target_tanh_meta=self.target_tanh_meta,
+            ).reshape(-1)
+        synchronize_torch_device(self.device)
+        t1 = time.perf_counter()
+        self.inference_times_ms.append((t1 - t0) * 1000.0)
+        self.inference_count += 1
+        return y_raw
+
     def try_load_model(self):
         if self.model is not None:
             return
         if not os.path.exists(self.model_path):
+            elapsed = time.time() - self._model_wait_start
+            if elapsed > 60.0 and not self.odom_fallback_before_model_ready:
+                self.get_logger().fatal(
+                    f"[Rywak] Model not found after {elapsed:.0f}s: {self.model_path}. "
+                    "odom_fallback_before_model_ready=false — no poses will ever be published. "
+                    "Set rywak_model_source_experiment_id or run train phase first."
+                )
+                rclpy.shutdown()
             return
 
         payload = torch.load(self.model_path, map_location="cpu")
         self.in_dim = int(payload.get("in_dim", 720))
         self.out_dim = int(payload.get("out_dim", 2))
-        hidden_dims = _parse_hidden_dims(payload.get("hidden_dims", [256, 128, 64]))
+        self.model_type = model_type_from_payload(payload)
+        self.sequence_length = max(1, int(payload.get("sequence_length", 1)))
+        self.target_scaling = normalize_target_scaling(payload.get("target_scaling", "zscore"))
+        self.target_tanh_meta = payload.get("target_tanh_meta")
+        hidden_dims = parse_hidden_dims(payload.get("hidden_dims", [256, 128, 64]))
         dropout = float(payload.get("dropout", 0.0))
-        self.model = MLP2(self.in_dim, self.out_dim, hidden_dims=hidden_dims, dropout=dropout)
+        self.model = build_rywak_model(
+            model_type=self.model_type,
+            in_dim=self.in_dim,
+            out_dim=self.out_dim,
+            hidden_dims=hidden_dims,
+            dropout=dropout,
+            sequence_length=self.sequence_length,
+            output_activation=output_activation_for_target_scaling(self.target_scaling),
+        )
         self.model.load_state_dict(payload["state_dict"])
         self.model.to(self.device)
         self.model.eval()
+        self._reset_feature_history()
 
         self.x_mean_t = payload["x_mean"].to(self.device, dtype=torch.float32).view(1, -1)
         self.x_std_t = payload["x_std"].to(self.device, dtype=torch.float32).view(1, -1)
@@ -513,7 +620,8 @@ class InferRywakNode(Node):
             )
 
         self.get_logger().info(
-            f"[Rywak] Model loaded: {self.model_path} (in_dim={self.in_dim}, out_dim={self.out_dim})"
+            f"[Rywak] Model loaded: {self.model_path} (type={self.model_type}, seq_len={self.sequence_length}, "
+            f"in_dim={self.in_dim}, out_dim={self.out_dim}, target_scaling={self.target_scaling})"
         )
         self._try_publish_bootstrap_pose()
 
@@ -542,35 +650,59 @@ class InferRywakNode(Node):
             return
 
         t_cur = _stamp_to_sec(msg.header.stamp)
-        need_odom = bool(self.force_odom_pose or self.model is None or self.out_dim == 2)
+        need_odom = bool(
+            self.force_odom_pose
+            or (self.model is None and self.odom_fallback_before_model_ready)
+            or self.use_odom_corrections
+            or self.use_residual_odom_base
+        )
         odom_match = None
         if need_odom:
             odom_match = self._odom_at(t_cur)
             if odom_match is None:
                 self.odom_miss_count += 1
+                self._reset_feature_history()
                 return
             x_odom, y_odom, th_cur, v_odom, w_odom = odom_match
+        else:
+            x_odom = float(self.x)
+            y_odom = float(self.y)
+            th_cur = float(self.th)
+            v_odom = 0.0
+            w_odom = 0.0
 
         if self.force_odom_pose:
             self.x = float(x_odom)
             self.y = float(y_odom)
             self.th = float(th_cur)
+            self._reset_feature_history()
             self._publish_pose_stamped(msg.header.stamp)
-            self._relay_scan(msg)
+            scan_conf = scan_motion_confidence(
+                self.prev_scan,
+                scan,
+                low_rms=self.scan_confidence_low_rms,
+                high_rms=self.scan_confidence_high_rms,
+            )
+            self._maybe_relay_scan(msg, scan_conf)
             self.prev_scan = scan
             self.prev_stamp_sec = t_cur
-            self.theta_hist.append(th_cur)
             return
 
         if self.model is None and self.odom_fallback_before_model_ready:
             self.x = float(x_odom)
             self.y = float(y_odom)
             self.th = float(th_cur)
+            self._reset_feature_history()
             self._publish_pose_stamped(msg.header.stamp)
-            self._relay_scan(msg)
+            scan_conf = scan_motion_confidence(
+                self.prev_scan,
+                scan,
+                low_rms=self.scan_confidence_low_rms,
+                high_rms=self.scan_confidence_high_rms,
+            )
+            self._maybe_relay_scan(msg, scan_conf)
             self.prev_scan = scan
             self.prev_stamp_sec = t_cur
-            self.theta_hist.append(th_cur)
             return
 
         if self.prev_scan is None:
@@ -578,15 +710,21 @@ class InferRywakNode(Node):
                 self.x = float(x_odom)
                 self.y = float(y_odom)
                 self.th = float(th_cur)
+            self._reset_feature_history()
             self._publish_pose_stamped(msg.header.stamp)
-            self._relay_scan(msg)
+            self._maybe_relay_scan(msg, None)
             self.prev_scan = scan
             self.prev_stamp_sec = t_cur
-            if odom_match is not None:
-                self.theta_hist.append(th_cur)
             return
 
-        dt = max(1e-3, t_cur - float(self.prev_stamp_sec))
+        dt_raw = max(1e-3, t_cur - float(self.prev_stamp_sec))
+        if (
+            self.model_type in ("gru", "lstm")
+            and self.sync_pair_gap_sec > 0.0
+            and dt_raw > self.sync_pair_gap_sec
+        ):
+            self._reset_feature_history()
+        dt = dt_raw
         if self.max_integration_dt > 0.0:
             dt = min(dt, self.max_integration_dt)
 
@@ -601,18 +739,7 @@ class InferRywakNode(Node):
                     self._in_dim_warned = True
                 return
             xt = torch.from_numpy(features[None, :]).to(self.device, dtype=torch.float32)
-
-            t0 = time.perf_counter()
-            synchronize_torch_device(self.device)
-            with torch.inference_mode():
-                xn = (xt - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
-                yn = self.model(xn).reshape(-1)
-                y = (yn * self.y_std_t + self.y_mean_t).detach().cpu().numpy().astype(np.float32)
-            synchronize_torch_device(self.device)
-            t1 = time.perf_counter()
-
-            self.inference_times_ms.append((t1 - t0) * 1000.0)
-            self.inference_count += 1
+            y = self._model_predict_raw(xt)
 
             dx = float(y[0])
             dy = float(y[1])
@@ -647,7 +774,13 @@ class InferRywakNode(Node):
             self.th = wrap(self.th + dth)
 
             self._publish_pose_stamped(msg.header.stamp)
-            self._relay_scan(msg)
+            scan_conf = scan_motion_confidence(
+                self.prev_scan,
+                scan,
+                low_rms=self.scan_confidence_low_rms,
+                high_rms=self.scan_confidence_high_rms,
+            )
+            self._maybe_relay_scan(msg, scan_conf)
             self.prev_scan = scan
             self.prev_stamp_sec = t_cur
             return
@@ -657,27 +790,26 @@ class InferRywakNode(Node):
                     f"[Rywak] Unsupported model out_dim={self.out_dim}. Expected 2 (v,w) or 3 (dx,dy,dtheta)."
                 )
                 self._in_dim_warned = True
+            self._reset_feature_history()
             return
 
         delta_scan = (scan - self.prev_scan).astype(np.float32)
         if self.delta_scan_clip > 0.0:
             delta_scan = np.clip(delta_scan, -self.delta_scan_clip, self.delta_scan_clip).astype(np.float32)
-        self.theta_hist.append(th_cur)
-        if len(self.theta_hist) < 3:
-            self.x = float(x_odom)
-            self.y = float(y_odom)
-            self.th = float(th_cur)
-            self._publish_pose_stamped(msg.header.stamp)
-            self._relay_scan(msg)
+
+        # Get raw wheel angular velocities from /joint_states (faithful to original thesis)
+        js_match = self._js_at(t_cur)
+        if js_match is None:
+            self.js_miss_count += 1
+            self._reset_feature_history()
             self.prev_scan = scan
             self.prev_stamp_sec = t_cur
             return
+        vel_left, vel_right = js_match
 
-        d_theta1 = wrap(float(self.theta_hist[-1] - self.theta_hist[-2]))
-        d_theta2 = wrap(float(self.theta_hist[-2] - self.theta_hist[-3]))
-
+        # Rywak features: [delta_scan(360), encoder_left_vel, encoder_right_vel] = 362
         x = np.concatenate(
-            [np.asarray([d_theta1, d_theta2], dtype=np.float32), delta_scan], axis=0
+            [delta_scan, np.asarray([vel_left, vel_right], dtype=np.float32)], axis=0
         ).astype(np.float32)
         if x.size != self.in_dim:
             if not self._in_dim_warned:
@@ -686,27 +818,53 @@ class InferRywakNode(Node):
                     "Likely old model incompatible with current feature pipeline."
                 )
                 self._in_dim_warned = True
+            self._reset_feature_history()
             return
+        if self.model_type in ("gru", "lstm"):
+            self.feature_history.append(x)
+            if len(self.feature_history) < self.sequence_length:
+                self._publish_pose_stamped(msg.header.stamp)
+                self._maybe_relay_scan(msg, None)
+                self.prev_scan = scan
+                self.prev_stamp_sec = t_cur
+                return
+            x_seq = np.stack(list(self.feature_history), axis=0).astype(np.float32)
+            xt = torch.from_numpy(x_seq[None, :, :]).to(self.device, dtype=torch.float32)
+        else:
+            xt = torch.from_numpy(x[None, :]).to(self.device, dtype=torch.float32)
 
-        xt = torch.from_numpy(x[None, :]).to(self.device, dtype=torch.float32)
-
-        t0 = time.perf_counter()
-        synchronize_torch_device(self.device)
-        with torch.inference_mode():
-            xn = (xt - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
-            yn = self.model(xn).reshape(-1)
-            y = (yn * self.y_std_t + self.y_mean_t).detach().cpu().numpy().astype(np.float32)
-        synchronize_torch_device(self.device)
-        t1 = time.perf_counter()
-
-        self.inference_times_ms.append((t1 - t0) * 1000.0)
-        self.inference_count += 1
+        y = self._model_predict_raw(xt)
 
         v_pred = float(y[0])
         w_pred = float(y[1])
 
+        # Residual mode: model predicts correction over odometry (v_gt - v_odom, w_gt - w_odom).
+        # v_odom is from wheel encoders — same signal that enters the feature vector.
+        # residual_v/w_clip_abs optionally bounds the correction BEFORE adding odometry,
+        # preventing the model from applying physically unreasonable corrections.
+        if self.use_residual_odom_base:
+            v_residual = v_pred
+            w_residual = w_pred
+            if self.residual_v_clip_abs > 0.0:
+                v_residual = float(np.clip(v_residual, -self.residual_v_clip_abs, self.residual_v_clip_abs))
+            if self.residual_w_clip_abs > 0.0:
+                w_residual = float(np.clip(w_residual, -self.residual_w_clip_abs, self.residual_w_clip_abs))
+            v_pred = float(v_odom) + v_residual
+            w_pred = float(w_odom) + w_residual
+
+        # Bias correction (subtract systematic model bias)
+        v_pred -= self.v_bias_correction
+        w_pred -= self.w_bias_correction
+
         v_scale = self.v_clip_abs if self.v_clip_abs > 0.0 else 0.5
         w_scale = self.w_clip_abs if self.w_clip_abs > 0.0 else 1.0
+        scan_conf = scan_motion_confidence(
+            self.prev_scan,
+            scan,
+            low_rms=self.scan_confidence_low_rms,
+            high_rms=self.scan_confidence_high_rms,
+        )
+        low_conf_boost = max(0.0, self.low_confidence_odom_gain) * (1.0 - scan_conf)
         if self.use_odom_corrections:
             v_base = min(max(self.fuse_odom_v_weight, 0.0), 1.0)
             w_base = min(max(self.fuse_odom_w_weight, 0.0), 1.0)
@@ -714,8 +872,8 @@ class InferRywakNode(Node):
             w_gain = max(0.0, self.fuse_odom_w_gain)
             v_err = abs(v_pred - float(v_odom)) / max(v_scale, 1e-3)
             w_err = abs(w_pred - float(w_odom)) / max(w_scale, 1e-3)
-            wv = min(max(v_base + v_gain * v_err, 0.0), 1.0)
-            ww = min(max(w_base + w_gain * w_err, 0.0), 1.0)
+            wv = min(max(v_base + low_conf_boost + v_gain * v_err, 0.0), 1.0)
+            ww = min(max(w_base + low_conf_boost + w_gain * w_err, 0.0), 1.0)
             if self.odom_guard_enabled:
                 odom_guard_fuse_w = min(max(self.odom_guard_fuse_weight, 0.0), 1.0)
                 odom_guard_sign_v = max(0.01, self.odom_guard_sign_conflict_speed)
@@ -750,7 +908,7 @@ class InferRywakNode(Node):
         if self.w_clip_abs > 0.0:
             w = float(np.clip(w, -self.w_clip_abs, self.w_clip_abs))
 
-        alpha_ema = min(max(self.vel_ema_alpha, 0.0), 0.999)
+        alpha_ema = min(max(self.vel_ema_alpha + 0.30 * (1.0 - scan_conf), 0.0), 0.999)
         # Keep EMA adaptive thresholds independent from configured clip range.
         # Large clip values (e.g. 5 m/s) were masking meaningful sign/delta changes.
         v_flip_mag_th = 0.08
@@ -801,7 +959,7 @@ class InferRywakNode(Node):
             yaw_anchor_gain = max(0.0, self.anchor_yaw_to_odom_gain)
             yaw_err = abs(wrap(float(th_pred) - float(th_cur)))
             yaw_scale = max(0.10, abs(float(w_odom)) * dt)
-            yaw_anchor = min(max(yaw_anchor_base + yaw_anchor_gain * (yaw_err / yaw_scale), 0.0), 1.0)
+            yaw_anchor = min(max(yaw_anchor_base + 0.5 * low_conf_boost + yaw_anchor_gain * (yaw_err / yaw_scale), 0.0), 1.0)
             self.th = _interp_angle(th_pred, float(th_cur), yaw_anchor)
         else:
             self.th = th_pred
@@ -828,7 +986,7 @@ class InferRywakNode(Node):
             step_base = min(max(self.xy_step_odom_weight, 0.0), 1.0)
             step_gain = max(0.0, self.xy_step_odom_gain)
             step_err = abs(v - float(v_odom)) / max(v_scale, 1e-3)
-            step_w = min(max(step_base + step_gain * step_err, 0.0), 1.0)
+            step_w = min(max(step_base + low_conf_boost + step_gain * step_err, 0.0), 1.0)
         else:
             step_w = 0.0
         self.x += (1.0 - step_w) * step_pred_x + step_w * step_odom_x
@@ -861,7 +1019,7 @@ class InferRywakNode(Node):
                 self.y = prev_y + dy * scale
 
         self._publish_pose_stamped(msg.header.stamp)
-        self._relay_scan(msg)
+        self._maybe_relay_scan(msg, scan_conf)
 
         self.prev_scan = scan
         self.prev_stamp_sec = t_cur

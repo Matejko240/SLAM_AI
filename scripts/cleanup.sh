@@ -87,16 +87,22 @@ done
 # Stop ROS2 daemon cleanly (if running)
 ros2 daemon stop >/dev/null 2>&1 || true
 
-# Clear stale FastDDS SHM lock files (częsty problem w WSL)
+# Clear stale FastDDS SHM lock files AFTER all kill-9 (kolejność krytyczna dla WSL2).
+# Czyszczenie PRZED kill-9 jest nieskuteczne — procesy mogą odtworzyć pliki SHM
+# między czyszczeniem a śmiercią.
 find /dev/shm -maxdepth 1 -type f \
   \( -name 'fastrtps_*' -o -name 'fastrtps_port*' -o -name 'sem.fastrtps_port*_mutex' \) \
   -delete 2>/dev/null || true
+find /dev/shm -maxdepth 1 -type f -name 'Fast*' -delete 2>/dev/null || true
 
 # Clear ROS2 runtime directories if needed
 rm -rf ~/.ros/run/* 2>/dev/null
 
 # Clear Gazebo cache that might cause issues
 rm -rf ~/.gz/fuel/fuel.gazebosim.org/cache/* 2>/dev/null
+
+# Dodatkowy sleep na zwolnienie GPU/SHM zasobów (WSL2 z NVIDIA potrzebuje czasu)
+sleep 2
 
 # NIE USUWAJ poprzednich eksperymentów - są świętością!
 # Poprzednie eksperymenty są zapisane w podfolderach exp_YYYYMMDD_HHMMSS

@@ -8,27 +8,36 @@ from pathlib import Path
 import numpy as np
 
 
-def _load_npz_arrays(path: Path, feature_key: str) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+def _npz_has_key(path: Path, key: str) -> bool:
+    with np.load(path, allow_pickle=True) as data:
+        return key in data.files
+
+
+def _load_npz_arrays(path: Path, feature_key: str) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     with np.load(path, allow_pickle=True) as data:
         if feature_key not in data or "Y" not in data:
             raise KeyError(f"{path}: expected keys {feature_key!r} and 'Y'")
         x = np.asarray(data[feature_key], dtype=np.float32)
         y = np.asarray(data["Y"], dtype=np.float32)
         p = np.asarray(data["P"], dtype=np.float32) if "P" in data else None
+        n = np.asarray(data["N"], dtype=np.int32) if "N" in data else None
     if x.shape[0] != y.shape[0]:
         raise ValueError(f"{path}: mismatched rows {x.shape[0]} vs {y.shape[0]}")
     if p is not None and p.shape[0] != y.shape[0]:
         raise ValueError(f"{path}: mismatched P rows {p.shape[0]} vs {y.shape[0]}")
-    return x, y, p
+    if n is not None and n.shape[0] != y.shape[0]:
+        raise ValueError(f"{path}: mismatched N rows {n.shape[0]} vs {y.shape[0]}")
+    return x, y, p, n
 
 
 def _deduplicate(
     x: np.ndarray,
     y: np.ndarray,
     p: np.ndarray | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, int, str]:
+    n: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, int, str]:
     if x.shape[0] == 0:
-        return x, y, p, 0, "X+Y"
+        return x, y, p, n, 0, "X+Y"
     flat_x = np.ascontiguousarray(x.reshape((x.shape[0], -1)))
     flat_y = np.ascontiguousarray(y.reshape((y.shape[0], -1)))
     merged = np.concatenate([flat_x, flat_y], axis=1)
@@ -40,7 +49,8 @@ def _deduplicate(
     unique_idx = np.sort(unique_idx.astype(np.int64))
     removed = int(x.shape[0] - unique_idx.size)
     p_out = p[unique_idx] if p is not None else None
-    return x[unique_idx], y[unique_idx], p_out, removed, dedup_key
+    n_out = n[unique_idx] if n is not None else None
+    return x[unique_idx], y[unique_idx], p_out, n_out, removed, dedup_key
 
 
 def _merge_group(
@@ -54,23 +64,55 @@ def _merge_group(
     xs: list[np.ndarray] = []
     ys: list[np.ndarray] = []
     ps: list[np.ndarray] = []
+    ns: list[np.ndarray] = []
     pose_sources = 0
+    offset_sources = 0
     for p in inputs:
-        x, y, pose = _load_npz_arrays(p, feature_key)
+        x, y, pose, noff = _load_npz_arrays(p, feature_key)
         xs.append(x)
         ys.append(y)
         if pose is not None:
             pose_sources += 1
             ps.append(pose)
+        if noff is not None:
+            offset_sources += 1
+            ns.append(noff)
+    if len(ys) > 1:
+        ref_shape = ys[0].shape[1:]
+        for i, (y_arr, src) in enumerate(zip(ys[1:], inputs[1:]), start=1):
+            if y_arr.shape[1:] != ref_shape:
+                raise ValueError(
+                    f"{group_name}: Y shape mismatch – {inputs[0]} has Y{ys[0].shape}, "
+                    f"but {src} has Y{y_arr.shape} (expected trailing dims {ref_shape})"
+                )
+    if len(xs) > 1:
+        ref_xshape = xs[0].shape[1:]
+        for i, (x_arr, src) in enumerate(zip(xs[1:], inputs[1:]), start=1):
+            if x_arr.shape[1:] != ref_xshape:
+                raise ValueError(
+                    f"{group_name}: {feature_key} shape mismatch – {inputs[0]} has "
+                    f"{feature_key}{xs[0].shape}, but {src} has {feature_key}{x_arr.shape} "
+                    f"(expected trailing dims {ref_xshape})"
+                )
     x_cat = np.concatenate(xs, axis=0) if xs else np.zeros((0,), dtype=np.float32)
     y_cat = np.concatenate(ys, axis=0) if ys else np.zeros((0,), dtype=np.float32)
     p_cat = np.concatenate(ps, axis=0) if pose_sources == len(inputs) and ps else None
+    n_cat = np.concatenate(ns, axis=0) if offset_sources == len(inputs) and ns else None
+    if group_name == "robak_component_merge" and offset_sources != len(inputs):
+        missing = [str(p) for p in inputs if not _npz_has_key(p, "N")]
+        missing_preview = ", ".join(missing[:3])
+        if len(missing) > 3:
+            missing_preview += ", ..."
+        raise ValueError(
+            "Robak merged dataset requires per-sample scan offsets 'N' in every input dataset. "
+            f"Missing in {len(missing)}/{len(inputs)} inputs: {missing_preview}"
+        )
     n_before = int(y_cat.shape[0]) if y_cat.ndim >= 1 else 0
     removed = 0
     dedup_key_used = "X+Y"
     pose_key_available = p_cat is not None
     if deduplicate and n_before > 0:
-        x_cat, y_cat, p_cat, removed, dedup_key_used = _deduplicate(x_cat, y_cat, p_cat)
+        x_cat, y_cat, p_cat, n_cat, removed, dedup_key_used = _deduplicate(x_cat, y_cat, p_cat, n_cat)
     n_after = int(y_cat.shape[0]) if y_cat.ndim >= 1 else 0
 
     meta = {
@@ -84,12 +126,15 @@ def _merge_group(
         "dedup_use_pose_key_requested": np.int64(0),
         "dedup_use_pose_key_available": np.int64(1 if pose_key_available else 0),
         "pose_key_sources_count": np.int64(pose_sources),
+        "offset_sources_count": np.int64(offset_sources),
         "duplicates_removed": np.int64(removed),
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_payload: dict[str, object] = {feature_key: x_cat, "Y": y_cat, "meta": meta}
     if p_cat is not None:
         out_payload["P"] = p_cat
+    if n_cat is not None:
+        out_payload["N"] = n_cat
     np.savez_compressed(out_path, **out_payload)
     return {
         "group": group_name,
@@ -97,7 +142,9 @@ def _merge_group(
         "out_path": str(out_path),
         "source_count": len(inputs),
         "pose_key_sources_count": pose_sources,
+        "offset_sources_count": offset_sources,
         "pose_key_in_merged_dataset": bool(p_cat is not None),
+        "offset_key_in_merged_dataset": bool(n_cat is not None),
         "n_before_dedup": n_before,
         "n_after_dedup": n_after,
         "dedup_key_used": dedup_key_used,

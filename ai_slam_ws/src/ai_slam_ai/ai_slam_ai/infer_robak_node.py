@@ -19,6 +19,7 @@ from .common import (
     seed_all,
     ensure_dir,
     quat_from_yaw,
+    scan_motion_confidence,
     select_torch_device,
     synchronize_torch_device,
     wrap,
@@ -88,23 +89,54 @@ def _sanitize_scan(msg: LaserScan) -> np.ndarray:
     return ranges.astype(np.float32)
 
 
+def _payload_normalization_mode(payload: dict) -> str:
+    mode = str(payload.get("normalization", "") or "").strip().lower()
+    if mode in {"zscore", "standard", "standardize"}:
+        return "zscore"
+    if mode in {"none", "identity", "raw"}:
+        return "none"
+    if all(key in payload for key in ("x_mean", "x_std", "y_mean", "y_std")):
+        return "zscore"
+    return "none"
+
+
+def _normalize_target_mode(value: str) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"forward_yaw", "forward_dtheta", "forward+theta", "forward_theta"}:
+        return "forward_yaw"
+    return "se2_local"
+
+
+def _payload_tensor(payload_value, device, *, shape=None) -> torch.Tensor:
+    tensor = payload_value
+    if not isinstance(tensor, torch.Tensor):
+        tensor = torch.as_tensor(payload_value, dtype=torch.float32)
+    tensor = tensor.to(device=device, dtype=torch.float32)
+    if shape is not None:
+        tensor = tensor.view(*shape)
+    return tensor
+
+
 class RobakConv1D(nn.Module):
-    def __init__(self):
+    """Conv1D scan matcher faithful to original thesis: 3×Conv1D + LeakyReLU + MaxPool."""
+    def __init__(self, out_dim: int = 3):
         super().__init__()
+        self.out_dim = int(out_dim)
         self.feat = nn.Sequential(
-            nn.Conv1d(2, 16, kernel_size=7, stride=2, padding=3),
-            nn.ReLU(),
-            nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(),
-            nn.Conv1d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1),
+            nn.Conv1d(2, 64, kernel_size=5),
+            nn.LeakyReLU(0.1),
+            nn.MaxPool1d(4),
+            nn.Conv1d(64, 32, kernel_size=5),
+            nn.LeakyReLU(0.1),
+            nn.MaxPool1d(4),
+            nn.Conv1d(32, 16, kernel_size=5),
+            nn.LeakyReLU(0.1),
+            nn.MaxPool1d(4),
         )
         self.head = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 3),
+            nn.Dropout(0.2),
+            nn.Linear(64, self.out_dim),
         )
 
     def forward(self, x):
@@ -128,7 +160,17 @@ class InferRobakNode(Node):
 
         self.declare_parameter("scan_topic", "/scan_slam_robak")
         self.declare_parameter("relay_scan_topic", "")
+        self.declare_parameter("relay_only_on_inference_step", False)
+        self.declare_parameter("relay_min_scan_confidence", 0.0)
+        self.declare_parameter("interpolate_between_steps", False)
+        self.declare_parameter("dth_deadzone", 0.0)
+        self.declare_parameter("dth_ema_alpha", 0.0)
+        self.declare_parameter("dth_median_window", 0)
+        self.declare_parameter("dx_bias_correction", 0.0)
+        self.declare_parameter("dy_bias_correction", 0.0)
+        self.declare_parameter("dth_bias_correction", 0.0)
         self.declare_parameter("pose_topic", "/pose_robak")
+        self.declare_parameter("pose_topic_secondary", "")
         self.declare_parameter("tf_parent", "odom_robak")
         self.declare_parameter("tf_child", "base_link_robak")
         self.declare_parameter("publish_tf", True)
@@ -137,9 +179,9 @@ class InferRobakNode(Node):
         self.declare_parameter("init_from", "gt")  # gt | odom | none
         self.declare_parameter("gt_topic", "/ground_truth_pose")
         self.declare_parameter("odom_topic", "/odom_raw")
+        self.declare_parameter("scan_offset", 1)  # pair current scan with scan N steps ago
         self.declare_parameter("max_step_trans", 0.12)
         self.declare_parameter("max_step_yaw", 0.35)
-        self.declare_parameter("delta_ema_alpha", 0.55)
         self.declare_parameter("odom_heading_alpha", 0.20)
         self.declare_parameter("odom_heading_gain", 0.75)
         self.declare_parameter("odom_sync_tolerance_sec", 0.08)
@@ -147,6 +189,9 @@ class InferRobakNode(Node):
         self.declare_parameter("odom_delta_xy_gain", 0.55)
         self.declare_parameter("odom_delta_yaw_alpha", 0.45)
         self.declare_parameter("odom_delta_yaw_gain", 0.45)
+        self.declare_parameter("scan_confidence_low_rms", 0.02)
+        self.declare_parameter("scan_confidence_high_rms", 0.18)
+        self.declare_parameter("low_confidence_odom_gain", 0.30)
         self.declare_parameter("odom_pose_xy_alpha", 0.0)
         self.declare_parameter("odom_pose_xy_gain", 0.0)
         self.declare_parameter("odom_pose_xy_alpha_max", 1.0)
@@ -158,9 +203,13 @@ class InferRobakNode(Node):
         self.declare_parameter("odom_guard_yaw_anchor_base", 0.70)
         self.declare_parameter("odom_guard_yaw_anchor_gain", 0.55)
         self.declare_parameter("odom_rebase_to_local_origin", False)
-        self.declare_parameter("use_odom_corrections", True)
+        self.declare_parameter("use_odom_corrections", False)
         self.declare_parameter("force_odom_pose", False)
         self.declare_parameter("odom_fallback_before_model_ready", True)
+        self.declare_parameter("use_residual_odom_delta_base", False)
+        self.declare_parameter("residual_dx_clip_abs", 0.0)
+        self.declare_parameter("residual_dy_clip_abs", 0.0)
+        self.declare_parameter("residual_dtheta_clip_abs", 0.0)
 
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
@@ -193,7 +242,25 @@ class InferRobakNode(Node):
         self.device = torch.device(self.torch_device_info.resolved)
         self.scan_topic = str(self.get_parameter("scan_topic").value)
         self.relay_scan_topic = str(self.get_parameter("relay_scan_topic").value).strip()
+        self.relay_only_on_inference_step = bool(
+            self.get_parameter("relay_only_on_inference_step").value
+        )
+        self.relay_min_scan_confidence = float(
+            self.get_parameter("relay_min_scan_confidence").value
+        )
+        self.interpolate_between_steps = bool(
+            self.get_parameter("interpolate_between_steps").value
+        )
+        self.dth_deadzone = float(self.get_parameter("dth_deadzone").value)
+        self.dth_ema_alpha = float(self.get_parameter("dth_ema_alpha").value)
+        self.dth_median_window = int(self.get_parameter("dth_median_window").value)
+        self.dx_bias_correction = float(self.get_parameter("dx_bias_correction").value)
+        self.dy_bias_correction = float(self.get_parameter("dy_bias_correction").value)
+        self.dth_bias_correction = float(self.get_parameter("dth_bias_correction").value)
+        if self.dth_median_window > 1:
+            self._dth_median_buf = deque(maxlen=self.dth_median_window)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
+        self.pose_topic_secondary = str(self.get_parameter("pose_topic_secondary").value).strip()
         self.tf_parent = str(self.get_parameter("tf_parent").value)
         self.tf_child = str(self.get_parameter("tf_child").value)
         self.publish_tf = bool(self.get_parameter("publish_tf").value)
@@ -215,9 +282,9 @@ class InferRobakNode(Node):
         self.init_from = str(self.get_parameter("init_from").value).lower()
         self.gt_topic = str(self.get_parameter("gt_topic").value)
         self.odom_topic = str(self.get_parameter("odom_topic").value)
+        self.scan_offset = max(1, int(self.get_parameter("scan_offset").value))
         self.max_step_trans = float(self.get_parameter("max_step_trans").value)
         self.max_step_yaw = float(self.get_parameter("max_step_yaw").value)
-        self.delta_ema_alpha = float(self.get_parameter("delta_ema_alpha").value)
         self.odom_heading_alpha = float(self.get_parameter("odom_heading_alpha").value)
         self.odom_heading_gain = float(self.get_parameter("odom_heading_gain").value)
         self.odom_sync_tolerance_sec = float(self.get_parameter("odom_sync_tolerance_sec").value)
@@ -225,6 +292,9 @@ class InferRobakNode(Node):
         self.odom_delta_xy_gain = float(self.get_parameter("odom_delta_xy_gain").value)
         self.odom_delta_yaw_alpha = float(self.get_parameter("odom_delta_yaw_alpha").value)
         self.odom_delta_yaw_gain = float(self.get_parameter("odom_delta_yaw_gain").value)
+        self.scan_confidence_low_rms = float(self.get_parameter("scan_confidence_low_rms").value)
+        self.scan_confidence_high_rms = float(self.get_parameter("scan_confidence_high_rms").value)
+        self.low_confidence_odom_gain = float(self.get_parameter("low_confidence_odom_gain").value)
         self.odom_pose_xy_alpha = float(self.get_parameter("odom_pose_xy_alpha").value)
         self.odom_pose_xy_gain = float(self.get_parameter("odom_pose_xy_gain").value)
         self.odom_pose_xy_alpha_max = float(self.get_parameter("odom_pose_xy_alpha_max").value)
@@ -238,22 +308,39 @@ class InferRobakNode(Node):
         self.odom_rebase_to_local_origin = bool(self.get_parameter("odom_rebase_to_local_origin").value)
         self.use_odom_corrections = bool(self.get_parameter("use_odom_corrections").value)
         self.force_odom_pose = bool(self.get_parameter("force_odom_pose").value)
+        self.use_residual_odom_delta_base = bool(self.get_parameter("use_residual_odom_delta_base").value)
+        self.residual_dx_clip_abs = float(self.get_parameter("residual_dx_clip_abs").value)
+        self.residual_dy_clip_abs = float(self.get_parameter("residual_dy_clip_abs").value)
+        self.residual_dtheta_clip_abs = float(self.get_parameter("residual_dtheta_clip_abs").value)
         self.odom_fallback_before_model_ready = bool(
             self.get_parameter("odom_fallback_before_model_ready").value
         )
 
         self.prev_scan = None
         self.prev_stamp = None
+        self.last_pub_stamp_ns = None
+        self.scan_step_counter = 0  # counts scans since last inference
+
+        # Interpolation state: last predicted delta for smooth intermediate steps
+        self.last_delta_dx = 0.0
+        self.last_delta_dy = 0.0
+        self.last_delta_dth = 0.0
 
         self.model = None
+        self.model_out_dim = 3
+        self.target_mode = "se2_local"
+        self.normalization_mode = "none"
         self.x_mean_t = None
         self.x_std_t = None
         self.y_mean_t = None
         self.y_std_t = None
 
         self.infer_start = None
+        self._model_wait_start = time.time()
         self.inference_count = 0
         self.inference_times_ms = []
+        self._dth_ema = 0.0
+        self._dth_median_buf = deque(maxlen=1)
 
         # pose
         self.pose_inited = False
@@ -267,11 +354,11 @@ class InferRobakNode(Node):
         self.odom_buf = deque(maxlen=2000)
         self.odom_origin_xyth = None
         self.prev_odom_xyth = None
-        self.dx_filt = None
-        self.dy_filt = None
-        self.dth_filt = None
 
         self.pub_pose = self.create_publisher(PoseStamped, self.pose_topic, 10)
+        self.pub_pose_secondary = None
+        if self.pose_topic_secondary:
+            self.pub_pose_secondary = self.create_publisher(PoseStamped, self.pose_topic_secondary, 10)
         self.pub_scan_relay = None
         if self.relay_scan_topic:
             self.pub_scan_relay = self.create_publisher(LaserScan, self.relay_scan_topic, qos_profile_sensor_data)
@@ -285,21 +372,31 @@ class InferRobakNode(Node):
         self.stats_timer = self.create_timer(10.0, self.periodic_save_stats)
 
         self.get_logger().info(
-            f"[Robak] infer stabilization: max_step_trans={self.max_step_trans}, "
-            f"max_step_yaw={self.max_step_yaw}, ema={self.delta_ema_alpha}, "
+            f"[Robak] infer stabilization: scan_offset={self.scan_offset}, "
+            f"max_step_trans={self.max_step_trans}, "
+            f"max_step_yaw={self.max_step_yaw}, "
             f"odom_heading_alpha={self.odom_heading_alpha}, odom_heading_gain={self.odom_heading_gain}, "
             f"odom_tol={self.odom_sync_tolerance_sec}, "
             f"odom_delta_xy_alpha={self.odom_delta_xy_alpha}, odom_delta_xy_gain={self.odom_delta_xy_gain}, "
             f"odom_delta_yaw_alpha={self.odom_delta_yaw_alpha}, odom_delta_yaw_gain={self.odom_delta_yaw_gain}, "
             f"odom_pose_xy_alpha={self.odom_pose_xy_alpha}, odom_pose_xy_gain={self.odom_pose_xy_gain}, "
             f"odom_pose_xy_alpha_max={self.odom_pose_xy_alpha_max}, "
+            f"scan_conf=[{self.scan_confidence_low_rms},{self.scan_confidence_high_rms}], "
+            f"low_conf_odom_gain={self.low_confidence_odom_gain}, "
             f"odom_guard(enabled={self.odom_guard_enabled}, "
             f"xy_err={self.odom_guard_xy_error_m}, yaw_err={self.odom_guard_yaw_error_rad}), "
             f"odom_rebase_to_local_origin={self.odom_rebase_to_local_origin}, "
             f"use_odom_corrections={self.use_odom_corrections}, "
             f"force_odom_pose={self.force_odom_pose}, "
             f"odom_fallback_before_model_ready={self.odom_fallback_before_model_ready}, "
-            f"relay_scan_topic={self.relay_scan_topic or '(disabled)'}"
+            f"relay_scan_topic={self.relay_scan_topic or '(disabled)'}, "
+            f"relay_only_on_inference_step={self.relay_only_on_inference_step}, "
+            f"relay_min_scan_confidence={self.relay_min_scan_confidence:.2f}, "
+            f"dth_deadzone={self.dth_deadzone:.4f}, "
+            f"dth_ema_alpha={self.dth_ema_alpha:.2f}, "
+            f"dth_median_window={self.dth_median_window}, "
+            f"bias_correction(dx={self.dx_bias_correction:.5f}, dy={self.dy_bias_correction:.5f}, dth={self.dth_bias_correction:.5f}), "
+            f"secondary_pose_topic={self.pose_topic_secondary or '(disabled)'}"
         )
 
     def on_gt(self, msg: PoseStamped):
@@ -326,8 +423,19 @@ class InferRobakNode(Node):
             self.x, self.y, self.th = x, y, th
             self._publish_pose_stamped(msg.header.stamp)
 
+    def _make_monotonic_stamp(self, stamp):
+        stamp_ns = int(getattr(stamp, "sec", 0)) * 1_000_000_000 + int(getattr(stamp, "nanosec", 0))
+        if self.last_pub_stamp_ns is not None and stamp_ns <= self.last_pub_stamp_ns:
+            stamp_ns = self.last_pub_stamp_ns + 1
+        self.last_pub_stamp_ns = stamp_ns
+        out = type(stamp)()
+        out.sec = int(stamp_ns // 1_000_000_000)
+        out.nanosec = int(stamp_ns % 1_000_000_000)
+        return out
+
     def _publish_pose_stamped(self, stamp) -> None:
         """Publish PoseStamped + TF at current (x, y, th) with the given header stamp."""
+        stamp = self._make_monotonic_stamp(stamp)
         qx, qy, qz, qw = quat_from_yaw(self.th)
         ps = PoseStamped()
         ps.header.stamp = stamp
@@ -340,6 +448,8 @@ class InferRobakNode(Node):
         ps.pose.orientation.z = qz
         ps.pose.orientation.w = qw
         self.pub_pose.publish(ps)
+        if self.pub_pose_secondary is not None:
+            self.pub_pose_secondary.publish(ps)
 
         if self.publish_tf and self.tf_br is not None:
             tfm = TransformStamped()
@@ -395,18 +505,50 @@ class InferRobakNode(Node):
         if self.model is not None:
             return
         if not os.path.exists(self.model_path):
+            elapsed = time.time() - self._model_wait_start
+            if elapsed > 60.0 and not self.odom_fallback_before_model_ready:
+                self.get_logger().fatal(
+                    f"[Robak] Model not found after {elapsed:.0f}s: {self.model_path}. "
+                    "odom_fallback_before_model_ready=false — no poses will ever be published. "
+                    "Set robak_model_source_experiment_id or run train phase first."
+                )
+                rclpy.shutdown()
             return
 
-        payload = torch.load(self.model_path, map_location="cpu")
-        self.model = RobakConv1D()
-        self.model.load_state_dict(payload["state_dict"])
-        self.model.to(self.device)
-        self.model.eval()
-
-        self.x_mean_t = payload["x_mean"].to(self.device, dtype=torch.float32).view(1, -1)
-        self.x_std_t = payload["x_std"].to(self.device, dtype=torch.float32).view(1, -1)
-        self.y_mean_t = payload["y_mean"].to(self.device, dtype=torch.float32)
-        self.y_std_t = payload["y_std"].to(self.device, dtype=torch.float32)
+        try:
+            payload = torch.load(self.model_path, map_location="cpu")
+            self.model_out_dim = int(payload.get("out_dim", 3))
+            self.target_mode = _normalize_target_mode(
+                payload.get(
+                    "target_mode",
+                    "forward_yaw" if self.model_out_dim == 2 else "se2_local",
+                )
+            )
+            self.model = RobakConv1D(out_dim=self.model_out_dim)
+            self.model.load_state_dict(payload["state_dict"])
+            self.model.to(self.device)
+            self.model.eval()
+            self.normalization_mode = _payload_normalization_mode(payload)
+            if self.normalization_mode == "zscore":
+                missing = [key for key in ("x_mean", "x_std", "y_mean", "y_std") if key not in payload]
+                if missing:
+                    raise KeyError(
+                        f"model payload declares normalization=zscore but misses keys: {missing}"
+                    )
+                self.x_mean_t = _payload_tensor(payload["x_mean"], self.device, shape=(1, -1))
+                self.x_std_t = _payload_tensor(payload["x_std"], self.device, shape=(1, -1))
+                self.y_mean_t = _payload_tensor(payload["y_mean"], self.device, shape=(self.model_out_dim,))
+                self.y_std_t = _payload_tensor(payload["y_std"], self.device, shape=(self.model_out_dim,))
+            else:
+                self.x_mean_t = None
+                self.x_std_t = None
+                self.y_mean_t = None
+                self.y_std_t = None
+        except Exception as exc:
+            self.get_logger().error(f"[Robak] Failed to load model payload {self.model_path}: {exc}")
+            self.model = None
+            rclpy.shutdown()
+            return
 
         self.infer_start = time.time()
 
@@ -423,7 +565,10 @@ class InferRobakNode(Node):
                 torch_device_used=self.torch_device_info.resolved,
             )
 
-        self.get_logger().info(f"[Robak] Model loaded: {self.model_path}")
+        self.get_logger().info(
+            f"[Robak] Model loaded: {self.model_path} | normalization={self.normalization_mode} "
+            f"target_mode={self.target_mode} out_dim={self.model_out_dim}"
+        )
         self._try_publish_bootstrap_pose()
 
     def periodic_save_stats(self):
@@ -451,7 +596,27 @@ class InferRobakNode(Node):
         if self.prev_scan is None:
             self.prev_scan = scan
             self.prev_stamp = msg.header.stamp
+            self.scan_step_counter = 0
             self._relay_scan(msg)
+            return
+
+        # scan_offset: only predict every N-th scan
+        self.scan_step_counter += 1
+        if self.scan_step_counter < self.scan_offset:
+            if self.interpolate_between_steps and self.scan_offset > 1 and self.model is not None:
+                # Apply a fraction of the last predicted delta for smooth trajectory
+                frac = 1.0 / float(self.scan_offset)
+                dx_i = self.last_delta_dx * frac
+                dy_i = self.last_delta_dy * frac
+                dth_i = self.last_delta_dth * frac
+                c = math.cos(self.th)
+                s = math.sin(self.th)
+                self.x += c * dx_i - s * dy_i
+                self.y += s * dx_i + c * dy_i
+                self.th = wrap(self.th + dth_i)
+            self._publish_pose_stamped(msg.header.stamp)
+            if not self.relay_only_on_inference_step:
+                self._relay_scan(msg)
             return
 
         # dt
@@ -462,6 +627,7 @@ class InferRobakNode(Node):
             self.force_odom_pose
             or (self.model is None and self.odom_fallback_before_model_ready)
             or self.use_odom_corrections
+            or self.use_residual_odom_delta_base
         )
         odom_xyth = self._nearest_odom_xyth(t_cur) if need_odom else None
         odom_th = float(odom_xyth[2]) if odom_xyth is not None else None
@@ -470,6 +636,7 @@ class InferRobakNode(Node):
             if odom_xyth is None:
                 self.prev_scan = scan
                 self.prev_stamp = msg.header.stamp
+                self.scan_step_counter = 0
                 return
             self.x = float(odom_xyth[0])
             self.y = float(odom_xyth[1])
@@ -479,12 +646,14 @@ class InferRobakNode(Node):
             self.prev_scan = scan
             self.prev_stamp = msg.header.stamp
             self.prev_odom_xyth = odom_xyth
+            self.scan_step_counter = 0
             return
 
         if self.force_odom_pose:
             if odom_xyth is None:
                 self.prev_scan = scan
                 self.prev_stamp = msg.header.stamp
+                self.scan_step_counter = 0
                 return
             self.x = float(odom_xyth[0])
             self.y = float(odom_xyth[1])
@@ -494,24 +663,67 @@ class InferRobakNode(Node):
             self.prev_scan = scan
             self.prev_stamp = msg.header.stamp
             self.prev_odom_xyth = odom_xyth
+            self.scan_step_counter = 0
             return
 
         X_pair = np.stack([self.prev_scan, scan], axis=0).astype(np.float32)   # (2,360)
-        x_flat = X_pair.reshape(-1)                                            # (720,)
-        xt = torch.from_numpy(x_flat.reshape((1, -1))).to(self.device, dtype=torch.float32)
+        xt = torch.from_numpy(X_pair).unsqueeze(0).to(self.device, dtype=torch.float32)  # (1,2,360)
 
         t0 = time.perf_counter()
         synchronize_torch_device(self.device)
         with torch.inference_mode():
-            xn = (xt - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
-            yn = self.model(xn.reshape((1, 2, 360))).reshape(-1)
-            y = (yn * self.y_std_t + self.y_mean_t).detach().cpu().numpy().astype(np.float32)
+            xt_model = xt
+            if self.normalization_mode == "zscore":
+                xt_flat = xt.reshape((1, -1))
+                xt_norm = (xt_flat - self.x_mean_t) / torch.clamp(self.x_std_t, min=1e-6)
+                xt_model = xt_norm.reshape((1, 2, 360))
+            y_t = self.model(xt_model).reshape(-1)
+            if self.normalization_mode == "zscore":
+                y_t = y_t * self.y_std_t + self.y_mean_t
+            y = y_t.detach().cpu().numpy().astype(np.float32)
         synchronize_torch_device(self.device)
         t1 = time.perf_counter()
 
         self.inference_times_ms.append((t1 - t0) * 1000.0)
         self.inference_count += 1
-        dx, dy, dth = float(y[0]), float(y[1]), float(y[2])
+        if self.target_mode == "forward_yaw":
+            if y.shape[0] < 2:
+                self.get_logger().error(
+                    f"[Robak] forward_yaw model returned invalid output shape: {tuple(y.shape)}"
+                )
+                self.prev_scan = scan
+                self.prev_stamp = msg.header.stamp
+                self.scan_step_counter = 0
+                return
+            dx = float(y[0])
+            dy = 0.0
+            dth = float(y[1])
+        else:
+            if y.shape[0] < 3:
+                self.get_logger().error(
+                    f"[Robak] se2_local model returned invalid output shape: {tuple(y.shape)}"
+                )
+                self.prev_scan = scan
+                self.prev_stamp = msg.header.stamp
+                self.scan_step_counter = 0
+                return
+            dx = float(y[0])
+            dy = float(y[1])
+            dth = float(y[2])
+
+        # Bias correction: subtract known systematic bias from model predictions
+        dx -= self.dx_bias_correction
+        dth -= self.dth_bias_correction
+        if self.target_mode != "forward_yaw":
+            dy -= self.dy_bias_correction
+
+        scan_conf = scan_motion_confidence(
+            self.prev_scan,
+            scan,
+            low_rms=self.scan_confidence_low_rms,
+            high_rms=self.scan_confidence_high_rms,
+        )
+        low_conf_boost = max(0.0, self.low_confidence_odom_gain) * (1.0 - scan_conf)
 
         # Ogranicz pojedynczy krok i wygładź, żeby ograniczyć outliery.
         if self.max_step_trans > 0.0:
@@ -522,6 +734,44 @@ class InferRobakNode(Node):
                 dy *= s
         if self.max_step_yaw > 0.0:
             dth = float(np.clip(dth, -self.max_step_yaw, self.max_step_yaw))
+
+        # Deadzone: suppress small heading noise to prevent drift accumulation
+        if self.dth_deadzone > 0.0 and abs(dth) < self.dth_deadzone:
+            dth = 0.0
+
+        # EMA smoothing on dtheta to reduce noisy heading predictions
+        if self.dth_ema_alpha > 0.0:
+            dth = self.dth_ema_alpha * self._dth_ema + (1.0 - self.dth_ema_alpha) * dth
+            self._dth_ema = dth
+
+        # Median filter on dtheta to reject outlier predictions
+        if self.dth_median_window > 1:
+            self._dth_median_buf.append(dth)
+            if len(self._dth_median_buf) >= self.dth_median_window:
+                dth = float(sorted(self._dth_median_buf)[len(self._dth_median_buf) // 2])
+
+        if self.use_residual_odom_delta_base:
+            if self.prev_odom_xyth is None or odom_xyth is None:
+                self.get_logger().error(
+                    "[Robak] use_residual_odom_delta_base=True but odom unavailable — "
+                    "skipping prediction, keeping last pose"
+                )
+                self.prev_scan = scan
+                self.prev_stamp = msg.header.stamp
+                self.prev_odom_xyth = odom_xyth
+                self.scan_step_counter = 0
+                self._publish_pose_stamped(msg.header.stamp)
+                return
+            odom_dx, odom_dy, odom_dth = _delta_local(self.prev_odom_xyth, odom_xyth)
+            if self.residual_dx_clip_abs > 0.0:
+                dx = float(np.clip(dx, -self.residual_dx_clip_abs, self.residual_dx_clip_abs))
+            if self.residual_dy_clip_abs > 0.0:
+                dy = float(np.clip(dy, -self.residual_dy_clip_abs, self.residual_dy_clip_abs))
+            if self.residual_dtheta_clip_abs > 0.0:
+                dth = float(np.clip(dth, -self.residual_dtheta_clip_abs, self.residual_dtheta_clip_abs))
+            dx = odom_dx + dx
+            dy = odom_dy + dy
+            dth = wrap(odom_dth + dth)
 
         dxo = dyo = dtho = 0.0
         if self.use_odom_corrections and self.prev_odom_xyth is not None and odom_xyth is not None:
@@ -534,8 +784,8 @@ class InferRobakNode(Node):
             yaw_scale = self.max_step_yaw if self.max_step_yaw > 1e-3 else 0.25
             err_xy_step = math.hypot(dx - float(dxo), dy - float(dyo))
             err_yaw_step = abs(wrap(dth - float(dtho)))
-            w_xy = min(max(w_xy_base + w_xy_gain * (err_xy_step / xy_scale), 0.0), 1.0)
-            w_yaw = min(max(w_yaw_base + w_yaw_gain * (err_yaw_step / yaw_scale), 0.0), 1.0)
+            w_xy = min(max(w_xy_base + low_conf_boost + w_xy_gain * (err_xy_step / xy_scale), 0.0), 1.0)
+            w_yaw = min(max(w_yaw_base + low_conf_boost + w_yaw_gain * (err_yaw_step / yaw_scale), 0.0), 1.0)
             dx = (1.0 - w_xy) * dx + w_xy * float(dxo)
             dy = (1.0 - w_xy) * dy + w_xy * float(dyo)
             dth = wrap((1.0 - w_yaw) * dth + w_yaw * float(dtho))
@@ -549,18 +799,12 @@ class InferRobakNode(Node):
         if self.max_step_yaw > 0.0:
             dth = float(np.clip(dth, -self.max_step_yaw, self.max_step_yaw))
 
-        a = min(max(self.delta_ema_alpha, 0.0), 0.999)
-        if self.dx_filt is None:
-            self.dx_filt, self.dy_filt, self.dth_filt = dx, dy, dth
-        else:
-            self.dx_filt = a * self.dx_filt + (1.0 - a) * dx
-            self.dy_filt = a * self.dy_filt + (1.0 - a) * dy
-            self.dth_filt = a * self.dth_filt + (1.0 - a) * dth
-        dx = float(self.dx_filt)
-        dy = float(self.dy_filt)
-        dth = float(self.dth_filt)
-
-        # Integracja: delta jest „względem poprzedniego kroku” (local), więc składamy SE2
+        # Integracja: delta jest „względem poprzedniego kroku" (local), więc składamy SE2
+        # Save delta for interpolation between steps
+        if self.interpolate_between_steps:
+            self.last_delta_dx = float(dx)
+            self.last_delta_dy = float(dy)
+            self.last_delta_dth = float(dth)
         c = math.cos(self.th)
         s = math.sin(self.th)
         self.x += c * dx - s * dy
@@ -598,7 +842,7 @@ class InferRobakNode(Node):
                 w_base = min(max(self.odom_pose_xy_alpha, 0.0), 1.0)
                 w_gain = max(0.0, self.odom_pose_xy_gain)
                 w_xy_max = min(max(self.odom_pose_xy_alpha_max, 0.0), 1.0)
-                w_xy = min(max(w_base + w_gain * (err_xy / norm), 0.0), w_xy_max)
+                w_xy = min(max(w_base + 0.5 * low_conf_boost + w_gain * (err_xy / norm), 0.0), w_xy_max)
                 odom_pose_anchor_w_xy = float(w_xy)
                 self.x = (1.0 - w_xy) * self.x + w_xy * float(ox)
                 self.y = (1.0 - w_xy) * self.y + w_xy * float(oy)
@@ -617,11 +861,13 @@ class InferRobakNode(Node):
             err_to_odom_after_m = float(math.hypot(self.x - float(ox), self.y - float(oy)))
 
         self._publish_pose_stamped(msg.header.stamp)
-        self._relay_scan(msg)
+        if scan_conf >= self.relay_min_scan_confidence:
+            self._relay_scan(msg)
 
         self.prev_scan = scan
         self.prev_stamp = msg.header.stamp
         self.prev_odom_xyth = odom_xyth
+        self.scan_step_counter = 0
 
 
 def main():

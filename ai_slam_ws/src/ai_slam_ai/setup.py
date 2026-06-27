@@ -27,6 +27,12 @@ setup(
             "dataset_recorder_rywak=ai_slam_ai.dataset_recorder_rywak:main",
             "train_model_rywak=ai_slam_ai.train_model_rywak:main",
             "infer_rywak_node=ai_slam_ai.infer_rywak_node:main",
+
+            # --- odometry-only custom SLAM track (tor9) ---
+            "odom_only_node=ai_slam_ai.odom_only_node:main",
+
+            # --- naive hand-written SLAM baseline (tor10) ---
+            "naive_odom_slam_node=ai_slam_ai.naive_odom_slam_node:main",
         ],
     },
 )

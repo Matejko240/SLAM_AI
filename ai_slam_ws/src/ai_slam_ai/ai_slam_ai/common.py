@@ -274,6 +274,237 @@ def pose_delta(prev_xyth, curr_xyth) -> PoseDelta:
     )
 
 
+def pose_delta_local(prev_xyth, curr_xyth) -> PoseDelta:
+    delta_world = pose_delta(prev_xyth, curr_xyth)
+    th0 = float(prev_xyth[2])
+    c = math.cos(th0)
+    s = math.sin(th0)
+    dx_local = c * delta_world.dx + s * delta_world.dy
+    dy_local = -s * delta_world.dx + c * delta_world.dy
+    return PoseDelta(
+        dx=float(dx_local),
+        dy=float(dy_local),
+        dtheta=float(delta_world.dtheta),
+        distance=float(math.hypot(dx_local, dy_local)),
+    )
+
+
+def pose_pairs_to_local_deltas(pose_pairs: np.ndarray) -> np.ndarray:
+    pairs = np.asarray(pose_pairs, dtype=np.float32)
+    if pairs.ndim != 2 or pairs.shape[1] < 6:
+        raise ValueError(f"Expected pose_pairs shape (N,6+), got {pairs.shape}")
+
+    prev_xy = pairs[:, 0:2]
+    prev_th = pairs[:, 2]
+    curr_xy = pairs[:, 3:5]
+    curr_th = pairs[:, 5]
+
+    delta_world = curr_xy - prev_xy
+    c = np.cos(prev_th)
+    s = np.sin(prev_th)
+    dx_local = c * delta_world[:, 0] + s * delta_world[:, 1]
+    dy_local = -s * delta_world[:, 0] + c * delta_world[:, 1]
+    dtheta = ((curr_th - prev_th + np.pi) % (2.0 * np.pi)) - np.pi
+
+    return np.stack([dx_local, dy_local, dtheta], axis=1).astype(np.float32)
+
+
+def estimate_dt_from_pose_pairs_and_velocity_labels(
+    pose_pairs: np.ndarray,
+    velocity_labels: np.ndarray,
+    *,
+    min_linear_speed: float = 0.03,
+    min_angular_speed: float = 0.05,
+    clip_min: float = 1e-3,
+    clip_max: float = 1.0,
+    fallback_dt: float | None = None,
+) -> np.ndarray:
+    deltas = pose_pairs_to_local_deltas(pose_pairs)
+    labels = np.asarray(velocity_labels, dtype=np.float32)
+    if labels.ndim != 2 or labels.shape[1] < 2:
+        raise ValueError(f"Expected velocity_labels shape (N,2+), got {labels.shape}")
+
+    trans = np.linalg.norm(deltas[:, :2], axis=1)
+    rot = np.abs(deltas[:, 2])
+    v_abs = np.abs(labels[:, 0])
+    w_abs = np.abs(labels[:, 1])
+
+    dt_v = np.full(trans.shape, np.nan, dtype=np.float32)
+    dt_w = np.full(rot.shape, np.nan, dtype=np.float32)
+    v_mask = v_abs >= float(min_linear_speed)
+    w_mask = w_abs >= float(min_angular_speed)
+    dt_v[v_mask] = trans[v_mask] / np.maximum(v_abs[v_mask], 1e-6)
+    dt_w[w_mask] = rot[w_mask] / np.maximum(w_abs[w_mask], 1e-6)
+
+    dt = np.nanmean(np.stack([dt_v, dt_w], axis=1), axis=1).astype(np.float32)
+    valid = np.isfinite(dt) & (dt >= float(clip_min)) & (dt <= float(clip_max))
+    if fallback_dt is None:
+        if np.any(valid):
+            fallback_dt = float(np.median(dt[valid]))
+        else:
+            fallback_dt = 0.1
+    dt = np.where(valid, dt, float(fallback_dt)).astype(np.float32)
+    return np.clip(dt, float(clip_min), float(clip_max)).astype(np.float32)
+
+
+def velocity_predictions_to_local_deltas(
+    predicted_velocities: np.ndarray,
+    dt_estimates: np.ndarray,
+) -> np.ndarray:
+    pred = np.asarray(predicted_velocities, dtype=np.float32)
+    dt = np.asarray(dt_estimates, dtype=np.float32).reshape(-1)
+    if pred.ndim != 2 or pred.shape[1] < 2:
+        raise ValueError(f"Expected predicted_velocities shape (N,2+), got {pred.shape}")
+    if dt.shape[0] != pred.shape[0]:
+        raise ValueError(f"dt_estimates length {dt.shape[0]} does not match predictions {pred.shape[0]}")
+
+    dx = pred[:, 0] * dt
+    dy = np.zeros_like(dx, dtype=np.float32)
+    dtheta = pred[:, 1] * dt
+    return np.stack([dx, dy, dtheta], axis=1).astype(np.float32)
+
+
+def compose_local_pose_sequence(start_pose, local_deltas: np.ndarray) -> tuple[float, float, float]:
+    x = float(start_pose[0])
+    y = float(start_pose[1])
+    th = float(start_pose[2])
+    for dx, dy, dtheta in np.asarray(local_deltas, dtype=np.float32):
+        c = math.cos(th)
+        s = math.sin(th)
+        x += c * float(dx) - s * float(dy)
+        y += s * float(dx) + c * float(dy)
+        th = wrap(th + float(dtheta))
+    return float(x), float(y), float(th)
+
+
+def split_pose_pair_sequences(
+    pose_pairs: np.ndarray,
+    *,
+    continuity_pos_tol_m: float = 1e-3,
+    continuity_yaw_tol_rad: float = 1e-3,
+    min_segment_len: int = 2,
+) -> list[tuple[int, int]]:
+    pairs = np.asarray(pose_pairs, dtype=np.float32)
+    if pairs.ndim != 2 or pairs.shape[1] < 6:
+        return []
+    n = int(pairs.shape[0])
+    if n < max(2, int(min_segment_len)):
+        return []
+
+    segments: list[tuple[int, int]] = []
+    start = 0
+    for idx in range(n - 1):
+        curr_pose = pairs[idx, 3:6]
+        next_prev_pose = pairs[idx + 1, 0:3]
+        pos_ok = float(np.linalg.norm(curr_pose[:2] - next_prev_pose[:2])) <= float(continuity_pos_tol_m)
+        yaw_ok = abs(wrap(float(curr_pose[2]) - float(next_prev_pose[2]))) <= float(continuity_yaw_tol_rad)
+        if pos_ok and yaw_ok:
+            continue
+        if (idx + 1 - start) >= int(min_segment_len):
+            segments.append((start, idx + 1))
+        start = idx + 1
+    if (n - start) >= int(min_segment_len):
+        segments.append((start, n))
+    return segments
+
+
+def collect_rollout_window_starts(
+    pose_pairs: np.ndarray,
+    horizon: int,
+    *,
+    continuity_pos_tol_m: float = 1e-3,
+    continuity_yaw_tol_rad: float = 1e-3,
+) -> np.ndarray:
+    pairs = np.asarray(pose_pairs, dtype=np.float32)
+    horizon_int = int(horizon)
+    if pairs.ndim != 2 or pairs.shape[1] < 6 or horizon_int < 1:
+        return np.zeros((0,), dtype=np.int64)
+
+    starts: list[int] = []
+    segments = split_pose_pair_sequences(
+        pairs,
+        continuity_pos_tol_m=continuity_pos_tol_m,
+        continuity_yaw_tol_rad=continuity_yaw_tol_rad,
+        min_segment_len=max(2, horizon_int),
+    )
+    for seg_start, seg_end in segments:
+        seg_len = seg_end - seg_start
+        if seg_len < horizon_int:
+            continue
+        starts.extend(range(seg_start, seg_end - horizon_int + 1))
+    return np.asarray(starts, dtype=np.int64)
+
+
+def compute_rollout_metrics_from_local_deltas(
+    predicted_local_deltas: np.ndarray,
+    pose_pairs: np.ndarray,
+    *,
+    horizons: list[int] | tuple[int, ...] = (5, 10, 20),
+    continuity_pos_tol_m: float = 1e-3,
+    continuity_yaw_tol_rad: float = 1e-3,
+) -> dict[str, Any]:
+    pred = np.asarray(predicted_local_deltas, dtype=np.float32)
+    pairs = np.asarray(pose_pairs, dtype=np.float32)
+    if pred.ndim != 2 or pred.shape[0] != pairs.shape[0] or pred.shape[1] < 3 or pairs.ndim != 2 or pairs.shape[1] < 6:
+        return {"n_rollout_segments": 0}
+
+    segments = split_pose_pair_sequences(
+        pairs,
+        continuity_pos_tol_m=continuity_pos_tol_m,
+        continuity_yaw_tol_rad=continuity_yaw_tol_rad,
+        min_segment_len=2,
+    )
+    metrics: dict[str, Any] = {"n_rollout_segments": int(len(segments))}
+    unique_horizons = sorted({int(h) for h in horizons if int(h) >= 1})
+    for horizon in unique_horizons:
+        xy_err_sq: list[float] = []
+        yaw_err_sq: list[float] = []
+        n_windows = 0
+        for seg_start, seg_end in segments:
+            seg_len = seg_end - seg_start
+            if seg_len < horizon:
+                continue
+            for win_start in range(seg_start, seg_end - horizon + 1):
+                gt_start = pairs[win_start, 0:3]
+                gt_end = pairs[win_start + horizon - 1, 3:6]
+                pred_end = compose_local_pose_sequence(gt_start, pred[win_start : win_start + horizon, :3])
+                dx = float(pred_end[0]) - float(gt_end[0])
+                dy = float(pred_end[1]) - float(gt_end[1])
+                dth = wrap(float(pred_end[2]) - float(gt_end[2]))
+                xy_err_sq.append(dx * dx + dy * dy)
+                yaw_err_sq.append(dth * dth)
+                n_windows += 1
+
+        metrics[f"n_rollout_windows_h{horizon}"] = int(n_windows)
+        if n_windows > 0:
+            metrics[f"rollout_xy_rmse_h{horizon}"] = float(math.sqrt(float(np.mean(xy_err_sq))))
+            metrics[f"rollout_yaw_rmse_h{horizon}"] = float(math.sqrt(float(np.mean(yaw_err_sq))))
+        else:
+            metrics[f"rollout_xy_rmse_h{horizon}"] = None
+            metrics[f"rollout_yaw_rmse_h{horizon}"] = None
+    return metrics
+
+
+def velocity_label_from_poses(
+    prev_xyth,
+    curr_xyth,
+    dt_sec: float,
+    *,
+    frame: str = "local",
+) -> tuple[float, float]:
+    dt = max(float(dt_sec), 1e-6)
+    frame_mode = str(frame).strip().lower()
+    if frame_mode == "world":
+        delta = pose_delta(prev_xyth, curr_xyth)
+        dominant = delta.dx if abs(delta.dx) >= abs(delta.dy) else delta.dy
+        linear = math.copysign(delta.distance, dominant) if abs(dominant) > 1e-9 else 0.0
+    else:
+        delta = pose_delta_local(prev_xyth, curr_xyth)
+        linear = float(delta.dx)
+    angular = float(delta.dtheta)
+    return float(linear / dt), float(angular / dt)
+
+
 def scan_delta_rms(scan_prev: np.ndarray, scan_curr: np.ndarray) -> float:
     if scan_prev is None or scan_curr is None:
         return 0.0
@@ -281,6 +512,21 @@ def scan_delta_rms(scan_prev: np.ndarray, scan_curr: np.ndarray) -> float:
     if delta.size == 0:
         return 0.0
     return float(np.sqrt(np.mean(delta * delta)))
+
+
+def scan_motion_confidence(
+    scan_prev: np.ndarray | None,
+    scan_curr: np.ndarray | None,
+    *,
+    low_rms: float = 0.02,
+    high_rms: float = 0.20,
+) -> float:
+    rms = scan_delta_rms(scan_prev, scan_curr)
+    lo = float(low_rms)
+    hi = float(high_rms)
+    if hi <= lo:
+        return 1.0 if rms >= hi else 0.0
+    return float(np.clip((rms - lo) / max(hi - lo, 1e-6), 0.0, 1.0))
 
 
 def passes_motion_filter(

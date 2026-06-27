@@ -47,6 +47,23 @@ safe_source() {
     set -u
 }
 
+resolve_output_dir() {
+    local exp_id="$1"
+    local direct="out/$exp_id"
+    local prefixed="out/exp_$exp_id"
+    local fallback="ai_slam_ws/out/$exp_id"
+
+    if [ -d "$direct" ]; then
+        echo "$direct"
+    elif [ -d "$prefixed" ]; then
+        echo "$prefixed"
+    elif [ -d "$fallback" ]; then
+        echo "$fallback"
+    else
+        echo "$direct"
+    fi
+}
+
 fail_runtime_prereq() {
     cat >&2 <<EOF
 ERROR: $1
@@ -259,9 +276,12 @@ if not scenarios:
         }
     ]
 
+experiment_phase = str(cfg.get("experiment", {}).get("phase", "") or "").lower().strip()
 print(f"TRAIN_MAP\t{train_map}")
 print(f"DATASET_TIME\t{dataset_time}")
 print(f"EVAL_TIME\t{eval_time}")
+if experiment_phase in ("full", "train", "test", "dataset"):
+    print(f"CONFIG_PHASE\t{experiment_phase}")
 for scenario in scenarios:
     print("SCENARIO\t" + json.dumps(scenario, ensure_ascii=False))
 PY
@@ -271,6 +291,7 @@ TRAIN_MAP="world_house.sdf"
 DATASET_TIME="30.0"
 EVAL_TIME="60.0"
 TEST_SCENARIOS=()
+CONFIG_PHASE=""
 for line in "${CONFIG_LINES[@]}"; do
     key="${line%%$'\t'*}"
     value="${line#*$'\t'}"
@@ -279,8 +300,19 @@ for line in "${CONFIG_LINES[@]}"; do
         DATASET_TIME) DATASET_TIME="$value" ;;
         EVAL_TIME) EVAL_TIME="$value" ;;
         SCENARIO) TEST_SCENARIOS+=("$value") ;;
+        CONFIG_PHASE) CONFIG_PHASE="$value" ;;
     esac
 done
+
+# If no phase was given on the CLI, honour experiment.phase from the config.
+if [ "$REQUESTED_PHASE" = "full" ] && [ -n "$CONFIG_PHASE" ] && [ "$CONFIG_PHASE" != "full" ]; then
+    REQUESTED_PHASE="$CONFIG_PHASE"
+    case "$REQUESTED_PHASE" in
+        test) DO_TRAIN="false" ;;
+        train|dataset) DO_TEST="false" ;;
+    esac
+    echo "[INFO] Phase read from config: $REQUESTED_PHASE"
+fi
 
 slugify() {
     printf '%s' "$1" \
@@ -552,13 +584,17 @@ PY
     if [ -n "$OUTPUT_SUBDIR" ]; then
         SCENARIO_RESULTS_PATH="out/$EXP_ID/$OUTPUT_SUBDIR/results.json"
         SCENARIO_RESULTS_FALLBACK="ai_slam_ws/out/$EXP_ID/$OUTPUT_SUBDIR/results.json"
+        SCENARIO_RESULTS_EXP="out/exp_$EXP_ID/$OUTPUT_SUBDIR/results.json"
     else
         SCENARIO_RESULTS_PATH="out/$EXP_ID/results.json"
         SCENARIO_RESULTS_FALLBACK="ai_slam_ws/out/$EXP_ID/results.json"
+        SCENARIO_RESULTS_EXP="out/exp_$EXP_ID/results.json"
     fi
 
     if [ -f "$SCENARIO_RESULTS_PATH" ]; then
         :
+    elif [ -f "$SCENARIO_RESULTS_EXP" ]; then
+        SCENARIO_RESULTS_PATH="$SCENARIO_RESULTS_EXP"
     elif [ -f "$SCENARIO_RESULTS_FALLBACK" ]; then
         SCENARIO_RESULTS_PATH="$SCENARIO_RESULTS_FALLBACK"
     else
@@ -579,13 +615,16 @@ fi
 
 if [ "$DO_TEST" = "true" ] && [ "$SCENARIO_COUNT" -gt 1 ]; then
     echo "--- Agregowanie wyników wielu scenariuszy testowych ---"
-    python3 scripts/aggregate_multi_test_results.py "out/$EXP_ID" "${SCENARIO_RESULT_PATHS[@]}"
+    REPORT_DIR="$(resolve_output_dir "$EXP_ID")"
+    python3 scripts/aggregate_multi_test_results.py "$REPORT_DIR" "${SCENARIO_RESULT_PATHS[@]}"
 fi
 
 if [ "$DO_TEST" = "true" ]; then
     RESULTS_PATH="out/$EXP_ID/results.json"
     if [ ! -f "$RESULTS_PATH" ]; then
-        if [ -f "ai_slam_ws/out/$EXP_ID/results.json" ]; then
+        if [ -f "out/exp_$EXP_ID/results.json" ]; then
+            RESULTS_PATH="out/exp_$EXP_ID/results.json"
+        elif [ -f "ai_slam_ws/out/$EXP_ID/results.json" ]; then
             RESULTS_PATH="ai_slam_ws/out/$EXP_ID/results.json"
         else
             echo "BŁĄD: Plik wyników nie istnieje: $RESULTS_PATH"
@@ -595,13 +634,15 @@ if [ "$DO_TEST" = "true" ]; then
     fi
 fi
 
+REPORT_DIR="$(resolve_output_dir "$EXP_ID")"
+
 echo ""
 echo "PEŁNY CYKL ZAKOŃCZONY"
-echo "Wyniki: out/$EXP_ID"
+echo "Wyniki: $REPORT_DIR"
 
 if [ "$DO_TEST" = "true" ] || [ "$DO_TRAIN" = "true" ]; then
     echo "--- Generowanie raportów datasetu i treningu ---"
-    python3 scripts/inspect_dataset.py "out/$EXP_ID" || true
+    python3 scripts/inspect_dataset.py "$REPORT_DIR" || true
 fi
 
 # === FINALNE CZYSZCZENIE ===

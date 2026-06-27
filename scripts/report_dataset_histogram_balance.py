@@ -63,7 +63,7 @@ def _finite_or_none(value: float) -> float | None:
     return out if np.isfinite(out) else None
 
 
-def _meta_path(meta: dict, key: str) -> Path | None:
+def _meta_path(meta: dict, key: str, fallback_dir: Path | None = None) -> Path | None:
     raw = meta.get(key)
     if raw is None:
         return None
@@ -76,7 +76,14 @@ def _meta_path(meta: dict, key: str) -> Path | None:
     text = str(arr[0]).strip()
     if not text:
         return None
-    return Path(text)
+    candidate = Path(text)
+    if candidate.exists():
+        return candidate
+    if fallback_dir is not None:
+        sibling = fallback_dir / candidate.name
+        if sibling.exists():
+            return sibling
+    return candidate
 
 
 def _meta_paths(meta: dict, key: str) -> list[Path]:
@@ -394,8 +401,8 @@ def _plot_pair(
     title: str,
     out_png: Path,
     x_label: str,
-    left_label: str = "przed balansem",
-    right_label: str = "po balansie",
+    left_label: str = "próbki unikalne przed równoważeniem",
+    right_label: str = "po równoważeniu",
     hist_min: float | None = None,
     hist_max: float | None = None,
 ) -> None:
@@ -508,7 +515,7 @@ def main() -> int:
         source_ang_vals = np.zeros((0,), dtype=np.float32)  # unique before balance
         raw_source_lin_vals = np.zeros((0,), dtype=np.float32)  # raw before unique
         raw_source_ang_vals = np.zeros((0,), dtype=np.float32)  # raw before unique
-        source_path = _meta_path(m, "source_path")
+        source_path = _meta_path(m, "source_path", fallback_dir=exp)
         if strict_mode and source_path is not None and source_path.exists():
             source_lin_vals, source_ang_vals, _mode_unused = _load_rywak_metrics(source_path)
             source_meta = _meta_obj(source_path)
@@ -643,19 +650,20 @@ def main() -> int:
             cut_ang_mean = np.full((bins,), np.nan, dtype=np.float64)
 
         if rywak_metric_mode == "translation_rotation":
-            lin_title = "Rywak: translacja miedzy skanami (dane surowe)"
-            lin_title_pair = "Rywak: translacja miedzy skanami (unikalne: przed/po balansie)"
+            lin_title = "Wariant prędkościowy: translacja między skanami"
+            lin_title_pair = "Wariant prędkościowy: translacja między skanami"
             lin_x_label = "|delta_trans| [m]"
-            ang_title = "Rywak: rotacja miedzy skanami (dane surowe)"
-            ang_title_pair = "Rywak: rotacja miedzy skanami (unikalne: przed/po balansie)"
-            ang_x_label = "|delta_yaw| [rad]"
+            ang_title = "Wariant prędkościowy: rotacja między skanami"
+            ang_title_pair = "Wariant prędkościowy: rotacja między skanami"
+            ang_x_label = "wartość bezwzględna zmiany orientacji [rad]"
         else:
-            lin_title = "Rywak: predkosc liniowa (dane surowe)"
-            lin_title_pair = "Rywak: predkosc liniowa (unikalne: przed/po balansie)"
-            lin_x_label = "v [m/s]"
-            ang_title = "Rywak: predkosc katowa (dane surowe)"
-            ang_title_pair = "Rywak: predkosc katowa (unikalne: przed/po balansie)"
-            ang_x_label = "omega [rad/s]"
+            lin_title = "Wariant prędkościowy: prędkość liniowa"
+            lin_title_pair = "Wariant prędkościowy: prędkość liniowa"
+            lin_x_label = "prędkość liniowa [m/s]"
+            ang_title = "Wariant prędkościowy: prędkość kątowa"
+            ang_title_pair = "Wariant prędkościowy: prędkość kątowa"
+            ang_x_label = "prędkość kątowa [rad/s]"
+
 
         _plot_single(
             raw_lin,
@@ -671,8 +679,8 @@ def main() -> int:
             title=lin_title_pair,
             out_png=out_dir / "rywak_linear_hist_unique_before_after.png",
             x_label=lin_x_label,
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=lin_lo,
             hist_max=lin_hi,
         )
@@ -690,8 +698,8 @@ def main() -> int:
             title=ang_title_pair,
             out_png=out_dir / "rywak_angular_hist_unique_before_after.png",
             x_label=ang_x_label,
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=ang_lo,
             hist_max=ang_hi,
         )
@@ -702,8 +710,8 @@ def main() -> int:
             title=lin_title_pair,
             out_png=out_dir / "rywak_linear_hist_compare.png",
             x_label=lin_x_label,
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=lin_lo,
             hist_max=lin_hi,
         )
@@ -713,8 +721,8 @@ def main() -> int:
             title=ang_title_pair,
             out_png=out_dir / "rywak_angular_hist_compare.png",
             x_label=ang_x_label,
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=ang_lo,
             hist_max=ang_hi,
         )
@@ -824,7 +832,7 @@ def main() -> int:
         source_r_vals = np.zeros((0,), dtype=np.float32)  # unique before balance
         raw_source_t_vals = np.zeros((0,), dtype=np.float32)  # raw before unique
         raw_source_r_vals = np.zeros((0,), dtype=np.float32)  # raw before unique
-        source_path = _meta_path(m, "source_path")
+        source_path = _meta_path(m, "source_path", fallback_dir=exp)
         if strict_mode and source_path is not None and source_path.exists():
             with np.load(source_path, allow_pickle=True) as d:
                 y_src = np.asarray(d["Y"], dtype=np.float32)
@@ -966,41 +974,59 @@ def main() -> int:
         else:
             cut_r_mean = np.full((bins,), np.nan, dtype=np.float64)
 
+        # When component-balanced subsets are unavailable, use raw histogram as "before rebalancing".
+
         _plot_single(
             raw_t,
-            title="Robak: translacja pary skanow (dane surowe)",
+            title="Wariant transformacyjny: przemieszczenie w płaszczyźnie",
             out_png=out_dir / "robak_translation_hist_raw.png",
-            x_label="|delta_xy| [m]" if use_abs_t else "delta_xy [m]",
+            x_label=(
+                "wartość bezwzględna przemieszczenia w płaszczyźnie [m]"
+                if use_abs_t
+                else "przemieszczenie w płaszczyźnie [m]"
+            ),
             hist_min=trans_lo,
             hist_max=trans_hi,
         )
         _plot_pair(
             cut_t,
             final_t,
-            title="Robak: translacja pary skanow (unikalne: przed/po balansie)",
+            title="Wariant transformacyjny: przemieszczenie w płaszczyźnie",
             out_png=out_dir / "robak_translation_hist_unique_before_after.png",
-            x_label="|delta_xy| [m]" if use_abs_t else "delta_xy [m]",
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            x_label=(
+                "wartość bezwzględna przemieszczenia w płaszczyźnie [m]"
+                if use_abs_t
+                else "przemieszczenie w płaszczyźnie [m]"
+            ),
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=trans_lo,
             hist_max=trans_hi,
         )
         _plot_single(
             raw_r,
-            title="Robak: rotacja pary skanow (dane surowe)",
+            title="Wariant transformacyjny: zmiana orientacji",
             out_png=out_dir / "robak_rotation_hist_raw.png",
-            x_label="|delta_yaw| [deg]" if use_abs_r else "delta_yaw [deg]",
+            x_label=(
+                "wartość bezwzględna zmiany orientacji [°]"
+                if use_abs_r
+                else "zmiana orientacji [°]"
+            ),
             hist_min=rot_lo,
             hist_max=rot_hi,
         )
         _plot_pair(
             cut_r,
             final_r,
-            title="Robak: rotacja pary skanow (unikalne: przed/po balansie)",
+            title="Wariant transformacyjny: zmiana orientacji",
             out_png=out_dir / "robak_rotation_hist_unique_before_after.png",
-            x_label="|delta_yaw| [deg]" if use_abs_r else "delta_yaw [deg]",
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            x_label=(
+                "wartość bezwzględna zmiany orientacji [°]"
+                if use_abs_r
+                else "zmiana orientacji [°]"
+            ),
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=rot_lo,
             hist_max=rot_hi,
         )
@@ -1008,22 +1034,30 @@ def main() -> int:
         _plot_pair(
             cut_t,
             final_t,
-            title="Robak: translacja pary skanow (unikalne: przed/po balansie)",
+            title="Wariant transformacyjny: przemieszczenie w płaszczyźnie",
             out_png=out_dir / "robak_translation_hist_compare.png",
-            x_label="|delta_xy| [m]" if use_abs_t else "delta_xy [m]",
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            x_label=(
+                "wartość bezwzględna przemieszczenia w płaszczyźnie [m]"
+                if use_abs_t
+                else "przemieszczenie w płaszczyźnie [m]"
+            ),
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=trans_lo,
             hist_max=trans_hi,
         )
         _plot_pair(
             cut_r,
             final_r,
-            title="Robak: rotacja pary skanow (unikalne: przed/po balansie)",
+            title="Wariant transformacyjny: zmiana orientacji",
             out_png=out_dir / "robak_rotation_hist_compare.png",
-            x_label="|delta_yaw| [deg]" if use_abs_r else "delta_yaw [deg]",
-            left_label="unikalne przed balansem",
-            right_label="po balansie",
+            x_label=(
+                "wartość bezwzględna zmiany orientacji [°]"
+                if use_abs_r
+                else "zmiana orientacji [°]"
+            ),
+            left_label="próbki unikalne przed równoważeniem",
+            right_label="po równoważeniu",
             hist_min=rot_lo,
             hist_max=rot_hi,
         )

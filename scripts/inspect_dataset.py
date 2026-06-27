@@ -175,8 +175,8 @@ def load_reference_map(yaml_path: Path) -> tuple[np.ndarray, float, list[float]]
 
 
 def make_reference_display_grid(ref_grid: np.ndarray) -> np.ndarray:
-    """Render reference map as free=bright, occupied=dark."""
-    return np.where(ref_grid == 254, 1.0, np.where(ref_grid == 0, 0.08, 0.32))
+    """Render reference map with inverted dark-background colors for PNGs."""
+    return np.where(ref_grid == 254, 0.02, np.where(ref_grid == 0, 0.95, 0.35))
 
 
 def make_probabilistic_map_readable(
@@ -834,9 +834,9 @@ def render_overview(
         alpha=0.58,
         linewidths=0,
         zorder=4,
-        label="GT próbki",
+        label="próbki trajektorii rzeczywistej",
     )
-    ax.plot(gt_plot[:, 0], gt_plot[:, 1], color="#f8fafc", linewidth=2.1, alpha=0.92, label="GT")
+    ax.plot(gt_plot[:, 0], gt_plot[:, 1], color="#f8fafc", linewidth=2.1, alpha=0.92, label="trajektoria rzeczywista")
     ax.plot(odom[:, 0], odom[:, 1], color="#38bdf8", linewidth=1.8, alpha=0.92, label="Odometra")
     ax.scatter(gt[0, 0], gt[0, 1], s=68, c="#22c55e", zorder=5, label="Start GT")
     ax.scatter(gt[-1, 0], gt[-1, 1], s=72, c="#f97316", marker="X", zorder=5, label="Koniec GT")
@@ -846,7 +846,6 @@ def render_overview(
     legend.get_frame().set_edgecolor("#334155")
     for text in legend.get_texts():
         text.set_color("#e5eefc")
-    ax.set_title("Trajektorie GT i odometrii + mapa punktowa")
     ax.set_xlabel("X [m]")
     ax.set_ylabel("Y [m]")
     in_bounds = (
@@ -883,16 +882,15 @@ def render_overview(
         alpha=0.42,
         linewidths=0,
         zorder=4,
-        label="GT próbki",
+        label="próbki trajektorii rzeczywistej",
     )
-    ax.plot(gt_plot[:, 0], gt_plot[:, 1], color="#e2e8f0", linewidth=1.4, alpha=0.82, label="GT")
+    ax.plot(gt_plot[:, 0], gt_plot[:, 1], color="#e2e8f0", linewidth=1.4, alpha=0.82, label="trajektoria rzeczywista")
     ax.plot(odom[:, 0], odom[:, 1], color="#38bdf8", linewidth=1.1, alpha=0.72, label="Odometra")
     legend = ax.legend(loc="upper right")
     legend.get_frame().set_facecolor("#111827")
     legend.get_frame().set_edgecolor("#334155")
     for text in legend.get_texts():
         text.set_color("#e5eefc")
-    ax.set_title("Gęstość punktów LiDAR")
     ax.set_xlabel("X [m]")
     ax.set_ylabel("Y [m]")
     ax.set_aspect("equal", adjustable="box")
@@ -909,7 +907,6 @@ def render_overview(
         legend.get_frame().set_edgecolor("#334155")
         for text in legend.get_texts():
             text.set_color("#e5eefc")
-    ax.set_title("Rozkład odległości LiDAR")
     ax.set_xlabel("Odległość [m]")
     ax.set_ylabel("Liczba pomiarów")
 
@@ -923,7 +920,6 @@ def render_overview(
     cbar.set_label("Liczba próbek", color="#dbe7ff")
     cbar.ax.yaxis.set_tick_params(color="#dbe7ff")
     plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#dbe7ff")
-    ax.set_title("Korekty pozycji GT vs odometria")
     ax.set_xlabel("dx [mm]")
     ax.set_ylabel("dy [mm]")
     info_text = (
@@ -942,13 +938,6 @@ def render_overview(
         color="#e5eefc",
         fontsize=9,
         bbox={"facecolor": "#0f172a", "edgecolor": "#334155", "boxstyle": "round,pad=0.4", "alpha": 0.86},
-    )
-
-    fig.suptitle(
-        f"Inspekcja datasetu: {dataset_dir.name} | próbki={summary['sample_count']} | promieni/skan={summary['scan_beam_count']}",
-        color="#f8fafc",
-        fontsize=15,
-        y=0.995,
     )
 
     output_path = dataset_dir / OVERVIEW_NAME
@@ -971,14 +960,12 @@ def render_scan_gallery(dataset_dir: Path, scans: np.ndarray) -> Path:
         local_x, local_y = local_scan_points(scans[sample_index], max_range=plot_max_range)
         ax.scatter(local_x, local_y, s=5, c="#38bdf8", alpha=0.88, linewidths=0)
         ax.scatter([0.0], [0.0], s=60, c="#a3e635", marker="o", zorder=5)
-        ax.set_title(f"Skan lokalny #{sample_index}")
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.set_xlim(-plot_max_range, plot_max_range)
         ax.set_ylim(-plot_max_range, plot_max_range)
         ax.set_aspect("equal", adjustable="box")
 
-    fig.suptitle("Reprezentatywne skany lokalne", color="#f8fafc", fontsize=15, y=0.98)
     output_path = dataset_dir / SCANS_NAME
     save_figure(fig, output_path)
     return output_path
@@ -1146,7 +1133,6 @@ def render_histogram_coverage(
     if y_log:
         ax.set_yscale("log")
 
-    ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Liczba próbek")
     ax.text(
@@ -1220,7 +1206,6 @@ def render_component_histograms(
             for text in legend.get_texts():
                 text.set_color("#e5eefc")
 
-        ax.set_title(str(spec["title"]))
         ax.set_xlabel(str(spec["xlabel"]))
         ax.set_ylabel("Liczba próbek")
 
@@ -1241,7 +1226,6 @@ def render_component_histograms(
     for ax in axes_arr.flat[n_items:]:
         fig.delaxes(ax)
 
-    fig.suptitle(title, color="#f8fafc", fontsize=15)
     save_figure(fig, output_path)
     return output_path
 
@@ -1683,7 +1667,6 @@ def render_speed_trajectory_report(
         ax.scatter(poses[-1, 0], poses[-1, 1], s=58, c="#f97316", marker="X", zorder=4, label="Koniec")
 
         summary = item["speed_summary"]
-        ax.set_title(str(item["label"]))
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.set_aspect("equal", adjustable="box")
@@ -1731,7 +1714,6 @@ def render_speed_trajectory_report(
     cbar.ax.yaxis.set_tick_params(color="#dbe7ff")
     plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#dbe7ff")
 
-    fig.suptitle("Trajektorie kolorowane prędkością", color="#f8fafc", fontsize=15, y=0.99)
     output_path = dataset_dir / TRAJECTORY_SPEED_NAME
     fig.subplots_adjust(left=0.04, right=0.885, top=0.90, bottom=0.08, wspace=0.16, hspace=0.24)
     fig.savefig(output_path, dpi=160, facecolor=fig.get_facecolor())
@@ -1960,7 +1942,6 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
         y_pad = max(2.0, 0.12 * max(y_max - y_min, 1.0))
         ax_full.set_xlim(x_min - x_pad, x_max + x_pad)
         ax_full.set_ylim(y_min - y_pad, y_max + y_pad)
-        ax_full.set_title("Trajektorie względem mapy referencyjnej (odometria / klasyczny SLAM / Robak / Rywak)")
         ax_full.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0)
         fig.tight_layout(rect=[0.0, 0.0, 0.84, 1.0])
         fig.savefig(traj_path, dpi=150)
@@ -2043,13 +2024,11 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
             th_max = float(np.max(th_all))
             th_pad = max(0.03, 0.07 * max(th_max - th_min, 1e-3))
             ax_theta.set_ylim(th_min - th_pad, th_max + th_pad)
-        ax_pos.set_title("Błąd pozycji (pełne tory)")
-        ax_pos.set_ylabel("error [m]")
+        ax_pos.set_ylabel("błąd pozycji [m]")
         ax_pos.grid(True, alpha=0.3)
         ax_pos.legend(loc="best")
-        ax_theta.set_title("Błąd orientacji (pełne tory)")
         ax_theta.set_xlabel("t [s]")
-        ax_theta.set_ylabel("|error| [rad]")
+        ax_theta.set_ylabel("błąd orientacji [rad]")
         ax_theta.grid(True, alpha=0.3)
         ax_theta.legend(loc="best")
         fig.tight_layout()
@@ -2063,7 +2042,7 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
         with np.load(map_layers_npz) as m:
             canonical_candidates = [
                 ("ref", ["ref"], "mapa referencyjna", None),
-                ("gt", ["gt"], "GT points", "iou_map_gt_points"),
+                ("gt", ["gt"], "trajektoria rzeczywista", "iou_map_gt_points"),
                 ("odom", ["odom"], "odometria points", "iou_map_odom_points"),
                 ("classic_slam", ["classic_slam", "baseline_slam", "baseline"], "klasyczny SLAM", "iou_map_classic_slam"),
                 ("robak_slam", ["robak_slam", "robak"], "robak + SLAM", "iou_map_robak"),
@@ -2118,13 +2097,12 @@ def generate_clean_eval_plots(dataset_dir: Path, include_ai: bool = False) -> di
                     title = label
                     if isinstance(iou, (int, float)):
                         title = f"{label} (IoU={float(iou):.3f})"
-                    ax.set_title(title)
+                    ax.set_xlabel(title, fontsize=8)
                     ax.set_xticks([])
                     ax.set_yticks([])
                 for j in range(n, len(axes_flat)):
                     axes_flat[j].axis("off")
-                fig.suptitle("Porównanie map (odometria / klasyczny SLAM / Robak / Rywak, z i bez SLAM)", fontsize=12, color="#f8fafc")
-                fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
+                fig.tight_layout()
                 fig.savefig(maps_path, dpi=160, facecolor=fig.get_facecolor())
                 plt.close(fig)
                 artifacts["maps_png"] = maps_path
@@ -2155,7 +2133,6 @@ def render_training_curve(
     ax.plot(epoch_idx, train_loss, color="#38bdf8", linewidth=2.0, label="Błąd uczenia")
     ax.plot(epoch_idx, val_loss, color="#f97316", linewidth=2.0, label="Błąd walidacji")
     ax.axvline(best_epoch, color="#a3e635", linestyle="--", linewidth=1.4, label=f"Best epoch = {best_epoch}")
-    ax.set_title(title)
     ax.set_xlabel("Epoka")
     ax.set_ylabel("Loss")
     legend = ax.legend(loc="upper right")

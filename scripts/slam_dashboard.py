@@ -56,7 +56,7 @@ FUNCTION_INDEX_JSON = DOCS_DIR / "function_index.json"
 JOB_LOG_DIR = DASHBOARD_JOBS_DIR
 VENV_SITE = resolve_venv_site_packages(REPO_ROOT)
 POSITION_SERIES = {
-    "gt": ("time_s", "gt_xytheta", "GT", "#e2e8f0"),
+    "gt": ("time_s", "gt_xytheta", "trajektoria rzeczywista", "#e2e8f0"),
     "baseline": ("time_s", "baseline_xytheta", "Odom (vs GT)", "#c2410c"),
     "ai": ("ai_time_s", "ai_xytheta", "AI", "#0f766e"),
     "scanmatch": ("scanmatch_time_s", "scanmatch_xytheta", "ScanMatcher", "#2563eb"),
@@ -1544,7 +1544,6 @@ def make_placeholder_figure(title: str, message: str) -> bytes:
     fig, ax = plt.subplots(figsize=(8, 4))
     apply_plot_style(fig, ax)
     ax.text(0.5, 0.5, message, ha="center", va="center", wrap=True, color="#e5eefc")
-    ax.set_title(title)
     ax.axis("off")
     return figure_to_png(fig)
 
@@ -1576,7 +1575,7 @@ def plot_trajectory_image(
     overlay = load_reference_overlay(experiment_id)
     if overlay and isinstance(overlay.get("points"), np.ndarray) and overlay["points"].size > 0:
         pts = overlay["points"]
-        ax.scatter(pts[:, 0], pts[:, 1], s=0.8, c="#bfc7d3", alpha=0.25, marker="s", linewidths=0, label="ref walls")
+        ax.scatter(pts[:, 0], pts[:, 1], s=0.8, c="#bfc7d3", alpha=0.25, marker="s", linewidths=0, label="ściany mapy referencyjnej")
     if overlay and isinstance(overlay.get("polygon"), np.ndarray):
         poly = np.asarray(overlay["polygon"], dtype=np.float32)
         ax.plot(
@@ -1586,7 +1585,7 @@ def plot_trajectory_image(
             linewidth=1.2,
             color="#94a3b8",
             alpha=0.9,
-            label="ref map bounds",
+            label="granica mapy referencyjnej",
         )
     plotted = 0
     overall_bounds: list[tuple[float, float, float, float]] = []
@@ -1616,7 +1615,6 @@ def plot_trajectory_image(
         plt.close(fig)
         return make_placeholder_figure("Trajektorie", f"Brak danych trajektorii dla {experiment_id}.")
 
-    ax.set_title(f"Trajektorie: {experiment_id}")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_aspect("equal")
@@ -1724,7 +1722,6 @@ def plot_error_image(
     elif "reconstructed" in used_sources:
         source_note = " (część serii odtworzona)"
 
-    ax.set_title(f"Błędy: {experiment_id}{source_note}")
     ax.set_xlabel("czas [s]")
     ax.set_ylabel(y_label)
     ax.legend(loc="best")
@@ -1798,7 +1795,7 @@ def plot_maps_image(experiment_id: str, series_names: list[str]) -> bytes:
             ax = axes_flat[idx]
             ax.set_facecolor("#151d2d")
             ax.imshow(arr, origin="lower", cmap="gray", vmin=0.0, vmax=1.0, interpolation="nearest")
-            ax.set_title(MAP_LAYER_LABELS.get(name, name), color="#f8fafc")
+            ax.set_xlabel(MAP_LAYER_LABELS.get(name, name), color="#f8fafc", fontsize=8)
             ax.set_xticks([])
             ax.set_yticks([])
             for spine in ax.spines.values():
@@ -1807,7 +1804,6 @@ def plot_maps_image(experiment_id: str, series_names: list[str]) -> bytes:
         for idx in range(n_maps, len(axes_flat)):
             axes_flat[idx].axis("off")
 
-        fig.suptitle(f"Mapy: {experiment_id}", color="#f8fafc", fontsize=12)
         return figure_to_png(fig)
     finally:
         try:
@@ -1902,7 +1898,7 @@ def plot_comparison_image(group: str, param_key: str, metric_key: str) -> bytes:
         ax.set_xlabel(param_spec["label"])
         style_plot_legend(ax)
 
-    ax.set_title(f"{metric_spec['label']} vs {param_spec['label']} ({len(points)} eksperymentów)")
+    ax.set_xlabel(param_spec["label"])
     ax.set_ylabel(metric_spec["label"])
     return figure_to_png(fig)
 
@@ -2032,10 +2028,6 @@ def plot_sweep_image(sweep_id: str, family_key: str, selected_series: list[str] 
 
     ax.set_ylabel(family_spec["y_label"])
     source_suffix = " | odtworzone z eksperymentow" if rows_source == "recovered_experiments" else ""
-    ax.set_title(
-        f"{family_spec['label']} vs {param_label} | dataset: {source_experiment_id} | "
-        f"udane: {len(done_rows)}/{len(rows)}{source_suffix}"
-    )
     ax.legend(loc="best")
     style_plot_legend(ax)
     return figure_to_png(fig)
@@ -6186,7 +6178,7 @@ HTML_PAGE = """<!doctype html>
         node.addEventListener('change', () => syncSelectTitle(node));
       });
       renderSeriesCheckboxes('trajectory-series', {
-        gt: ['time_s', 'gt_xytheta', 'GT'],
+        gt: ['time_s', 'gt_xytheta', 'trajektoria rzeczywista'],
         baseline: ['time_s', 'baseline_xytheta', 'Odom (vs GT)'],
         ai: ['ai_time_s', 'ai_xytheta', 'AI'],
         robak: ['robak_time_s', 'robak_xytheta', 'Robak'],

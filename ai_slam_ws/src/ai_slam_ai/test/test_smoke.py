@@ -1,3 +1,4 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,9 +7,11 @@ import numpy as np
 
 from ai_slam_ai.common import (
     merge_balanced_indices,
+    scan_motion_confidence,
     split_time_coverage_stats,
     split_train_val_indices,
     uniform_histogram_sample_indices,
+    velocity_label_from_poses,
     wait_for_npz_dataset,
 )
 
@@ -67,6 +70,24 @@ class SplitStrategyTests(unittest.TestCase):
         self.assertEqual(strategy_2, "random_shuffle")
         self.assertTrue(np.array_equal(tr_1, tr_2))
         self.assertTrue(np.array_equal(va_1, va_2))
+
+
+class MotionSignalTests(unittest.TestCase):
+    def test_velocity_label_from_poses_uses_local_forward_motion(self) -> None:
+        v, w = velocity_label_from_poses(
+            (0.0, 0.0, math.pi / 2.0),
+            (0.0, 1.0, math.pi),
+            2.0,
+            frame="local",
+        )
+        self.assertAlmostEqual(v, 0.5, places=5)
+        self.assertAlmostEqual(w, math.pi / 4.0, places=5)
+
+    def test_scan_motion_confidence_grows_with_delta_scan_energy(self) -> None:
+        still = np.ones((360,), dtype=np.float32)
+        moved = np.ones((360,), dtype=np.float32) * 1.2
+        self.assertAlmostEqual(scan_motion_confidence(still, still), 0.0, places=6)
+        self.assertGreater(scan_motion_confidence(still, moved), 0.5)
 
 
 class HistogramBalancingTests(unittest.TestCase):

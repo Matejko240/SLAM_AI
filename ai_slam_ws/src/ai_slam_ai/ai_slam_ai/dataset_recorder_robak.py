@@ -12,6 +12,7 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 
 from .common import (
@@ -23,6 +24,7 @@ from .common import (
     seed_all,
     uniform_histogram_sample_indices,
     wrap,
+    xytheta_from_odom,
     xytheta_from_pose_stamped,
 )
 from .experiment_logger import ExperimentLogger
@@ -196,6 +198,9 @@ class DatasetRecorderRobak(Node):
         self.declare_parameter("planned_path_done_topic", "/planned_path_done")
         self.declare_parameter("planned_path_done_min_elapsed_sec", 0.0)
 
+        self.declare_parameter("odom_topic", "")
+        self.declare_parameter("odom_sync_tolerance_sec", 0.10)
+
         self.seed = int(self.get_parameter("seed").value)
         seed_all(self.seed)
 
@@ -252,6 +257,8 @@ class DatasetRecorderRobak(Node):
         self.planned_path_done_min_elapsed_sec = float(
             self.get_parameter("planned_path_done_min_elapsed_sec").value
         )
+        self.odom_topic = str(self.get_parameter("odom_topic").value).strip()
+        self.odom_sync_tolerance_sec = float(self.get_parameter("odom_sync_tolerance_sec").value)
         self.balanced_translation_path = os.path.join(
             self.out_dir,
             str(self.get_parameter("balanced_translation_dataset_name").value),
@@ -285,7 +292,10 @@ class DatasetRecorderRobak(Node):
 
         self.X_pairs = []
         self.Y = []
+        self.Y_odom = []
         self.P = []
+        self.N_offsets = []
+        self.odom_buf: Deque[Tuple[float, float, float, float]] = deque(maxlen=2000)
 
         self.t0 = None
         self.topics_ready = False
@@ -295,6 +305,12 @@ class DatasetRecorderRobak(Node):
 
         self.sub_gt = self.create_subscription(PoseStamped, self.gt_topic, self.on_gt, 50)
         self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
+        self.sub_odom = None
+        if self.odom_topic:
+            self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 50)
+            self.get_logger().info(f"[Robak] odom_topic={self.odom_topic} (recording Y_odom for residual training)")
+        else:
+            self.get_logger().info("[Robak] odom_topic not set — Y_odom will be NaN (residual training not possible)")
         self.sub_path_done = None
         if self.stop_on_planned_path_done:
             self.sub_path_done = self.create_subscription(
@@ -320,6 +336,12 @@ class DatasetRecorderRobak(Node):
             f"[Robak] augment: noise_std_scale={self.augment_noise_std_scale}, "
             f"cut_fraction={self.augment_cut_fraction}, cut_max_points={self.augment_cut_max_points}"
         )
+        if self.augment_noise_std_scale > 0.0 or self.augment_cut_fraction > 0.0:
+            self.get_logger().warn(
+                "[Robak] Offline dataset augmentation is enabled. "
+                "Canonical research datasets should keep augment_noise_std_scale=0 "
+                "and augment_cut_fraction=0; prefer train-only augmentation in trainer."
+            )
         self.get_logger().info(
             f"[Robak] trajectory_mode={self.trajectory_mode}, "
             f"cell={self.trajectory_cell_size_m:.2f}m, cycle_min_repeat_hits={self.cycle_min_repeat_hits}, "
@@ -351,6 +373,19 @@ class DatasetRecorderRobak(Node):
         t = _stamp_to_sec(msg.header.stamp)
         self.gt_buf.append((t, xytheta_from_pose_stamped(msg)))
         self._process_pending_scans()
+
+    def on_odom(self, msg: Odometry):
+        t = _stamp_to_sec(msg.header.stamp)
+        x, y, th = xytheta_from_odom(msg)
+        self.odom_buf.append((t, x, y, th))
+
+    def _nearest_odom(self, t: float):
+        if not self.odom_buf:
+            return None
+        t_best, x, y, th = min(self.odom_buf, key=lambda item: abs(item[0] - t))
+        if abs(t_best - t) > self.odom_sync_tolerance_sec:
+            return None
+        return x, y, th
 
     def _trim_gt_buffer(self, t_ref: float):
         while len(self.gt_buf) > 2 and self.gt_buf[1][0] < (t_ref - 1.0):
@@ -481,14 +516,24 @@ class DatasetRecorderRobak(Node):
             dx, dy, dth = _delta_pose(gt_prev, gt_curr, self.label_frame)
             self.pair_accept_count += 1
 
+            odom_prev = self._nearest_odom(t_prev)
+            odom_curr = self._nearest_odom(t_curr)
+            if odom_prev is not None and odom_curr is not None:
+                dxo, dyo, dtho = _delta_pose(odom_prev, odom_curr, self.label_frame)
+                y_odom = np.asarray([dxo, dyo, dtho], dtype=np.float32)
+            else:
+                y_odom = np.asarray([float("nan"), float("nan"), float("nan")], dtype=np.float32)
+
             self.X_pairs.append(np.stack([scan_prev, scan_curr], axis=0).astype(np.float32))
             self.Y.append(np.asarray([dx, dy, dth], dtype=np.float32))
+            self.Y_odom.append(y_odom)
             self.P.append(
                 np.asarray(
                     [gt_prev[0], gt_prev[1], gt_prev[2], gt_curr[0], gt_curr[1], gt_curr[2]],
                     dtype=np.float32,
                 )
             )
+            self.N_offsets.append(off)
 
             if self.max_samples_enabled and len(self.Y) >= self.max_samples and not self.is_finishing:
                 self.stop_reason = "max_samples_reached"
@@ -507,12 +552,14 @@ class DatasetRecorderRobak(Node):
                 if did_aug:
                     self.X_pairs.append(np.stack([aug_prev, aug_curr], axis=0).astype(np.float32))
                     self.Y.append(np.asarray([dx, dy, dth], dtype=np.float32))
+                    self.Y_odom.append(y_odom)
                     self.P.append(
                         np.asarray(
                             [gt_prev[0], gt_prev[1], gt_prev[2], gt_curr[0], gt_curr[1], gt_curr[2]],
                             dtype=np.float32,
                         )
                     )
+                    self.N_offsets.append(off)
                     self.aug_samples_count += 1
                     if self.max_samples_enabled and len(self.Y) >= self.max_samples and not self.is_finishing:
                         self.stop_reason = "max_samples_reached"
@@ -613,7 +660,9 @@ class DatasetRecorderRobak(Node):
 
         X = np.stack(self.X_pairs).astype(np.float32)
         Y = np.stack(self.Y).astype(np.float32)
+        Y_odom = np.stack(self.Y_odom).astype(np.float32) if self.Y_odom else np.full((len(self.Y), 3), float("nan"), dtype=np.float32)
         P = np.stack(self.P).astype(np.float32)  # (N,6) = prev(x,y,th), curr(x,y,th)
+        N = np.asarray(self.N_offsets, dtype=np.int32)  # (N,) per-sample scan offset
         raw_count = int(Y.shape[0])
 
         trans_hist_stats: dict = {}
@@ -662,7 +711,9 @@ class DatasetRecorderRobak(Node):
                         tbuf,
                         X_pairs=X[selected_trans_idx],
                         Y=Y[selected_trans_idx],
+                        Y_odom=Y_odom[selected_trans_idx],
                         P=P[selected_trans_idx],
+                        N=N[selected_trans_idx],
                         meta={
                             "source_dataset": np.asarray([self.dataset_path], dtype=object),
                             "component": np.asarray(["translation_norm"], dtype=object),
@@ -701,7 +752,9 @@ class DatasetRecorderRobak(Node):
                         rbuf,
                         X_pairs=X[selected_rot_idx],
                         Y=Y[selected_rot_idx],
+                        Y_odom=Y_odom[selected_rot_idx],
                         P=P[selected_rot_idx],
+                        N=N[selected_rot_idx],
                         meta={
                             "source_dataset": np.asarray([self.dataset_path], dtype=object),
                             "component": np.asarray(["delta_yaw"], dtype=object),
@@ -739,7 +792,9 @@ class DatasetRecorderRobak(Node):
 
             X = X[selected_merged_idx]
             Y = Y[selected_merged_idx]
+            Y_odom = Y_odom[selected_merged_idx]
             P = P[selected_merged_idx]
+            N = N[selected_merged_idx]
 
         pair_distance = np.linalg.norm(Y[:, :2], axis=1).astype(np.float32)
         pair_rotation_abs_deg = np.rad2deg(np.abs(Y[:, 2])).astype(np.float32)
@@ -753,6 +808,7 @@ class DatasetRecorderRobak(Node):
             "out_dim": np.int64(3),
             "label_mode": np.asarray(["gt_delta"], dtype=object),
             "label_frame": np.asarray([self.label_frame], dtype=object),
+            "per_sample_scan_offset_saved": np.int64(1),
             "offsets": np.asarray(self.offsets, dtype=np.int64),
             "min_pair_dist": np.float32(self.min_pair_dist),
             "min_pair_dyaw": np.float32(self.min_pair_dyaw),
@@ -840,12 +896,16 @@ class DatasetRecorderRobak(Node):
             "balance_rotation_unit": np.asarray(["deg"], dtype=object),
             "pose_pair_key_included": np.int64(1),
             "pose_pair_dim": np.int64(P.shape[1]),
+            "y_odom_recorded": np.int64(1 if self.odom_topic else 0),
+            "y_odom_valid_fraction": np.float32(
+                float(np.all(np.isfinite(Y_odom), axis=1).sum()) / max(1, Y_odom.shape[0])
+            ),
         }
 
         ensure_dir(self.out_dir)
         try:
             buffer = io.BytesIO()
-            np.savez_compressed(buffer, X_pairs=X, Y=Y, P=P, meta=meta)
+            np.savez_compressed(buffer, X_pairs=X, Y=Y, Y_odom=Y_odom, P=P, N=N, meta=meta)
             atomic_write_bytes(self.dataset_path, buffer.getvalue())
         except Exception as e:
             self.get_logger().error(f"[Robak] Failed to save dataset: {e}")
@@ -886,6 +946,14 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        # Save collected data even when shutdown is triggered externally
+        # (e.g. motion watchdog abort, launch SIGTERM).
+        try:
+            if not node.is_finishing and len(node.Y) > 0:
+                node.stop_reason = "external_shutdown"
+                node.save_and_exit()
+        except Exception:
+            pass
         try:
             node.destroy_node()
         except Exception:

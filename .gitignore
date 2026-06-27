@@ -19,3 +19,22 @@ AGENTS.md
 .cursor
 archive/
 out/
+.venv_jetracer/
+.claude/
+.codex
+.cursor/
+kod_do_pracy/
+kod_do_pracy.zip
+*:Zone.Identifier
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+# Raw measurement captures (rosbags, mocap exports) - results kept, raw binaries excluded
+*.bag
+*.tak
+*.c3d
+*.fbx
+*.cal
+*.motive

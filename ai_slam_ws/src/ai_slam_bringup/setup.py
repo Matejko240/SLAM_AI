@@ -21,6 +21,7 @@ setup(
         "console_scripts": [
             "odom_corruptor=ai_slam_bringup.odom_corruptor:main",
             "scan_fix=ai_slam_bringup.scan_fix:main",
+            "jetracer_scan_adapter=ai_slam_bringup.jetracer_scan_adapter:main",
             "gt_pose_publisher=ai_slam_bringup.gt_pose_publisher:main",
             "auto_driver=ai_slam_bringup.auto_driver:main",
             "planned_path_driver=ai_slam_bringup.planned_path_driver:main",

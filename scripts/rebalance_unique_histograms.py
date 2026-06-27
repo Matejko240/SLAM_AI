@@ -224,6 +224,38 @@ def _rywak_metrics(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, str, str
     return metric_row, metric_col, "velocity", "m/s", "rad/s"
 
 
+def _mirror_augment_robak(
+    features: np.ndarray, labels: np.ndarray, pose: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Mirror-augment Robak: reverse scan beams, negate dy and dθ."""
+    feat_m = features[:, :, ::-1].copy()
+    lab_m = labels.copy()
+    lab_m[:, 1] *= -1
+    lab_m[:, 2] *= -1
+    pose_m = np.full_like(pose, np.nan) if pose is not None else None
+    feat_cat = np.concatenate([features, feat_m], axis=0)
+    lab_cat = np.concatenate([labels, lab_m], axis=0)
+    pose_cat = np.concatenate([pose, pose_m], axis=0) if pose is not None else None
+    return feat_cat, lab_cat, pose_cat
+
+
+def _mirror_augment_rywak(
+    features: np.ndarray, labels: np.ndarray, pose: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Mirror-augment Rywak: negate dθ, reverse delta scan, negate ω."""
+    feat_m = features.copy()
+    feat_m[:, 0] *= -1
+    feat_m[:, 1] *= -1
+    feat_m[:, 2:] = feat_m[:, 2:][:, ::-1]
+    lab_m = labels.copy()
+    lab_m[:, 1] *= -1
+    pose_m = np.full_like(pose, np.nan) if pose is not None else None
+    feat_cat = np.concatenate([features, feat_m], axis=0)
+    lab_cat = np.concatenate([labels, lab_m], axis=0)
+    pose_cat = np.concatenate([pose, pose_m], axis=0) if pose is not None else None
+    return feat_cat, lab_cat, pose_cat
+
+
 def _rebalance_one(
     npz_path: Path,
     out_path: Path,
@@ -237,6 +269,8 @@ def _rebalance_one(
     seed: int,
     require_all_bins: bool,
     label: str,
+    mirror_augment: str = "none",
+    require_offsets: bool = False,
 ) -> dict:
     with np.load(npz_path, allow_pickle=True) as data:
         if feature_key not in data or "Y" not in data:
@@ -244,20 +278,66 @@ def _rebalance_one(
         features_raw = np.asarray(data[feature_key], dtype=np.float32)
         labels_raw = np.asarray(data["Y"], dtype=np.float32)
         pose_raw = np.asarray(data["P"], dtype=np.float32) if "P" in data else None
+        noff_raw = np.asarray(data["N"], dtype=np.int32) if "N" in data else None
+
+    if require_offsets and noff_raw is None:
+        return {
+            "success": False,
+            "reason": "missing_offsets",
+            "label": label,
+            "input_path": str(npz_path),
+            "output_path": str(out_path),
+            "bins": int(bins),
+            "n_input": int(features_raw.shape[0]),
+            "mirror_augment": mirror_augment,
+            "message": (
+                "Robak rebalance requires per-sample scan offsets 'N' in the input dataset. "
+                "Regenerate dataset_robak_merged.npz from canonical inputs that preserve N."
+            ),
+        }
 
     if features_raw.shape[0] != labels_raw.shape[0]:
         raise ValueError(f"{npz_path}: feature/label rows mismatch")
     if pose_raw is not None and pose_raw.shape[0] != labels_raw.shape[0]:
         raise ValueError(f"{npz_path}: pose/label rows mismatch")
 
+    n_before_mirror = int(features_raw.shape[0])
+    if mirror_augment == "robak":
+        features_raw, labels_raw, pose_raw = _mirror_augment_robak(features_raw, labels_raw, pose_raw)
+        if noff_raw is not None:
+            noff_raw = np.concatenate([noff_raw, noff_raw], axis=0)
+    elif mirror_augment == "rywak":
+        features_raw, labels_raw, pose_raw = _mirror_augment_rywak(features_raw, labels_raw, pose_raw)
+        if noff_raw is not None:
+            noff_raw = np.concatenate([noff_raw, noff_raw], axis=0)
+    n_after_mirror = int(features_raw.shape[0])
+
+    # Recompute metrics on the augmented data.
+    if mirror_augment != "none":
+        metric_row = np.concatenate([metric_row, metric_row], axis=0)
+        metric_col = np.concatenate([metric_col, metric_col], axis=0)
+
     # Deduplication policy: always X+Y (pose key deliberately ignored).
+    # Skip full dedup after mirror augmentation to avoid OOM on large datasets:
+    # mirror never creates exact duplicates (scan beams are reversed).
     dedup_pose_requested = False
     dedup_pose_available = pose_raw is not None
-    features, labels, pose, removed_dups, unique_idx, dedup_key_used = _deduplicate_xy(
-        features_raw,
-        labels_raw,
-        pose_raw,
-    )
+    if mirror_augment != "none" and n_after_mirror > 2_000_000:
+        # Fast path: skip costly dedup for large mirrored datasets
+        features = features_raw
+        labels = labels_raw
+        pose = pose_raw
+        noff = noff_raw
+        removed_dups = 0
+        unique_idx = np.arange(features_raw.shape[0], dtype=np.int64)
+        dedup_key_used = "X+Y (skipped: mirror-augmented)"
+    else:
+        features, labels, pose, removed_dups, unique_idx, dedup_key_used = _deduplicate_xy(
+            features_raw,
+            labels_raw,
+            pose_raw,
+        )
+        noff = noff_raw[unique_idx] if noff_raw is not None else None
     metric_row_dedup = np.asarray(metric_row, dtype=np.float64).reshape(-1)[unique_idx]
     metric_col_dedup = np.asarray(metric_col, dtype=np.float64).reshape(-1)[unique_idx]
 
@@ -278,7 +358,9 @@ def _rebalance_one(
             "input_path": str(npz_path),
             "output_path": str(out_path),
             "bins": int(bins),
-            "n_input": int(features_raw.shape[0]),
+            "n_input": int(n_before_mirror),
+            "n_after_mirror": int(n_after_mirror),
+            "mirror_augment": mirror_augment,
             "n_after_dedup": int(features.shape[0]),
             "duplicates_removed_before_balance": int(removed_dups),
             "dedup_key_used": dedup_key_used,
@@ -303,7 +385,7 @@ def _rebalance_one(
             "input_path": str(npz_path),
             "output_path": str(out_path),
             "bins": int(bins),
-            "n_input": int(features_raw.shape[0]),
+            "n_input": int(n_before_mirror),
             "n_after_dedup": int(features.shape[0]),
             "duplicates_removed_before_balance": int(removed_dups),
             "dedup_key_used": dedup_key_used,
@@ -323,6 +405,7 @@ def _rebalance_one(
     features_out = features[selected_idx]
     labels_out = labels[selected_idx]
     pose_out = pose[selected_idx] if pose is not None else None
+    noff_out = noff[selected_idx] if noff is not None else None
 
     # Validate strict uniqueness after balancing.
     features_chk, labels_chk, pose_chk, removed_again, _, _ = _deduplicate_xy(
@@ -367,6 +450,8 @@ def _rebalance_one(
     out_payload: dict[str, object] = {feature_key: features_out, "Y": labels_out, "meta": meta}
     if pose_out is not None:
         out_payload["P"] = pose_out
+    if noff_out is not None:
+        out_payload["N"] = noff_out
     np.savez_compressed(out_path, **out_payload)
 
     return {
@@ -377,7 +462,9 @@ def _rebalance_one(
         "output_path": str(out_path),
         "bins": int(bins),
         "target_per_bin": int(target_per_bin),
-        "n_input": int(features_raw.shape[0]),
+        "n_input": int(n_before_mirror),
+        "n_after_mirror": int(n_after_mirror),
+        "mirror_augment": mirror_augment,
         "n_after_dedup_before_balance": int(features.shape[0]),
         "duplicates_removed_before_balance": int(removed_dups),
         "n_output": int(features_out.shape[0]),
@@ -416,11 +503,17 @@ def main() -> int:
     ap.add_argument("--robak-t-min", type=float, default=0.0)
     ap.add_argument("--robak-t-max", type=float, default=1.0)
     ap.add_argument("--robak-r-min", type=float, default=0.0)
-    ap.add_argument("--robak-r-max", type=float, default=150.0)
+    ap.add_argument("--robak-r-max", type=float, default=180.0)
     ap.add_argument(
         "--dedup-use-pose-key",
         action="store_true",
         help="DEPRECATED (ignored). Deduplication is always performed on X+Y only.",
+    )
+    ap.add_argument(
+        "--mirror-augment",
+        action="store_true",
+        default=False,
+        help="Apply mirror augmentation inline before rebalancing (doubles unique samples).",
     )
     args = ap.parse_args()
 
@@ -459,6 +552,7 @@ def main() -> int:
             seed=int(args.seed) + 17,
             require_all_bins=bool(args.require_all_bins),
             label=ry_label,
+            mirror_augment="rywak" if args.mirror_augment else "none",
         )
         ry["metric_mode"] = ry_metric_mode
         ry["row_metric_unit"] = ry_row_unit
@@ -485,6 +579,8 @@ def main() -> int:
             seed=int(args.seed) + 29,
             require_all_bins=bool(args.require_all_bins),
             label="robak_translation_rotation",
+            mirror_augment="robak" if args.mirror_augment else "none",
+            require_offsets=True,
         )
         summary["robak"] = rb
         failed = failed or (not bool(rb.get("success", False)))
