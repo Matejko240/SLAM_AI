@@ -1,0 +1,9 @@
+# Python dependencies for the AI/ML side of the project.
+# ROS 2 packages (rclpy, *_msgs, tf2, launch, ...) are provided by a ROS 2 Jazzy
+# installation and are NOT installed via pip. See scripts/install_deps.sh.
+numpy
+torch
+matplotlib
+PyYAML
+psutil
+scikit-image

@@ -1,124 +1,153 @@
 # SLAM_AI
 
-Projekt porównuje klasyczne i AI-wspomagane metody lokalizacji/mapowania robota 2D (ROS 2 Jazzy + Gazebo + LiDAR 360).
+![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white)
+![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-## Metody w eksperymencie
+A research framework that compares **classical** and **AI-assisted** localization and
+mapping for a 2D mobile robot, built on **ROS 2 Jazzy**, **Gazebo**, and a 360° LiDAR.
+It provides a reproducible pipeline to collect datasets in simulated worlds, train
+several learned motion/odometry models, and evaluate them against classical SLAM
+baselines on a separate test world.
 
-1. `Baseline SLAM`  
-`slam_toolbox` na zaszumionej odometrii (`/map`).
+## Methods compared
 
-2. `AI SLAM`  
-Model MLP (`363 -> 256 -> 128 -> 64 -> 3`) koryguje estymację pozycji, a wynik trafia do `slam_toolbox` (`/map_ai`).
+| # | Method | Description |
+|---|--------|-------------|
+| 1 | **Baseline SLAM** | `slam_toolbox` running on noisy odometry (`/map`). |
+| 2 | **AI SLAM** | An MLP (`363 → 256 → 128 → 64 → 3`) corrects the pose estimate before it is fed to `slam_toolbox` (`/map_ai`). |
+| 3 | **ScanMatcher (local map)** | Classical consecutive-scan matching — fast and lightweight reference. |
+| 4 | **ScanMatcher (brute force)** | Full grid search over candidate transforms (slower, optional reference). |
+| 5 | **Robak** | A Conv1D model that predicts `Δx, Δy, Δθ` from a pair of scans `(scan_{t-1}, scan_t)`. |
+| 6 | **Rywak** | An MLP that predicts `v, ω` from the features `d_theta1, d_theta2, delta_scan`. |
 
-3. `ScanMatcher localmap`  
-Klasyczne dopasowanie kolejnych skanów (szybkie, lekkie; tor referencyjny).
+## Repository structure
 
-4. `ScanMatcher bruteforce` (opcjonalnie)  
-Pełne przeszukiwanie siatki transformacji (wolniejsze, referencyjne).
+```
+SLAM_AI/
+├── ai_slam_ws/src/
+│   ├── ai_slam_ai/           # AI models and ROS nodes (recorders, training, inference)
+│   ├── ai_slam_bringup/      # Launch files and experiment configuration
+│   ├── ai_slam_description/  # Robot model (diffbot.sdf)
+│   ├── ai_slam_eval/         # Evaluation node (metrics and plots)
+│   └── ai_slam_gazebo/       # Gazebo worlds and the ROS–Gazebo bridge
+├── scripts/                  # Pipeline, dashboard, and reporting utilities
+├── docs/                     # Auto-generated function index
+├── real_world_results/       # Processed results from real-world mocap validation
+├── requirements.txt          # Python (pip) dependencies
+└── README.md
+```
 
-5. `Robak`  
-Model Conv1D na parze skanów `(scan_{t-1}, scan_t)` przewiduje `Δx, Δy, Δθ`.
+## Requirements
 
-6. `Rywak`  
-Model MLP przewiduje `v, ω` z cech: `d_theta1, d_theta2, delta_scan`.
+- Ubuntu 24.04 with **ROS 2 Jazzy**
+- **Gazebo** (as bundled with ROS 2 Jazzy)
+- Python 3.12 and the packages listed in [`requirements.txt`](requirements.txt)
+  (`numpy`, `torch`, `matplotlib`, `PyYAML`, `psutil`, `scikit-image`)
 
-## Fazy pipeline
+ROS-provided Python packages (`rclpy`, the `*_msgs` interfaces, `tf2_ros`, `launch`,
+`launch_ros`, …) come from the ROS 2 installation and are **not** installed via pip.
 
-1. Zbieranie datasetu na wybranym świecie (`world_house.sdf`, `world_office.sdf`, `world_hospital.sdf`)
-2. Trening modeli
-3. Test i ewaluacja na osobno wybranym świecie testowym
-4. Zapis wyników do `out/exp_YYYYMMDD_HHMMSS`
-
-## One-click uruchomienie
-
-Nowy skrypt wykonuje pełną sekwencję:
-- czyszczenie `build/install/log`
-- aktywacja `.venv`
-- `rosdep install`
-- `colcon build --symlink-install`
-- source ROS + workspace
-- `cleanup.sh`
-- `run_full_cycle.sh`
+## Installation
 
 ```bash
-cd ~/projects/SLAM_AI
+git clone https://github.com/Matejko240/SLAM_AI.git
+cd SLAM_AI
+
+# Python environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# System / ROS dependencies (optional helper)
+./scripts/install_deps.sh
+
+# Build the ROS 2 workspace
+cd ai_slam_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
+source install/setup.bash
+```
+
+## Usage
+
+### One-click full cycle
+
+Runs the complete sequence: clean `build/install/log`, activate `.venv`,
+`rosdep install`, `colcon build --symlink-install`, source the workspace, and run
+the full collect → train → test → evaluate cycle.
+
+```bash
 ./scripts/run_all.sh
 ```
 
-## Dashboard
+### Single experiment
 
-Lokalny dashboard HTTP pozwala:
-- wybierać istniejące eksperymenty i datasety z `out/`
-- odpalać `run_all.sh`, `run_full_cycle.sh`, `run_experiment.sh`
-- w szybkim starcie osobno wybierać świat do datasetu i świat do testu
-- trenować `AI`, `robak`, `rywak` na wybranym eksperymencie
-- generować wykres trajektorii i błędu z własnym zakresem czasu oraz osi
-- przeglądać artefakty i logi zadań
-- otwierać automatycznie generowany indeks funkcji
-
-Uruchomienie:
+`run_experiment.sh` launches individual phases:
 
 ```bash
-cd ~/SLAM_AI
+./scripts/run_experiment.sh fast    # fast smoke configuration
+./scripts/run_experiment.sh full    # full experiment configuration
+./scripts/run_experiment.sh train   # training phase only
+./scripts/run_experiment.sh test    # test/evaluation phase only
+```
+
+### Web dashboard
+
+A local HTTP dashboard lets you browse experiments and datasets from `out/`, launch
+the pipeline scripts, train the `AI` / `robak` / `rywak` models, and generate
+trajectory and error plots.
+
+```bash
 source .venv/bin/activate
-./scripts/run_dashboard.sh
+./scripts/run_dashboard.sh          # default: http://127.0.0.1:8765
+./scripts/kill_dashboard.sh         # stop (optionally pass a port, e.g. 8766)
 ```
 
-Domyślny adres: `http://127.0.0.1:8765`
+## Configuration
 
-Zatrzymanie:
+- Main experiment config: `ai_slam_ws/src/ai_slam_bringup/config/experiment_config.yaml`
+- Main launch file: `ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py`
+- Available simulated worlds: `world_house.sdf`, `world_office.sdf`, `world_hospital.sdf`
 
-```bash
-cd ~/projects/SLAM_AI
-bash ./scripts/kill_dashboard.sh
-```
+The pipeline phases are:
 
-Jeśli dashboard działa na innym porcie, podaj go jako argument, np. `bash ./scripts/kill_dashboard.sh 8766`.
+1. Collect a dataset in a chosen world.
+2. Train the models.
+3. Test and evaluate on a separately chosen test world.
+4. Save results under `out/exp_YYYYMMDD_HHMMSS`.
 
-## Najważniejsze pliki
+## Outputs
 
-- Konfiguracja eksperymentu: `ai_slam_ws/src/ai_slam_bringup/config/experiment_config.yaml`
-- Launch główny: `ai_slam_ws/src/ai_slam_bringup/launch/demo.launch.py`
-- Skrypt one-click: `scripts/run_all.sh`
+Each `out/exp_*` directory contains, among others:
 
-## Wyniki
-
-Po zakończeniu eksperymentu katalog `out/exp_*` zawiera m.in.:
-- `results.json` (RMSE/IoU)
+- `results.json` — aggregated metrics (RMSE / IoU)
 - `eval_trajectory.png`, `eval_errors.png`, `eval_maps.png`
 - `dataset*.npz`, `model*.pt`, `train_history*.json`
-- `dataset_robak_coverage_*.png`, `dataset_rywak_coverage_*.png`
-- `train_curve_{ai,robak,rywak}.png`
-- `dataset_inspection_summary.json`, `train_inspection_summary.json`, `experiment_inspection_summary.json`
+- `train_curve_{ai,robak,rywak}.png` and dataset coverage plots
 
-## Przydatne skrypty
-
-- `scripts/run_all.sh` – pełny pipeline (build + train + test)
-- `scripts/run_full_cycle.sh` – train + test na istniejącym środowisku
-- `scripts/run_experiment.sh` – pojedyncze launchowanie (`fast`, `full`, `train`, `test`)
-- `scripts/run_dashboard.sh` – dashboard WWW nad eksperymentami, datasetami i wykresami
-- `scripts/generate_function_index.py` – generator `docs/function_index.{md,json}`
-- `scripts/cleanup.sh` – ubijanie zaległych procesów ROS/Gazebo
-- `scripts/generate_thesis_report.py` – wykresy i tabele do pracy (CSV/MD/LaTeX + PNG) z `results.json`
-
-### Raport do pracy
-
-Przykład na bazie sweepa:
+### Reports and reference maps
 
 ```bash
+# Thesis-style tables and figures from a sweep
 python3 scripts/generate_thesis_report.py \
-  --sweep out/sweep_20260308_170242.csv \
-  --output-dir out/thesis_raport
-```
+  --sweep out/sweep_YYYYMMDD_HHMMSS.csv \
+  --output-dir out/thesis_report
 
-Wygenerowane pliki: `table_experiments.csv`, `table_method_stats.{csv,md,tex}`, `fig_*.png`.
-
-### Mapy referencyjne
-
-Generator obsługuje teraz wiele map wyjściowych. Przykład:
-
-```bash
+# Reference occupancy map from a world
 python3 scripts/generate_reference_map.py \
   --world ai_slam_ws/src/ai_slam_gazebo/worlds/world_office.sdf \
   --output-stem reference_map_office
 ```
+
+## Real-world validation
+
+The `real_world_results/` directory holds the processed results of a real-world
+validation campaign using a JetRacer platform and a motion-capture ground truth
+(CSV trajectories and figures). The online inference path is provided by
+`jetracer_scan_adapter` and `jetracer_online.launch.py`.
+
+## License
+
+Released under the [MIT License](LICENSE).
