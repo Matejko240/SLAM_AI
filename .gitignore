@@ -34,6 +34,7 @@ kod_do_pracy.zip
 # Raw measurement captures (rosbags, mocap exports) - results kept, raw binaries excluded
 *.bag
 *.tak
+docs/
 *.c3d
 *.fbx
 *.cal
